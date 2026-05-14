@@ -1,0 +1,47 @@
+version: "3.9"
+
+services:
+
+  api:
+    build: .
+    container_name: mail_ai_api
+    ports:
+      - "8024:8024"
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./worker:/app/worker
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8024 --reload
+    depends_on:
+      - redis
+
+  worker:
+    build: .
+    container_name: mail_ai_worker
+    command: celery -A worker.celery_worker.celery worker --loglevel=info
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./worker:/app/worker
+    depends_on:
+      - redis
+
+  listener:
+    build: .
+    container_name: mail_ai_listener
+    command: python worker/imap_reader.py
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+      - ./worker:/app/worker
+    working_dir: /app
+    restart: always
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: mail_ai_redis

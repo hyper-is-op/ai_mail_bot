@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+celery
+redis
+requests
+python-dotenv
+pymysql
+openai
+cryptography
+email-validator
