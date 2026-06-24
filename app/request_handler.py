@@ -5,115 +5,48 @@ import os
 import base64
 import re
 
+from app.email_credential import get_create_payload_table, get_payload_get_ticket_table
+from app.llm import design_payload
+
 logger = logging.getLogger(__name__)
 
-API_BASE_URL_CREATE_TICKET= "https://ticketing.tvtworld.com//CZCRM/api/create_ticket.php"
-API_BASE_URL_GET_TICKET = "https://ticketing.tvtworld.com/CZCRM/api/get_ticket_data.php"
-CLIENT_KEY = "1986649354831659008"
 
-
-# def call_create_ticket(user_id: int, mail_id: str, subject: str, body: str, status: str) -> dict:
-
-#     try:
-#         # Prepare JSON payload
-#         payload = {
-#             "client_key": CLIENT_KEY,
-#             "ticket_type": "Complaint",
-#             "disposition": "dispoone",
-#             "sub_disposition": "subdispoone",
-#             "description": body,
-#             "agent_remarks": "Test remarks",
-#             "ticket_status": "New",
-#             "priority_name": "Critical",
-#             "person_name": "Monish",
-#             "first_name": "Mohd",
-#             "last_name": "Monish",
-#             "mobile_no": "9876543210",
-#             "email": mail_id,
-#             "source": "api",
-#             "source_info": "9876543210"
-#         }
-
-#         # Remove empty fields (optional but cleaner)
-#         payload = {k: v for k, v in payload.items() if v}
-
-#         # Convert to JSON string
-#         json_str = json.dumps(payload)
-
-#         # Base64 encode
-#         encoded_data = base64.b64encode(json_str.encode()).decode()
-
-#         # Final URL
-#         url = f"{API_BASE_URL}?data={encoded_data}"
-
-#         logger.info(f"📤 Calling Create Ticket API")
-
-#         # GET request
-#         response = requests.get(url, timeout=10)
-#         response.raise_for_status()
-
-#         result = response.json()
-
-#         # Handle response
-#         if result.get("Status") == "Success":
-#             return {
-#                 "success": True,
-#                 "message": result.get("Message")
-#             }
-#         else:
-#             return {
-#                 "success": False,
-#                 "error": result.get("Message")
-#             }
-
-#     except requests.exceptions.RequestException as e:
-#         logger.error(f"❌ API failed: {e}")
-#         return {"success": False, "error": str(e)}
-
-def call_create_ticket(user_id: int, mail_id: str, subject: str, body: str, status: str) -> dict:
-
+def call_create_ticket(client_id: str, mail_id: str, subject: str, body: str, status: str, personal_details: dict = None) -> dict:
     try:
-        payload = {
-            "client_key": CLIENT_KEY,
-            "ticket_type": "Complaint",
-            "disposition": "dispoone",
-            "sub_disposition": "subdispoone",
-            "description": body,
-            "agent_remarks": "Test remarks",
-            "ticket_status": "New",
-            "priority_name": "Critical",
-            "person_name": "Monish",
-            "first_name": "Mohd",
-            "last_name": "Monish",
-            "mobile_no": "9876543210",
-            "email": mail_id,
-            "source": "api",
-            "source_info": "9876543210"
-        }
+        db_create_payload_table = get_create_payload_table(client_id)
 
-        payload = {k: v for k, v in payload.items() if v}
+        if not db_create_payload_table:
+            logger.warning(f"⚠️ No payload found for client_id={client_id}")
+            return {
+                "success": False,
+                "ticket_id": None,
+                "error": f"No payload config found for client_id={client_id}"
+            }
 
-        json_str = json.dumps(payload)
+        api_url = db_create_payload_table["url"]
+        paylod1 = db_create_payload_table["paylod"]
+        paylod1 = design_payload(paylod1, mail_id, subject, body, status, personal_details=personal_details)
+        logger.info(f"🧩 Designed payload for client_id={client_id}:\n{json.dumps(paylod1, indent=2)}")
+
+        json_str = json.dumps(paylod1)
         encoded_data = base64.b64encode(json_str.encode()).decode()
 
-        url = f"{API_BASE_URL_CREATE_TICKET}?data={encoded_data}"
+        url = f"{api_url}?data={encoded_data}"
 
-        logger.info(f"📤 Calling Create Ticket API")
+        logger.info(f"📤 Calling Create Ticket API: {url[:100]}...")
 
         response = requests.get(url, timeout=10)
         response.raise_for_status()
 
         result = response.json()
+        logger.info(f"📥 API response: {result}")
 
-        # 🔥 Extract ticket ID
         ticket_id = None
         ref_text = result.get("Refrence_No") or result.get("Message", "")
-
         match = re.search(r"T-\d{6}-\d+", ref_text)
         if match:
             ticket_id = match.group()
 
-        # ✅ Final return
         if result.get("Status") == "Success":
             return {
                 "success": True,
@@ -135,36 +68,39 @@ def call_create_ticket(user_id: int, mail_id: str, subject: str, body: str, stat
             "error": str(e)
         }
 
+
 # ==============================
 # 📦 Order Status API
 # ==============================
-def get_order_status(order_id: str) -> dict:
+def get_order_status(client_id: str, order_id: str) -> dict:
     try:
-        # 🔹 Filter only with docket_no
-        payload = {
-            "client_key": CLIENT_KEY,
-            "filter": {
-                "docket_no": order_id,
-                "create_date_flag": "true"
-            }
-        }
+        db_payload_get_ticket_table = get_payload_get_ticket_table(client_id)
 
-        # 🔹 Encode payload
-        json_str = json.dumps(payload)
+        if not db_payload_get_ticket_table:
+            logger.warning(f"⚠️ No payload found for client_id={client_id}")
+            return {"success": False, "error": f"No payload config found for client_id={client_id}"}
+
+        url = db_payload_get_ticket_table["url"]
+
+        # FIX: deep-copy before mutating — the cached payload dict is shared
+        # across tasks in the same worker process. Writing order_id directly
+        # into the original would let concurrent tasks overwrite each other's
+        # docket_no, causing wrong-ticket lookups.
+        paylod2 = json.loads(json.dumps(db_payload_get_ticket_table["paylod"]))
+        paylod2["filter"]["docket_no"] = order_id
+
+        json_str = json.dumps(paylod2)
         encoded_data = base64.b64encode(json_str.encode()).decode()
-    
-        # 🔹 Final URL
-        url = f"{API_BASE_URL_GET_TICKET}?postData={encoded_data}"
+
+        full_url = f"{url}?postData={encoded_data}"
 
         logger.info(f"📤 Calling Order Status API for {order_id}")
 
-        # 🔹 API Call
-        response = requests.get(url, timeout=10)
+        response = requests.get(full_url, timeout=10)
         response.raise_for_status()
 
         result = response.json()
 
-        # 🔹 Handle response
         if "Success" in result:
             return {
                 "success": True,

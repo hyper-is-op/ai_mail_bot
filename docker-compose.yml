@@ -1,6 +1,18 @@
-version: "3.9"
-
 services:
+
+  chroma:
+    image: chromadb/chroma
+    container_name: mail_ai_chroma
+    restart: unless-stopped
+    ports:
+      - "1950:8000"
+    volumes:
+      - chroma_server_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
 
   api:
     build: .
@@ -12,9 +24,12 @@ services:
     volumes:
       - ./app:/app/app
       - ./worker:/app/worker
+      - ./chroma_db:/app/chroma_db
+      - chroma_cache:/root/.cache/chroma
     command: uvicorn app.main:app --host 0.0.0.0 --port 8024 --reload
     depends_on:
       - redis
+      - chroma
 
   worker:
     build: .
@@ -25,8 +40,11 @@ services:
     volumes:
       - ./app:/app/app
       - ./worker:/app/worker
+      - ./chroma_db:/app/chroma_db
+      - chroma_cache:/root/.cache/chroma
     depends_on:
       - redis
+      - chroma
 
   listener:
     build: .
@@ -37,11 +55,17 @@ services:
     volumes:
       - ./app:/app/app
       - ./worker:/app/worker
+      - chroma_cache:/root/.cache/chroma
     working_dir: /app
     restart: always
     depends_on:
       - redis
+      - chroma
 
   redis:
     image: redis:7-alpine
     container_name: mail_ai_redis
+
+volumes:
+  chroma_cache:
+  chroma_server_data:

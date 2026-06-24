@@ -1,16 +1,11 @@
 import os
 import re
 import logging
-from openai import OpenAI
+from app.llm import resolve_model, current_client_id, client
 
 logger = logging.getLogger(__name__)
 
-client = OpenAI(
-    api_key=os.getenv("GROQ_API_KEY"),
-    base_url="https://api.groq.com/openai/v1"
-)
-
-MODEL = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
+MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 
 # ==============================
@@ -55,9 +50,9 @@ Return ONLY a number between 0 and 100.
 
     try:
         res = client.chat.completions.create(
-            model=MODEL,
+            model=resolve_model(current_client_id.get(), "llm_score"),
             messages=[
-                {"role": "system", "content": "You are a strict evaluator. Never give high score unless perfect."},
+                {"role": "system", "content": "You are a strict evaluator. Return ONLY a single integer between 0 and 100. No explanation. No reasoning. No text."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0
@@ -119,3 +114,5 @@ def rule_based_penalty(reply, query):
         penalty -= 25
 
     return penalty
+
+

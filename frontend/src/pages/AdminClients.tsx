@@ -1,0 +1,309 @@
+import { useState, useEffect } from 'react';
+import { Navigate } from 'react-router-dom';
+import { api } from '@/lib/api';
+import { Loader2, UserPlus, CheckCircle, XCircle, ShieldCheck, Settings2, DollarSign, Clock } from 'lucide-react';
+
+const CALLER_FUNCTIONS = [
+    'detect_intent_llm', 'generate_reply_llm', 'design_payload',
+    'scan_history_for_ticket', 'extract_issue_description', 'generate_summary_llm', 'llm_score'
+];
+const MODEL_OPTIONS = ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'];
+const FEATURE_KEYS = [
+    ['feature_ticket_creation', 'Ticket Creation'],
+    ['feature_auto_send', 'Auto-Send'],
+    ['feature_rag', 'RAG Knowledge Lookup'],
+    ['feature_order_tracking', 'Order/Ticket Tracking'],
+    ['feature_manual_reply', 'Manual Reply'],
+] as const;
+
+export default function AdminClients() {
+    const user = JSON.parse(localStorage.getItem('user') || '{}');
+    if (user?.role !== 'admin') return <Navigate to="/dashboard" replace />;
+
+    const [accounts, setAccounts] = useState<any[]>([]);
+    const [pending, setPending] = useState<any[]>([]);
+    const [budgets, setBudgets] = useState<any[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [msg, setMsg] = useState({ type: '', text: '' });
+    const [expanded, setExpanded] = useState<string | null>(null);
+
+    const [createForm, setCreateForm] = useState({
+        login_email: '', login_password: '', imap_email: '', imap_password: '',
+    });
+    const [creating, setCreating] = useState(false);
+
+    const [manageState, setManageState] = useState<Record<string, any>>({});
+
+    useEffect(() => { loadAll(); }, []);
+
+    const loadAll = async () => {
+        setLoading(true);
+        try {
+            const [accs, pend, budg] = await Promise.all([
+                api.getAllEmailAccounts(), api.getPendingUsers(), api.getAllBudgetStatuses(),
+            ]);
+            setAccounts(accs);
+            setPending(pend);
+            setBudgets(budg);
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleCreate = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setCreating(true);
+        setMsg({ type: '', text: '' });
+        try {
+            const res = await api.createClient(createForm);
+            setMsg({ type: 'success', text: `Client ${res.client_id} created. Credentials emailed to ${createForm.login_email}.` });
+            setCreateForm({ login_email: '', login_password: '', imap_email: '', imap_password: '' });
+            loadAll();
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
+        } finally {
+            setCreating(false);
+        }
+    };
+
+    const handleApprove = async (email: string) => {
+        try {
+            await api.approveRegistration(email);
+            setMsg({ type: 'success', text: `${email} approved.` });
+            loadAll();
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
+        }
+    };
+
+    const openManage = async (clientId: string) => {
+        if (expanded === clientId) { setExpanded(null); return; }
+        setExpanded(clientId);
+        if (!manageState[clientId]) {
+            try {
+                const modelConfig = await api.getClientModelConfig(clientId);
+                const modelMap: Record<string, string> = {};
+                modelConfig.forEach((m: any) => { modelMap[m.caller_function] = m.model_name; });
+                setManageState(prev => ({
+                    ...prev,
+                    [clientId]: {
+                        feature_ticket_creation: true, feature_auto_send: true, feature_rag: true,
+                        feature_order_tracking: true, feature_manual_reply: true,
+                        cost_multiplier: 1.0, monthly_budget_usd: '',
+                        models: modelMap,
+                    }
+                }));
+            } catch {
+                setManageState(prev => ({ ...prev, [clientId]: { models: {} } }));
+            }
+        }
+    };
+
+    const saveFeatures = async (clientId: string) => {
+        const s = manageState[clientId];
+        try {
+            await api.setClientFeatures({
+                client_id: clientId,
+                feature_ticket_creation: s.feature_ticket_creation,
+                feature_auto_send: s.feature_auto_send,
+                feature_rag: s.feature_rag,
+                feature_order_tracking: s.feature_order_tracking,
+                feature_manual_reply: s.feature_manual_reply,
+            });
+            setMsg({ type: 'success', text: `Features updated for ${clientId}` });
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
+        }
+    };
+
+    const saveCost = async (clientId: string) => {
+        const s = manageState[clientId];
+        try {
+            await api.setClientCostConfig({
+                client_id: clientId,
+                cost_multiplier: parseFloat(s.cost_multiplier) || 1.0,
+                monthly_budget_usd: s.monthly_budget_usd ? parseFloat(s.monthly_budget_usd) : null,
+            });
+            setMsg({ type: 'success', text: `Cost config updated for ${clientId}` });
+            loadAll();
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
+        }
+    };
+
+    const saveModel = async (clientId: string, fn: string, model: string) => {
+        try {
+            await api.setClientModelConfig({ client_id: clientId, caller_function: fn, model_name: model });
+            setMsg({ type: 'success', text: `Model set for ${fn}` });
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
+        }
+    };
+
+    if (loading) {
+        return <div className="flex items-center justify-center p-20"><Loader2 className="w-8 h-8 animate-spin text-primary" /></div>;
+    }
+
+    return (
+        <div className="space-y-6">
+            <div>
+                <h2 className="text-3xl font-bold tracking-tight flex items-center gap-2">
+                    <ShieldCheck className="w-8 h-8 text-primary" /> Admin · Client Management
+                </h2>
+                <p className="text-muted-foreground mt-1">Create clients, approve pending registrations, and configure per-client behavior.</p>
+            </div>
+
+            {msg.text && (
+                <div className={`p-4 rounded-xl border flex items-center gap-3 ${msg.type === 'error' ? 'bg-rose-500/10 border-rose-500/20 text-rose-500' : 'bg-green-500/10 border-green-500/20 text-green-500'}`}>
+                    {msg.type === 'error' ? <XCircle className="w-5 h-5" /> : <CheckCircle className="w-5 h-5" />}
+                    <span className="text-sm font-medium">{msg.text}</span>
+                </div>
+            )}
+
+            {/* Create Client */}
+            <div className="glass-panel p-6 rounded-2xl border border-white/10">
+                <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><UserPlus className="w-5 h-5 text-primary" /> Create New Client</h3>
+                <form onSubmit={handleCreate} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <input required type="email" placeholder="Client login email" value={createForm.login_email}
+                        onChange={e => setCreateForm({ ...createForm, login_email: e.target.value })}
+                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
+                    <input required type="text" minLength={8} placeholder="Client login password (min 8 chars)" value={createForm.login_password}
+                        onChange={e => setCreateForm({ ...createForm, login_password: e.target.value })}
+                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
+                    <input required type="email" placeholder="IMAP/Gmail address" value={createForm.imap_email}
+                        onChange={e => setCreateForm({ ...createForm, imap_email: e.target.value })}
+                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
+                    <input required type="text" minLength={8} placeholder="IMAP app password" value={createForm.imap_password}
+                        onChange={e => setCreateForm({ ...createForm, imap_password: e.target.value })}
+                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
+                    <button disabled={creating} type="submit" className="md:col-span-2 bg-primary text-primary-foreground py-2.5 rounded-lg font-medium flex items-center justify-center gap-2">
+                        {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create Client & Email Credentials'}
+                    </button>
+                </form>
+            </div>
+
+            {/* Pending Approvals */}
+            {pending.length > 0 && (
+                <div className="glass-panel p-6 rounded-2xl border border-white/10">
+                    <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><Clock className="w-5 h-5 text-amber-400" /> Pending Approvals</h3>
+                    <div className="space-y-2">
+                        {pending.map(p => (
+                            <div key={p.id} className="flex justify-between items-center bg-white/5 rounded-lg p-3">
+                                <div>
+                                    <p className="text-sm font-medium">{p.email}</p>
+                                    <p className="text-xs text-muted-foreground">{p.client_id} · {p.role} · {p.created_at}</p>
+                                </div>
+                                <button onClick={() => handleApprove(p.email)} className="bg-emerald-500 text-black px-3 py-1.5 rounded-lg text-xs font-semibold">
+                                    Approve
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* Clients table */}
+            <div className="glass-panel p-6 rounded-2xl border border-white/10">
+                <h3 className="text-lg font-semibold mb-4">All Clients</h3>
+                <div className="space-y-3">
+                    {accounts.map((acc) => {
+                        const budget = budgets.find(b => b.client_id === acc.client_id);
+                        const s = manageState[acc.client_id];
+                        return (
+                            <div key={acc.client_id} className="border border-white/10 rounded-xl overflow-hidden">
+                                <div className="flex justify-between items-center p-4 bg-white/5">
+                                    <div>
+                                        <p className="font-mono font-bold text-accent">{acc.client_id}</p>
+                                        <p className="text-sm text-muted-foreground">{acc.email}</p>
+                                    </div>
+                                    <div className="flex items-center gap-3">
+                                        {budget && budget.status !== 'unlimited' && (
+                                            <span className={`text-xs px-2 py-1 rounded-full border ${budget.status === 'exceeded' ? 'text-rose-400 border-rose-500/30 bg-rose-500/10' :
+                                                    budget.status === 'warning' ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' :
+                                                        'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
+                                                }`}>
+                                                ${budget.spent} / ${budget.budget} ({budget.percent}%)
+                                            </span>
+                                        )}
+                                        <button onClick={() => openManage(acc.client_id)} className="text-sm text-primary flex items-center gap-1">
+                                            <Settings2 className="w-4 h-4" /> Manage
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {expanded === acc.client_id && s && (
+                                    <div className="p-4 space-y-4 border-t border-white/10">
+                                        {/* Feature toggles */}
+                                        <div>
+                                            <p className="text-xs font-semibold text-muted-foreground mb-2">FEATURES</p>
+                                            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+                                                {FEATURE_KEYS.map(([key, label]) => (
+                                                    <label key={key} className="flex items-center gap-2 text-sm bg-white/5 rounded-lg px-3 py-2">
+                                                        <input type="checkbox" checked={!!s[key]}
+                                                            onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], [key]: e.target.checked } }))} />
+                                                        {label}
+                                                    </label>
+                                                ))}
+                                            </div>
+                                            <button onClick={() => saveFeatures(acc.client_id)} className="mt-2 text-xs bg-primary/20 text-primary px-3 py-1.5 rounded-lg">
+                                                Save Features
+                                            </button>
+                                        </div>
+
+                                        {/* Model per function */}
+                                        <div>
+                                            <p className="text-xs font-semibold text-muted-foreground mb-2">MODEL OVERRIDE PER FUNCTION</p>
+                                            <div className="space-y-2">
+                                                {CALLER_FUNCTIONS.map(fn => (
+                                                    <div key={fn} className="flex items-center gap-2 text-sm">
+                                                        <span className="flex-1 font-mono text-xs">{fn}</span>
+                                                        <select
+                                                            value={s.models?.[fn] || ''}
+                                                            onChange={e => {
+                                                                const model = e.target.value;
+                                                                setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], models: { ...prev[acc.client_id].models, [fn]: model } } }));
+                                                                if (model) saveModel(acc.client_id, fn, model);
+                                                            }}
+                                                            className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs"
+                                                        >
+                                                            <option value="">(use global default)</option>
+                                                            {MODEL_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}
+                                                        </select>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        {/* Cost / budget */}
+                                        <div>
+                                            <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1"><DollarSign className="w-3 h-3" /> COST & BUDGET</p>
+                                            <div className="flex gap-2 items-end">
+                                                <div>
+                                                    <label className="text-xs text-muted-foreground">Cost Multiplier</label>
+                                                    <input type="number" step="0.01" value={s.cost_multiplier}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], cost_multiplier: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-sm w-24 block" />
+                                                </div>
+                                                <div>
+                                                    <label className="text-xs text-muted-foreground">Monthly Budget ($)</label>
+                                                    <input type="number" step="1" placeholder="unlimited" value={s.monthly_budget_usd}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], monthly_budget_usd: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-sm w-28 block" />
+                                                </div>
+                                                <button onClick={() => saveCost(acc.client_id)} className="text-xs bg-primary/20 text-primary px-3 py-2 rounded-lg">
+                                                    Save
+                                                </button>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+        </div>
+    );
+}

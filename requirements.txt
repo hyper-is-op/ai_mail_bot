@@ -8,3 +8,12 @@ pymysql
 openai
 cryptography
 email-validator
+chromadb==1.5.9
+pypdf
+openpyxl
+python-multipart
+mcp
+fastmcp
+langchain-mcp-adapters
+langgraph
+langchain-openai

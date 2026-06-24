@@ -14,14 +14,23 @@ logging.basicConfig(
 )
 
 
-def send_email(to_email, subject, body):
+def send_email(client_id, to_email, subject, body):
     """Send an email using SMTP and credentials from the credential service."""
 
     try:
         # Retrieve email credentials
-        EMAIL_USER, EMAIL_PASS = get_email_credentials()
+        if client_id == "registration":
+            import os
+            EMAIL_USER = os.getenv("REGISTRATION_EMAIL", "monishrazammr@gmail.com")
+            EMAIL_PASS = os.getenv("REGISTRATION_EMAIL_PASS", "").strip('"\'')
+        else:
+            EMAIL_USER, EMAIL_PASS = get_email_credentials(client_id)
 
-        logger.info("📤 Preparing to send email to %s", to_email)
+        if not EMAIL_USER or not EMAIL_PASS:
+            logger.error("❌ Email credentials not found for client %s, aborting send_email", client_id)
+            return False
+
+        logger.info("📤 Preparing to send email to %s using client %s", to_email, client_id)
 
         # Create MIME message with UTF-8 support
         message = MIMEMultipart()

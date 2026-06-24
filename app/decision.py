@@ -1,10 +1,14 @@
-def decision_engine(score):
+def decision_engine(score: int, threshold: int = 80) -> str:
     """
     Decision engine based on reply quality score.
-    - score >= 80: auto_send email
-    - score < 80: create_ticket for manual handling
+
+    threshold comes from email_accounts.score_threshold (per account).
+    Defaults to 80 if not provided.
+
+    - score >= threshold : auto_send
+    - score <  threshold : create_ticket
     """
-    if score >= 80:
+    if score >= threshold:
         return "auto_send"
     else:
         return "create_ticket"
