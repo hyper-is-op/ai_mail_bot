@@ -77,8 +77,53 @@ def get_email_account(client_id: str) -> dict:
 
 
 def _ensure_accounts_table(cursor):
+    pass
+    # """
+    # Creates email_accounts table if it does not exist.
+    # """
+    # cursor.execute("""
+    #     CREATE TABLE IF NOT EXISTS email_accounts (
+    #         id INT AUTO_INCREMENT PRIMARY KEY,
+    #         client_id VARCHAR(50) NOT NULL,
+    #         email VARCHAR(255) NOT NULL,
+    #         password VARCHAR(255) NOT NULL,
+    #         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    #     )
+    # """)
+    # # Deduplicate existing entries so only the latest remains
+    # try:
+    #     cursor.execute("""
+    #         DELETE t1 FROM email_accounts t1
+    #         INNER JOIN email_accounts t2 
+    #         WHERE t1.id < t2.id AND t1.client_id = t2.client_id
+    #     """)
+    # except Exception as e:
+    #     logger.warning(f"⚠️ Deduplication warning: {str(e)}")
+        
+    # try:
+    #     cursor.execute("ALTER TABLE email_accounts CHANGE user_id client_id VARCHAR(50) NOT NULL")
+    # except:
+    #     pass
+
+    # try:
+    #     cursor.execute("ALTER TABLE email_accounts ADD UNIQUE INDEX (client_id)")
+    # except:
+    #     pass
+
+    # try:
+    #     cursor.execute("ALTER TABLE email_accounts ADD COLUMN score_threshold INT DEFAULT 80")
+    # except:
+    #     pass
+
+    # try:
+    #     cursor.execute("ALTER TABLE email_accounts ADD COLUMN response_tone VARCHAR(50) DEFAULT 'Formal'")
+    # except:
+    #     pass
+
+def ensure_accounts_table_startup(cursor):
     """
-    Creates email_accounts table if it does not exist.
+    One-time startup call only. Creates table, adds columns, 
+    adds unique index. Never called in hot path.
     """
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS email_accounts (
@@ -89,16 +134,7 @@ def _ensure_accounts_table(cursor):
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
-    # Deduplicate existing entries so only the latest remains
-    try:
-        cursor.execute("""
-            DELETE t1 FROM email_accounts t1
-            INNER JOIN email_accounts t2 
-            WHERE t1.id < t2.id AND t1.client_id = t2.client_id
-        """)
-    except Exception as e:
-        logger.warning(f"⚠️ Deduplication warning: {str(e)}")
-        
+
     try:
         cursor.execute("ALTER TABLE email_accounts CHANGE user_id client_id VARCHAR(50) NOT NULL")
     except:
@@ -118,7 +154,6 @@ def _ensure_accounts_table(cursor):
         cursor.execute("ALTER TABLE email_accounts ADD COLUMN response_tone VARCHAR(50) DEFAULT 'Formal'")
     except:
         pass
-
 
 def _ensure_table(cursor):
     """
@@ -185,50 +220,73 @@ def create_email_record_db(data: dict) -> dict:
 #on 15 May 2025 by hyper_is_op
 
 
+# def ensure_create_payload_table():
+#     """
+#     Creates the `create_payload_table` table if it doesn't already exist.
+#     Safe to call multiple times (uses IF NOT EXISTS).
+#     """
+#     db = get_db()
+#     try:
+#         with db.cursor() as cursor:
+#             cursor.execute("""
+#                 CREATE TABLE IF NOT EXISTS create_payload_table (
+#                     id               INT AUTO_INCREMENT PRIMARY KEY,
+#                     client_id        VARCHAR(50) NOT NULL,
+#                     url       VARCHAR(255),
+#                     paylod      TEXT,
+#                     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+#                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+#             """)
+#             # Deduplicate existing entries
+#             try:
+#                 cursor.execute("""
+#                     DELETE t1 FROM create_payload_table t1
+#                     INNER JOIN create_payload_table t2 
+#                     WHERE t1.id < t2.id AND t1.client_id = t2.client_id
+#                 """)
+#             except:
+#                 pass
+            
+#             try:
+#                 cursor.execute("ALTER TABLE create_payload_table CHANGE user_id client_id VARCHAR(50) NOT NULL, DROP PRIMARY KEY, ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST")
+#             except:
+#                 pass
+            
+#             try:
+#                 cursor.execute("ALTER TABLE create_payload_table ADD UNIQUE INDEX (client_id)")
+#             except:
+#                 pass
+#         db.commit()
+#         logger.info("✅ create_payload_table table ensured")
+#     except Exception as e:
+#         logger.error(f"❌ Failed to create create_payload_table table: {e}", exc_info=True)
+#         raise
+#     finally:
+#         db.close()
 def ensure_create_payload_table():
-    """
-    Creates the `create_payload_table` table if it doesn't already exist.
-    Safe to call multiple times (uses IF NOT EXISTS).
-    """
     db = get_db()
     try:
         with db.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS create_payload_table (
-                    id               INT AUTO_INCREMENT PRIMARY KEY,
-                    client_id        VARCHAR(50) NOT NULL,
-                    url       VARCHAR(255),
+                    id          INT AUTO_INCREMENT PRIMARY KEY,
+                    client_id   VARCHAR(50) NOT NULL,
+                    url         VARCHAR(255),
                     paylod      TEXT,
-                    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """)
-            # Deduplicate existing entries
-            try:
-                cursor.execute("""
-                    DELETE t1 FROM create_payload_table t1
-                    INNER JOIN create_payload_table t2 
-                    WHERE t1.id < t2.id AND t1.client_id = t2.client_id
-                """)
-            except:
-                pass
-            
-            try:
-                cursor.execute("ALTER TABLE create_payload_table CHANGE user_id client_id VARCHAR(50) NOT NULL, DROP PRIMARY KEY, ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST")
-            except:
-                pass
-            
             try:
                 cursor.execute("ALTER TABLE create_payload_table ADD UNIQUE INDEX (client_id)")
             except:
                 pass
         db.commit()
-        logger.info("✅ create_payload_table table ensured")
+        logger.info("✅ create_payload_table ensured")
     except Exception as e:
-        logger.error(f"❌ Failed to create create_payload_table table: {e}", exc_info=True)
+        logger.error(f"❌ Failed to ensure create_payload_table: {e}", exc_info=True)
         raise
     finally:
         db.close()
-
 
 def insert_create_payload_ticket(client_id: str, url: str, paylod: dict[str, Any]) -> str:
     db = get_db()
@@ -284,49 +342,74 @@ def get_create_payload_table(client_id: str) -> dict:
 #on 19 May 2025 by hyper_is_op
         
 
+# def ensure_payload_get_ticket_table():
+#     """
+#     Creates the `payload_get_table` table if it doesn't already exist.
+#     Safe to call multiple times (uses IF NOT EXISTS).
+#     """
+#     db = get_db()
+#     try:
+#         with db.cursor() as cursor:
+#             cursor.execute("""
+#                 CREATE TABLE IF NOT EXISTS payload_get_table (
+#                     id               INT AUTO_INCREMENT PRIMARY KEY,
+#                     client_id        VARCHAR(50) NOT NULL,
+#                     url       VARCHAR(255),
+#                     paylod      TEXT,
+#                     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+#                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+#             """)
+#             # Deduplicate existing entries
+#             try:
+#                 cursor.execute("""
+#                     DELETE t1 FROM payload_get_table t1
+#                     INNER JOIN payload_get_table t2 
+#                     WHERE t1.id < t2.id AND t1.client_id = t2.client_id
+#                 """)
+#             except:
+#                 pass
+                
+#             try:
+#                 cursor.execute("ALTER TABLE payload_get_table CHANGE user_id client_id VARCHAR(50) NOT NULL, DROP PRIMARY KEY, ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST")
+#             except:
+#                 pass
+                
+#             try:
+#                 cursor.execute("ALTER TABLE payload_get_table ADD UNIQUE INDEX (client_id)")
+#             except:
+#                 pass
+#         db.commit()
+#         logger.info("✅ payload_get_table table ensured")
+#     except Exception as e:
+#         logger.error(f"❌ Failed to create payload_get_table table: {e}", exc_info=True)
+#         raise
+#     finally:
+#         db.close()
 def ensure_payload_get_ticket_table():
-    """
-    Creates the `payload_get_table` table if it doesn't already exist.
-    Safe to call multiple times (uses IF NOT EXISTS).
-    """
     db = get_db()
     try:
         with db.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS payload_get_table (
-                    id               INT AUTO_INCREMENT PRIMARY KEY,
-                    client_id        VARCHAR(50) NOT NULL,
-                    url       VARCHAR(255),
+                    id          INT AUTO_INCREMENT PRIMARY KEY,
+                    client_id   VARCHAR(50) NOT NULL,
+                    url         VARCHAR(255),
                     paylod      TEXT,
-                    created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """)
-            # Deduplicate existing entries
-            try:
-                cursor.execute("""
-                    DELETE t1 FROM payload_get_table t1
-                    INNER JOIN payload_get_table t2 
-                    WHERE t1.id < t2.id AND t1.client_id = t2.client_id
-                """)
-            except:
-                pass
-                
-            try:
-                cursor.execute("ALTER TABLE payload_get_table CHANGE user_id client_id VARCHAR(50) NOT NULL, DROP PRIMARY KEY, ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST")
-            except:
-                pass
-                
             try:
                 cursor.execute("ALTER TABLE payload_get_table ADD UNIQUE INDEX (client_id)")
             except:
                 pass
         db.commit()
-        logger.info("✅ payload_get_table table ensured")
+        logger.info("✅ payload_get_table ensured")
     except Exception as e:
-        logger.error(f"❌ Failed to create payload_get_table table: {e}", exc_info=True)
+        logger.error(f"❌ Failed to ensure payload_get_table: {e}", exc_info=True)
         raise
     finally:
         db.close()
+
 
 def insert_payload_get_ticket(client_id: str, url: str, paylod: dict[str, Any]) -> str:
     db = get_db()

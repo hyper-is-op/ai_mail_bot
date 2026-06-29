@@ -195,3 +195,80 @@ def get_pending_users():
             return cursor.fetchall()
     finally:
         conn.close()
+
+def send_reset_otp(email: str):
+    ensure_users_table()
+    conn = get_db()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT id, client_id, email, status FROM users WHERE email=%s", (email,))
+            user = cursor.fetchone()
+            if not user:
+                return {"success": False, "error": "Email address not found"}
+            if user.get("status") == "pending":
+                return {"success": False, "error": "Your registration is still pending approval."}
+            
+            import secrets
+            otp = "".join(secrets.choice("0123456789") for _ in range(6))
+            
+            r = _session_redis()
+            r.set(f"reset_otp:{email}", otp, ex=900)
+            
+            try:
+                from app.mailer import send_email
+                subject = "Your Password Reset OTP"
+                body = (
+                    f"Hello,\n\nYou requested a password reset. Use the following verification code to set your new password:\n\n"
+                    f"Verification Code: {otp}\n\n"
+                    f"This code will expire in 15 minutes.\n\n"
+                    f"Thanks,\nMail AI Team"
+                )
+                sent = send_email("registration", email, subject, body)
+                if not sent:
+                    return {"success": False, "error": "Failed to send the email. Please check server SMTP configurations."}
+            except Exception as mail_err:
+                print(f"Error sending password reset OTP email: {mail_err}")
+                return {"success": False, "error": "Failed to send reset email due to internal SMTP error."}
+                
+            return {"success": True, "message": "Verification code sent to your email address."}
+    finally:
+        conn.close()
+
+def reset_password_with_otp(email: str, otp: str, new_password: str):
+    if len(new_password) < 8:
+        return {"success": False, "error": "Password must be at least 8 characters"}
+        
+    ensure_users_table()
+    r = _session_redis()
+    stored_otp = r.get(f"reset_otp:{email}")
+    
+    if not stored_otp:
+        return {"success": False, "error": "OTP has expired or email is invalid"}
+        
+    if stored_otp != otp.strip():
+        return {"success": False, "error": "Invalid verification code"}
+        
+    conn = get_db()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            p_hash = hash_password(new_password)
+            cursor.execute("UPDATE users SET password_hash=%s WHERE email=%s", (p_hash, email))
+            conn.commit()
+            
+        r.delete(f"reset_otp:{email}")
+        return {"success": True, "message": "Password updated successfully. You can now log in."}
+    finally:
+        conn.close()
+
+def admin_reset_client_password(client_id: str, new_password: str):
+    if len(new_password) < 8:
+        return {"success": False, "error": "Password must be at least 8 characters"}
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            p_hash = hash_password(new_password)
+            cursor.execute("UPDATE users SET password_hash=%s WHERE client_id=%s", (p_hash, client_id))
+            conn.commit()
+        return {"success": True, "message": "Client password updated successfully"}
+    finally:
+        conn.close()

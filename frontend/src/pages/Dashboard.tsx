@@ -42,22 +42,37 @@ export default function Dashboard() {
   const [endDate, setEndDate] = useState(getLastDayOfCurrentMonth());
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const clientId = user?.client_id || '';
+  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [clients, setClients] = useState<any[]>([]);
 
   useEffect(() => {
-    if (clientId) {
-      fetchStats();
+    if (user?.role === 'admin') {
+      api.getAllEmailAccounts()
+        .then((data) => {
+          setClients(data);
+          if (data.length > 0 && !selectedClientId) {
+            setSelectedClientId(data[0].client_id);
+          }
+        })
+        .catch((err) => console.error("Failed to fetch clients for admin:", err));
     }
-  }, [clientId, rangeType]);
+  }, []);
 
-  const fetchStats = async () => {
+  useEffect(() => {
+    if (selectedClientId) {
+      fetchStats(selectedClientId);
+    }
+  }, [selectedClientId, rangeType]);
+
+  const fetchStats = async (cid: string = selectedClientId) => {
+    if (!cid) return;
     if (rangeType === 'custom' && (!startDate || !endDate)) {
       return;
     }
     setLoading(true);
     setErrorMsg('');
     try {
-      const stats = await api.getDashboardStats(clientId, rangeType, startDate, endDate);
+      const stats = await api.getDashboardStats(cid, rangeType, startDate, endDate);
       setMetrics({
         total_emails: stats.total_emails,
         pending_emails: stats.pending_emails,
@@ -78,8 +93,8 @@ export default function Dashboard() {
   };
 
   const handleApplyCustomRange = () => {
-    if (startDate && endDate) {
-      fetchStats();
+    if (startDate && endDate && selectedClientId) {
+      fetchStats(selectedClientId);
     }
   };
 
@@ -172,9 +187,27 @@ export default function Dashboard() {
           <h2 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">Overview</h2>
           <p className="text-muted-foreground mt-1">Real-time insights of your email automation system.</p>
         </div>
-        <button onClick={fetchStats} className="flex self-start sm:self-auto items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 transition-all">
-          <RefreshCw className="w-3.5 h-3.5" /> Refresh metrics
-        </button>
+        <div className="flex flex-wrap items-center gap-3 self-start sm:self-auto">
+          {user?.role === 'admin' && clients.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground font-semibold">Client:</span>
+              <select
+                value={selectedClientId}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+              >
+                {clients.map((c) => (
+                  <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
+                    {c.client_id} ({c.email})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <button onClick={() => fetchStats(selectedClientId)} className="flex self-start sm:self-auto items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 transition-all">
+            <RefreshCw className="w-3.5 h-3.5" /> Refresh metrics
+          </button>
+        </div>
       </div>
 
       {/* Date Filter Panel */}

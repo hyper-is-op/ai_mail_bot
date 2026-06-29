@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { Loader2, UserPlus, CheckCircle, XCircle, ShieldCheck, Settings2, DollarSign, Clock } from 'lucide-react';
+import { Loader2, UserPlus, CheckCircle, XCircle, ShieldCheck, Settings2, DollarSign, Clock, Lock } from 'lucide-react';
 
 const CALLER_FUNCTIONS = [
     'detect_intent_llm', 'generate_reply_llm', 'design_payload',
@@ -12,7 +12,7 @@ const FEATURE_KEYS = [
     ['feature_ticket_creation', 'Ticket Creation'],
     ['feature_auto_send', 'Auto-Send'],
     ['feature_rag', 'RAG Knowledge Lookup'],
-    ['feature_order_tracking', 'Order/Ticket Tracking'],
+    ['feature_order_tracking', 'Tools Intigration'],
     ['feature_manual_reply', 'Manual Reply'],
 ] as const;
 
@@ -93,11 +93,28 @@ export default function AdminClients() {
                         feature_order_tracking: true, feature_manual_reply: true,
                         cost_multiplier: 1.0, monthly_budget_usd: '',
                         models: modelMap,
+                        new_password: '',
                     }
                 }));
             } catch {
-                setManageState(prev => ({ ...prev, [clientId]: { models: {} } }));
+                setManageState(prev => ({ ...prev, [clientId]: { models: {}, new_password: '' } }));
             }
+        }
+    };
+
+    const handleAdminResetPassword = async (clientId: string) => {
+        const s = manageState[clientId];
+        const newPass = s?.new_password || '';
+        if (!newPass || newPass.length < 8) {
+            setMsg({ type: 'error', text: 'Password must be at least 8 characters long.' });
+            return;
+        }
+        try {
+            await api.adminResetClientPassword({ client_id: clientId, new_password: newPass });
+            setMsg({ type: 'success', text: `Login password for ${clientId} updated successfully.` });
+            setManageState(prev => ({ ...prev, [clientId]: { ...prev[clientId], new_password: '' } }));
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
         }
     };
 
@@ -221,8 +238,8 @@ export default function AdminClients() {
                                     <div className="flex items-center gap-3">
                                         {budget && budget.status !== 'unlimited' && (
                                             <span className={`text-xs px-2 py-1 rounded-full border ${budget.status === 'exceeded' ? 'text-rose-400 border-rose-500/30 bg-rose-500/10' :
-                                                    budget.status === 'warning' ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' :
-                                                        'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
+                                                budget.status === 'warning' ? 'text-amber-400 border-amber-500/30 bg-amber-500/10' :
+                                                    'text-emerald-400 border-emerald-500/30 bg-emerald-500/10'
                                                 }`}>
                                                 ${budget.spent} / ${budget.budget} ({budget.percent}%)
                                             </span>
@@ -294,6 +311,28 @@ export default function AdminClients() {
                                                 </div>
                                                 <button onClick={() => saveCost(acc.client_id)} className="text-xs bg-primary/20 text-primary px-3 py-2 rounded-lg">
                                                     Save
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Reset Login Password */}
+                                        <div className="pt-2 border-t border-white/10">
+                                            <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> RESET LOGIN PASSWORD</p>
+                                            <div className="flex gap-2 items-end">
+                                                <div className="flex-1 max-w-xs">
+                                                    <input 
+                                                        type="password" 
+                                                        placeholder="New password (min 8 chars)" 
+                                                        value={s.new_password || ''}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], new_password: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full block text-white placeholder-white/30" 
+                                                    />
+                                                </div>
+                                                <button 
+                                                    onClick={() => handleAdminResetPassword(acc.client_id)} 
+                                                    className="text-xs bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 px-3 py-2 rounded-lg transition-all"
+                                                >
+                                                    Reset Password
                                                 </button>
                                             </div>
                                         </div>

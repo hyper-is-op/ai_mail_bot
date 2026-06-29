@@ -8,18 +8,33 @@ export default function Tickets() {
   const [searchQuery, setSearchQuery] = useState('');
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const clientId = user?.client_id || '';
+  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [clients, setClients] = useState<any[]>([]);
 
   useEffect(() => {
-    if (clientId) {
-      fetchTickets();
+    if (user?.role === 'admin') {
+      api.getAllEmailAccounts()
+        .then((data) => {
+          setClients(data);
+          if (data.length > 0 && !selectedClientId) {
+            setSelectedClientId(data[0].client_id);
+          }
+        })
+        .catch((err) => console.error("Failed to fetch clients for admin tickets:", err));
     }
-  }, [clientId]);
+  }, []);
 
-  const fetchTickets = async () => {
+  useEffect(() => {
+    if (selectedClientId) {
+      fetchTickets(selectedClientId);
+    }
+  }, [selectedClientId]);
+
+  const fetchTickets = async (cid = selectedClientId) => {
+    if (!cid) return;
     setLoading(true);
     try {
-      const data = await api.getTickets(clientId);
+      const data = await api.getTickets(cid);
       setTicketsList(data);
     } catch (err) {
       console.error("Failed to fetch support tickets:", err);
@@ -49,12 +64,28 @@ export default function Tickets() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-4">
         <div>
           <h2 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">Reference Status</h2>
           <p className="text-muted-foreground mt-1">Manage AI tracked reference statuses and automated replies.</p>
         </div>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap items-center gap-3 self-start sm:self-auto">
+          {user?.role === 'admin' && clients.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground font-semibold">Client:</span>
+              <select
+                value={selectedClientId}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+              >
+                {clients.map((c) => (
+                  <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
+                    {c.client_id} ({c.email})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
             <input 
@@ -62,7 +93,7 @@ export default function Tickets() {
               placeholder="Search reference IDs..." 
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="bg-black/10 dark:bg-white/5 border border-white/10 rounded-lg pl-9 pr-4 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-primary w-[250px]" 
+              className="bg-black/10 dark:bg-white/5 border border-white/10 rounded-lg pl-9 pr-4 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-primary w-[200px]" 
             />
           </div>
           <button className="flex items-center gap-2 px-4 py-2 bg-black/10 dark:bg-white/5 border border-white/10 rounded-lg hover:bg-white/10 transition-colors text-sm font-medium">

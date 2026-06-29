@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Mail, Lock, ArrowRight, Loader2, AlertCircle } from 'lucide-react';
+import { Mail, Lock, ArrowRight, Loader2, AlertCircle, CheckCircle2, ArrowLeft } from 'lucide-react';
 import { useNavigate, Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 
@@ -9,6 +9,11 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [isForgotMode, setIsForgotMode] = useState(false);
+  const [forgotStep, setForgotStep] = useState(1); // 1 = Send OTP, 2 = Enter OTP & Set Password
+  const [otp, setOtp] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -27,6 +32,52 @@ export default function Login() {
     }
   };
 
+  const handleSendOtpSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setSuccessMessage('');
+    try {
+      const res = await api.forgotPasswordSendOtp(email);
+      if (res.success) {
+        setSuccessMessage(res.message || 'A verification code has been sent.');
+        setForgotStep(2);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to send verification code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
+    setSuccessMessage('');
+    try {
+      const res = await api.forgotPasswordReset({
+        email,
+        otp,
+        new_password: newPassword
+      });
+      if (res.success) {
+        setSuccessMessage(res.message || 'Password reset successful!');
+        setTimeout(() => {
+          setIsForgotMode(false);
+          setForgotStep(1);
+          setOtp('');
+          setNewPassword('');
+          setSuccessMessage('');
+        }, 3000);
+      }
+    } catch (err: any) {
+      setError(err.message || 'Failed to reset password');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen w-full flex bg-background">
       {/* Left side - Login Form */}
@@ -36,53 +87,156 @@ export default function Login() {
             <div className="flex items-center mb-6">
               <img src="https://stg.c-zentrix.com/images/C-Zentrix-logo-white.png" alt="C-Zentrix Logo" className="h-10 object-contain dark:invert-0 invert" />
             </div>
-            <h1 className="text-3xl font-bold tracking-tight">Welcome back</h1>
-            <p className="text-muted-foreground mt-2 text-sm">Sign in to your Mail AI Automation dashboard.</p>
+            <h1 className="text-3xl font-bold tracking-tight">
+              {isForgotMode ? 'Reset password' : 'Welcome back'}
+            </h1>
+            <p className="text-muted-foreground mt-2 text-sm">
+              {isForgotMode 
+                ? (forgotStep === 1 ? 'Enter your email address to receive a verification code.' : 'Enter the code and set your new password.') 
+                : 'Sign in to your Mail AI Automation dashboard.'}
+            </p>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-4">
-            {error && (
-              <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-500 text-sm rounded-lg flex items-center gap-2">
-                <AlertCircle className="w-4 h-4" /> {error}
-              </div>
-            )}
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Email address</label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <input
-                  type="email"
-                  required
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-                  placeholder="admin@mailai.com"
-                />
-              </div>
-            </div>
+          {isForgotMode ? (
+            <div className="space-y-4">
+              {error && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-500 text-sm rounded-lg flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4" /> {error}
+                </div>
+              )}
+              {successMessage && (
+                <div className="p-3 bg-green-500/10 border border-green-500/20 text-green-500 text-sm rounded-lg flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4" /> {successMessage}
+                </div>
+              )}
 
-            <div className="space-y-2">
-              <div className="flex justify-between items-center">
-                <label className="text-sm font-medium">Password</label>
-                <a href="#" className="text-xs text-primary hover:underline">Forgot password?</a>
-              </div>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <input
-                  type="password"
-                  required
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
-                  placeholder="••••••••"
-                />
-              </div>
-            </div>
+              {forgotStep === 1 ? (
+                <form onSubmit={handleSendOtpSubmit} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Email address</label>
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <input
+                        type="email"
+                        required
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                        placeholder="admin@mailai.com"
+                      />
+                    </div>
+                  </div>
 
-            <button disabled={loading} type="submit" className="w-full bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg py-2.5 text-sm font-medium transition-all shadow-lg shadow-primary/25 flex items-center justify-center gap-2 mt-6">
-              {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Sign In <ArrowRight className="w-4 h-4" /></>}
-            </button>
-          </form>
+                  <button disabled={loading} type="submit" className="w-full bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg py-2.5 text-sm font-medium transition-all shadow-lg shadow-primary/25 flex items-center justify-center gap-2 mt-6">
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Send Verification Code <ArrowRight className="w-4 h-4" /></>}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleResetPasswordSubmit} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">Verification Code (OTP)</label>
+                    <input
+                      type="text"
+                      required
+                      maxLength={6}
+                      value={otp}
+                      onChange={(e) => setOtp(e.target.value)}
+                      className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all font-mono text-center tracking-widest text-lg"
+                      placeholder="000000"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium">New Password</label>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                      <input
+                        type="password"
+                        required
+                        minLength={8}
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                        placeholder="••••••••"
+                      />
+                    </div>
+                  </div>
+
+                  <button disabled={loading} type="submit" className="w-full bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg py-2.5 text-sm font-medium transition-all shadow-lg shadow-primary/25 flex items-center justify-center gap-2 mt-6">
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Reset Password <ArrowRight className="w-4 h-4" /></>}
+                  </button>
+                </form>
+              )}
+
+              <button 
+                type="button"
+                onClick={() => {
+                  setIsForgotMode(false);
+                  setForgotStep(1);
+                  setError('');
+                  setSuccessMessage('');
+                }}
+                className="w-full bg-transparent hover:bg-white/5 text-muted-foreground hover:text-white rounded-lg py-2 text-xs transition-all flex items-center justify-center gap-1.5 mt-2"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" /> Back to login
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleLogin} className="space-y-4">
+              {error && (
+                <div className="p-3 bg-rose-500/10 border border-rose-500/20 text-rose-500 text-sm rounded-lg flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4" /> {error}
+                </div>
+              )}
+              <div className="space-y-2">
+                <label className="text-sm font-medium">Email address</label>
+                <div className="relative">
+                  <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    placeholder="admin@mailai.com"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between items-center">
+                  <label className="text-sm font-medium">Password</label>
+                  <button 
+                    type="button"
+                    onClick={() => {
+                      setIsForgotMode(true);
+                      setForgotStep(1);
+                      setError('');
+                      setSuccessMessage('');
+                    }}
+                    className="text-xs text-primary hover:underline bg-transparent border-none p-0 cursor-pointer"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <input
+                    type="password"
+                    required
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="w-full bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-lg pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all"
+                    placeholder="••••••••"
+                  />
+                </div>
+              </div>
+
+              <button disabled={loading} type="submit" className="w-full bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg py-2.5 text-sm font-medium transition-all shadow-lg shadow-primary/25 flex items-center justify-center gap-2 mt-6">
+                {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Sign In <ArrowRight className="w-4 h-4" /></>}
+              </button>
+            </form>
+          )}
 
           <p className="text-center text-sm text-muted-foreground mt-4">
             Don't have an account? <Link to="/register" className="text-primary hover:underline font-medium">Register here</Link>

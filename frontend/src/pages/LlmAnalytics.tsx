@@ -25,14 +25,29 @@ export default function LlmAnalytics() {
   const [filterCaller, setFilterCaller] = useState('All');
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const clientId = user?.client_id || '';
+  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [clients, setClients] = useState<any[]>([]);
 
-  const fetchMetrics = async (isRefresh = false) => {
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      api.getAllEmailAccounts()
+        .then((data) => {
+          setClients(data);
+          if (data.length > 0 && !selectedClientId) {
+            setSelectedClientId(data[0].client_id);
+          }
+        })
+        .catch((err) => console.error("Failed to fetch clients for admin LLM analytics:", err));
+    }
+  }, []);
+
+  const fetchMetrics = async (isRefresh = false, cid = selectedClientId) => {
+    if (!cid) return;
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
     
     try {
-      const data = await api.getLlmMetrics(clientId);
+      const data = await api.getLlmMetrics(cid);
       setMetrics(data);
     } catch (err) {
       console.error("Failed to load LLM metrics:", err);
@@ -43,10 +58,10 @@ export default function LlmAnalytics() {
   };
 
   useEffect(() => {
-    if (clientId) {
-      fetchMetrics();
+    if (selectedClientId) {
+      fetchMetrics(false, selectedClientId);
     }
-  }, [clientId]);
+  }, [selectedClientId]);
 
   if (loading) {
     return (
@@ -83,19 +98,37 @@ export default function LlmAnalytics() {
   return (
     <div className="space-y-6 pb-12">
       {/* Title */}
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-4">
         <div>
           <h2 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">LLM Cost & Telemetry Analytics</h2>
           <p className="text-muted-foreground mt-1">Real-time token logging, cost calculations, and API response speed indicators.</p>
         </div>
-        <button 
-          onClick={() => fetchMetrics(true)} 
-          disabled={refreshing}
-          className="bg-white/5 border border-white/10 hover:bg-white/10 text-white rounded-xl px-4 py-2 text-sm font-semibold transition-all flex items-center gap-2"
-        >
-          <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
-          Sync Metrics
-        </button>
+        <div className="flex flex-wrap items-center gap-3 self-start sm:self-auto">
+          {user?.role === 'admin' && clients.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground font-semibold">Client:</span>
+              <select
+                value={selectedClientId}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+              >
+                {clients.map((c) => (
+                  <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
+                    {c.client_id} ({c.email})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <button 
+            onClick={() => fetchMetrics(true, selectedClientId)} 
+            disabled={refreshing}
+            className="bg-white/5 border border-white/10 hover:bg-white/10 text-white rounded-xl px-4 py-2 text-sm font-semibold transition-all flex items-center gap-2"
+          >
+            <RefreshCw className={cn("w-4 h-4", refreshing && "animate-spin")} />
+            Sync Metrics
+          </button>
+        </div>
       </div>
 
       {/* KPI Cards Grid */}

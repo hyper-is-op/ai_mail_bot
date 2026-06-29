@@ -50,10 +50,21 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
         try:
             logger.info(f"📡 [Client {client_id}] Connecting to Gmail IMAP...")
             mail = imaplib.IMAP4_SSL("imap.gmail.com")
-            mail.login(email_user, email_pass)
+            try:
+                mail.login(email_user, email_pass)
+            except imaplib.IMAP4.error as auth_err:
+                error_str = str(auth_err)
+                if 'AUTHENTICATIONFAILED' in error_str or 'Invalid credentials' in error_str:
+                    logger.error(
+                        f"❌ [Client {client_id}] Authentication permanently failed for {email_user}. "
+                        f"Update credentials in UI to restart listener."
+                    )
+                    stop_event.set()
+                    return
+                raise
             mail.select("inbox")
             logger.info(f"✅ [Client {client_id}] Connected and authenticated ({email_user})")
-
+            
             while not stop_event.is_set():
                 try:
                     mail.noop()

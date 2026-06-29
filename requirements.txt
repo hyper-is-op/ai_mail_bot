@@ -17,3 +17,4 @@ fastmcp
 langchain-mcp-adapters
 langgraph
 langchain-openai
+dbutils

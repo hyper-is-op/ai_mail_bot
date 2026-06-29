@@ -135,6 +135,42 @@ def process_email_task(self, data):
     try:
         db = get_db()
         cursor = db.cursor()
+        # ==============================
+# Idempotency Check
+# ==============================
+        task_id = self.request.id
+
+        cursor.execute("""
+    CREATE TABLE IF NOT EXISTS celery_task_log (
+        task_id     VARCHAR(255) NOT NULL PRIMARY KEY,
+        client_id   VARCHAR(50)  NOT NULL,
+        from_email  VARCHAR(255) NOT NULL,
+        status      VARCHAR(50)  NOT NULL DEFAULT 'processing',
+        created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+        updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+""")
+
+        cursor.execute(
+    "SELECT status FROM celery_task_log WHERE task_id = %s",
+    (task_id,)
+)
+        existing = cursor.fetchone()
+
+        if existing:
+            existing_status = existing[0]
+            if existing_status == "completed":
+                logger.info(f"⏭ Task {task_id} already completed — skipping to prevent duplicate")
+                db.close()
+                return
+            elif existing_status == "processing":
+                logger.warning(f"🔄 Task {task_id} is a retry — continuing carefully")
+        else:
+            cursor.execute(
+        "INSERT INTO celery_task_log (task_id, client_id, from_email, status) VALUES (%s, %s, %s, 'processing')",
+        (task_id, data.get("client_id", "SYSTEM"), data.get("from_email", ""))
+    )
+            db.commit()
 
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS email_customers (
@@ -805,26 +841,27 @@ Customer Name:       {ticket_info.get('person', {}).get('person_name', 'N/A')}
         db_log_id = cursor.lastrowid
         generate_and_save_summary(db, cursor, db_log_id, data, chroma_context)
 
+        cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s",(task_id,))
         db.commit()
         db.close()
         db = None
         logger.info("✅ Task completed successfully")
 
         # Publish real-time notification to Redis
-        try:
-            import os
-            import redis
-            redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
-            if not redis_url:
-                redis_url = "redis://localhost:6379/0"
-            r = redis.from_url(redis_url)
-            try:
-                r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": client_id}))
-                logger.info("📡 Published real-time update to 'email_updates' channel")
-            finally:
-                r.close()
-        except Exception as pub_err:
-            logger.warning(f"⚠️ Failed to publish real-time notification: {pub_err}")
+        # try:
+        #     import os
+        #     import redis
+        #     redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
+        #     if not redis_url:
+        #         redis_url = "redis://localhost:6379/0"
+        #     r = redis.from_url(redis_url)
+        #     try:
+        #         r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": client_id}))
+        #         logger.info("📡 Published real-time update to 'email_updates' channel")
+        #     finally:
+        #         r.close()
+        # except Exception as pub_err:
+        #     logger.warning(f"⚠️ Failed to publish real-time notification: {pub_err}")
 
     except Exception as e:
         logger.error(f"❌ Task failed: {e}", exc_info=True)
@@ -835,6 +872,18 @@ Customer Name:       {ticket_info.get('person', {}).get('person_name', 'N/A')}
                 db.close()
             except Exception:
                 pass
+    try:
+        import os
+        import redis
+        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0") or "redis://localhost:6379/0"
+        r = redis.from_url(redis_url)
+        try:
+            r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": client_id}))
+            logger.info("📡 Published real-time update to 'email_updates' channel")
+        finally:
+            r.close()
+    except Exception as pub_err:
+        logger.warning(f"⚠️ Failed to publish real-time notification: {pub_err}")
 
 
 # ==============================

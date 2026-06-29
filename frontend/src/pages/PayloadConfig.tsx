@@ -17,17 +17,32 @@ export default function PayloadConfig() {
   const [hasExistingGet, setHasExistingGet] = useState(false);
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const clientId = user?.client_id || '';
+  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [clients, setClients] = useState<any[]>([]);
 
   useEffect(() => {
-    if (clientId) {
-      loadPayloadConfigs();
+    if (user?.role === 'admin') {
+      api.getAllEmailAccounts()
+        .then((data) => {
+          setClients(data);
+          if (data.length > 0 && !selectedClientId) {
+            setSelectedClientId(data[0].client_id);
+          }
+        })
+        .catch((err) => console.error("Failed to fetch clients for admin webhook payloads:", err));
     }
-  }, [clientId]);
+  }, []);
 
-  const loadPayloadConfigs = async () => {
+  useEffect(() => {
+    if (selectedClientId) {
+      loadPayloadConfigs(selectedClientId);
+    }
+  }, [selectedClientId]);
+
+  const loadPayloadConfigs = async (cid = selectedClientId) => {
+    if (!cid) return;
     try {
-      const createRes = await api.getCreatePayload(clientId);
+      const createRes = await api.getCreatePayload(cid);
       if (createRes && createRes.url) {
         setCreatePayload({
           url: createRes.url,
@@ -45,7 +60,7 @@ export default function PayloadConfig() {
     }
 
     try {
-      const getRes = await api.getGetPayload(clientId);
+      const getRes = await api.getGetPayload(cid);
       if (getRes && getRes.url) {
         setGetPayload({
           url: getRes.url,
@@ -70,7 +85,7 @@ export default function PayloadConfig() {
     try {
       const parsedPayload = JSON.parse(createPayload.paylod);
       await api.insertCreatePayload({
-        client_id: clientId,
+        client_id: selectedClientId,
         url: createPayload.url,
         paylod: parsedPayload
       });
@@ -91,7 +106,7 @@ export default function PayloadConfig() {
     try {
       const parsedPayload = JSON.parse(getPayload.paylod);
       await api.insertGetPayload({
-        client_id: clientId,
+        client_id: selectedClientId,
         url: getPayload.url,
         paylod: parsedPayload
       });
@@ -107,11 +122,27 @@ export default function PayloadConfig() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-4">
         <div>
           <h2 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">Payload Configurations</h2>
           <p className="text-muted-foreground mt-1">Configure Webhook endpoints and JSON templates dynamically used by the Mail AI agent.</p>
         </div>
+        {user?.role === 'admin' && clients.length > 0 && (
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <span className="text-xs text-muted-foreground font-semibold">Client:</span>
+            <select
+              value={selectedClientId}
+              onChange={(e) => setSelectedClientId(e.target.value)}
+              className="bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+            >
+              {clients.map((c) => (
+                <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
+                  {c.client_id} ({c.email})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {msg.text && (

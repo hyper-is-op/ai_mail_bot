@@ -42,13 +42,15 @@ export default function Inbox() {
   const [replyLoading, setReplyLoading] = useState(false);
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const clientId = user?.client_id || '';
+  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [clients, setClients] = useState<any[]>([]);
 
   // Fetch helper
-  const fetchEmails = async (silent = false) => {
+  const fetchEmails = async (silent = false, cid = selectedClientId) => {
+    if (!cid) return;
     if (!silent) setLoading(true);
     try {
-      const data = await api.getEmails(clientId);
+      const data = await api.getEmails(cid);
       setEmailsList(data || []);
     } catch (err: any) {
       console.error("Failed to load email logs:", err);
@@ -57,26 +59,40 @@ export default function Inbox() {
     }
   };
 
-  const fetchPausedEmails = async () => {
+  const fetchPausedEmails = async (cid = selectedClientId) => {
+    if (!cid) return;
     try {
-      const data = await api.getPausedEmails(clientId);
+      const data = await api.getPausedEmails(cid);
       setPausedEmails(data || []);
     } catch (err: any) {
       console.error("Failed to load paused emails:", err);
     }
   };
 
+  useEffect(() => {
+    if (user?.role === 'admin') {
+      api.getAllEmailAccounts()
+        .then((data) => {
+          setClients(data);
+          if (data.length > 0 && !selectedClientId) {
+            setSelectedClientId(data[0].client_id);
+          }
+        })
+        .catch((err) => console.error("Failed to fetch clients for admin inbox:", err));
+    }
+  }, []);
+
   // Initial Load
   useEffect(() => {
-    if (clientId) {
-      fetchEmails();
-      fetchPausedEmails();
+    if (selectedClientId) {
+      fetchEmails(false, selectedClientId);
+      fetchPausedEmails(selectedClientId);
     }
-  }, [clientId]);
+  }, [selectedClientId]);
 
   // WebSocket for Real-time auto-updates
   useEffect(() => {
-    if (!clientId) return;
+    if (!selectedClientId) return;
 
     const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProto}//${window.location.host}/ws`;
@@ -94,9 +110,9 @@ export default function Inbox() {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          if (message.type === 'NEW_EMAIL' && message.client_id === clientId) {
+          if (message.type === 'NEW_EMAIL' && message.client_id === selectedClientId) {
             console.log("📡 New email processed. Refreshing inbox silently...");
-            fetchEmails(true);
+            fetchEmails(true, selectedClientId);
           }
         } catch (e) {
           console.warn("⚠️ Ignored non-JSON websocket frame:", event.data);
@@ -120,7 +136,7 @@ export default function Inbox() {
       if (ws) ws.close();
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
     };
-  }, [clientId]);
+  }, [selectedClientId]);
 
   // Normalize subject to strip Re/Fwd prefixes for Gmail-style grouping
   const normalizeSubject = (subj: string) => {
@@ -243,7 +259,7 @@ export default function Inbox() {
   };
 
   const handleCreateTicket = async (email: any) => {
-    if (!clientId || !email) {
+    if (!selectedClientId || !email) {
       setToastMsg('Error: No active email or client session found');
       setTimeout(() => setToastMsg(''), 5000);
       return;
@@ -252,14 +268,14 @@ export default function Inbox() {
     setToastMsg('');
     try {
       const res = await api.createTicket({
-        client_id: clientId,
+        client_id: selectedClientId,
         mail_id: email.mailId,
         subject: email.subject,
         body: email.preview,
         status: 'Ticket_Generated'
       });
       setToastMsg(`Ticket Generated! ID: ${res.ticket_id}`);
-      fetchEmails(true); // reload silently
+      fetchEmails(true, selectedClientId); // reload silently
       setTimeout(() => setToastMsg(''), 5000);
     } catch (err: any) {
       setToastMsg(`Error: ${err.message}`);
@@ -273,11 +289,11 @@ export default function Inbox() {
     const isPaused = pausedEmails.includes(email);
     try {
       if (isPaused) {
-        await api.unpauseEmail({ client_id: clientId, email });
+        await api.unpauseEmail({ client_id: selectedClientId, email });
         setPausedEmails(prev => prev.filter(e => e !== email));
         setToastMsg(`Unpaused auto-replies for ${email}`);
       } else {
-        await api.pauseEmail({ client_id: clientId, email });
+        await api.pauseEmail({ client_id: selectedClientId, email });
         setPausedEmails(prev => [...prev, email]);
         setToastMsg(`Paused auto-replies for ${email}`);
       }
@@ -293,7 +309,7 @@ export default function Inbox() {
     setReplyLoading(true);
     try {
       await api.sendManualReply({
-        client_id: clientId,
+        client_id: selectedClientId,
         to_email: selectedThread.sender,
         subject: `Re: ${selectedThread.subject}`,
         body: selectedThread.latest_email.body || selectedThread.latest_email.preview || "",
@@ -303,7 +319,7 @@ export default function Inbox() {
       setReplyText('');
       setIsReplying(false);
       setTimeout(() => setToastMsg(''), 3000);
-      fetchEmails(true);
+      fetchEmails(true, selectedClientId);
     } catch (err: any) {
       setToastMsg(`Error sending reply: ${err.message}`);
       setTimeout(() => setToastMsg(''), 5000);
@@ -326,18 +342,36 @@ export default function Inbox() {
       {/* Thread List Sidebar */}
       <div className="w-1/3 glass-panel rounded-2xl flex flex-col overflow-hidden border border-white/10">
         <div className="p-4 border-b border-white/10">
-          <div className="flex justify-between items-center mb-4">
-            <div className="flex items-center gap-2">
-              <MessageSquare className="w-5 h-5 text-primary" />
-              <h2 className="text-xl font-bold text-zinc-900 dark:text-white">Conversations</h2>
+          <div className="flex flex-col gap-2 mb-4">
+            <div className="flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-primary" />
+                <h2 className="text-xl font-bold text-zinc-900 dark:text-white">Conversations</h2>
+              </div>
+              <button 
+                onClick={() => fetchEmails(false, selectedClientId)} 
+                className="p-1.5 hover:bg-white/10 rounded-lg text-zinc-400 hover:text-white transition-colors" 
+                title="Sync Inbox"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </button>
             </div>
-            <button 
-              onClick={() => fetchEmails()} 
-              className="p-1.5 hover:bg-white/10 rounded-lg text-zinc-400 hover:text-white transition-colors" 
-              title="Sync Inbox"
-            >
-              <RefreshCw className="w-4 h-4 animate-pulse" />
-            </button>
+            {user?.role === 'admin' && clients.length > 0 && (
+              <div className="flex items-center gap-2 bg-white/5 border border-white/5 rounded-xl px-3 py-1.5">
+                <span className="text-xs text-muted-foreground font-semibold">Client:</span>
+                <select
+                  value={selectedClientId}
+                  onChange={(e) => setSelectedClientId(e.target.value)}
+                  className="bg-transparent text-xs text-foreground focus:outline-none cursor-pointer flex-1"
+                >
+                  {clients.map((c) => (
+                    <option key={c.client_id} value={c.client_id} className="bg-zinc-950 text-foreground">
+                      {c.client_id} ({c.email})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </div>
           <div className="flex gap-2 mb-4">
             <div className="relative flex-1">

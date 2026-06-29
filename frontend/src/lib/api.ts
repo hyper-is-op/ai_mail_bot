@@ -43,6 +43,36 @@ export const api = {
     if (!res.ok) throw new Error(result.detail || 'Login failed');
     return result;
   },
+  async forgotPasswordSendOtp(email: string) {
+    const res = await fetch(`${BASE_URL}/forgot-password/send-otp`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email }),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.detail || 'Request failed');
+    return result;
+  },
+  async forgotPasswordReset(data: { email: string; otp: string; new_password: string }) {
+    const res = await fetch(`${BASE_URL}/forgot-password/reset`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.detail || 'Reset failed');
+    return result;
+  },
+  async adminResetClientPassword(data: { client_id: string; new_password: string }) {
+    const res = await fetch(`${BASE_URL}/admin/reset-client-password`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(data),
+    });
+    const result = await res.json();
+    if (!res.ok) throw new Error(result.detail || 'Reset failed');
+    return result;
+  },
   async logout() {
     await fetch(`${BASE_URL}/logout`, { method: 'POST', headers: authHeaders() });
   },

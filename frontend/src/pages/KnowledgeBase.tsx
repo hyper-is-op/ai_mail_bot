@@ -19,18 +19,33 @@ export default function KnowledgeBase() {
   const [sandboxLoading, setSandboxLoading] = useState(false);
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const clientId = user?.client_id || '';
+  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [clients, setClients] = useState<any[]>([]);
 
   useEffect(() => {
-    if (clientId) {
-      fetchDocuments();
+    if (user?.role === 'admin') {
+      api.getAllEmailAccounts()
+        .then((data) => {
+          setClients(data);
+          if (data.length > 0 && !selectedClientId) {
+            setSelectedClientId(data[0].client_id);
+          }
+        })
+        .catch((err) => console.error("Failed to fetch clients for admin knowledge base:", err));
     }
-  }, [clientId]);
+  }, []);
 
-  const fetchDocuments = async () => {
+  useEffect(() => {
+    if (selectedClientId) {
+      fetchDocuments(selectedClientId);
+    }
+  }, [selectedClientId]);
+
+  const fetchDocuments = async (cid = selectedClientId) => {
+    if (!cid) return;
     setFetchLoading(true);
     try {
-      const res = await api.getRagDocuments(clientId);
+      const res = await api.getRagDocuments(cid);
       setDocuments(res);
     } catch (err: any) {
       console.error(err);
@@ -50,17 +65,18 @@ export default function KnowledgeBase() {
     setMsg({ type: '', text: '' });
     try {
       await api.uploadRagData({
-        client_id: clientId,
+        client_id: selectedClientId,
         title: title.trim(),
         content: content.trim()
       });
       setMsg({ type: 'success', text: 'Knowledge base updated successfully!' });
       setTitle('');
       setContent('');
-      fetchDocuments();
+      fetchDocuments(selectedClientId);
     } catch (err: any) {
       setMsg({ type: 'error', text: err.message || 'Failed to upload knowledge base.' });
     } finally {
+      setUploadLoading(true); // Wait, this was setUploadLoading(false) originally! Let's be careful. Let's make sure it's false.
       setUploadLoading(false);
     }
   };
@@ -95,7 +111,7 @@ export default function KnowledgeBase() {
     setFileLoading(true);
     setMsg({ type: '', text: '' });
     try {
-      const res = await api.uploadRagFile(clientId, selectedFile);
+      const res = await api.uploadRagFile(selectedClientId, selectedFile);
       setMsg({ 
         type: 'success', 
         text: `Successfully parsed and loaded "${res.title}" into Vector Store!` 
@@ -103,7 +119,7 @@ export default function KnowledgeBase() {
       setSelectedFile(null);
       const fileInput = document.getElementById('rag-file-input') as HTMLInputElement;
       if (fileInput) fileInput.value = '';
-      fetchDocuments();
+      fetchDocuments(selectedClientId);
     } catch (err: any) {
       setMsg({ type: 'error', text: err.message || 'Failed to upload and parse file.' });
     } finally {
@@ -114,7 +130,7 @@ export default function KnowledgeBase() {
   const handleDelete = async (docId: string) => {
     if (!confirm('Are you sure you want to delete this knowledge document?')) return;
     try {
-      await api.deleteRagDocument(clientId, docId);
+      await api.deleteRagDocument(selectedClientId, docId);
       setDocuments(prev => prev.filter(doc => doc.id !== docId));
       setMsg({ type: 'success', text: 'Document deleted from knowledge base.' });
     } catch (err: any) {
@@ -130,7 +146,7 @@ export default function KnowledgeBase() {
     setSandboxResult([]);
     try {
       const res = await api.retrieveRag({
-        client_id: clientId,
+        client_id: selectedClientId,
         query: sandboxQuery.trim(),
         top_k: 3
       });
@@ -145,11 +161,27 @@ export default function KnowledgeBase() {
 
   return (
     <div className="space-y-6">
-      <div className="flex justify-between items-end">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-4">
         <div>
           <h2 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">RAG Knowledge Base</h2>
           <p className="text-muted-foreground mt-1">Upload and test custom business knowledge isolated for your AI agent.</p>
         </div>
+        {user?.role === 'admin' && clients.length > 0 && (
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <span className="text-xs text-muted-foreground font-semibold">Client:</span>
+            <select
+              value={selectedClientId}
+              onChange={(e) => setSelectedClientId(e.target.value)}
+              className="bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+            >
+              {clients.map((c) => (
+                <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
+                  {c.client_id} ({c.email})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {msg.text && (

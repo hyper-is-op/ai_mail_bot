@@ -47,15 +47,14 @@ interface SidebarProps {
   setMobileOpen: (open: boolean) => void;
 }
 
-// inside the component, before sidebarContent:
-const user = JSON.parse(localStorage.getItem('user') || '{}');
-const navigation = user?.role === 'admin'
-  ? [...baseNavigation, { name: 'Admin · Clients', href: '/admin/clients', icon: ShieldCheck }]
-  : baseNavigation;
-
 export default function Sidebar({ mobileOpen, setMobileOpen }: SidebarProps) {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+
+  const user = JSON.parse(localStorage.getItem('user') || '{}');
+  const navigation = user?.role === 'admin'
+    ? [...baseNavigation, { name: 'Admin · Clients', href: '/admin/clients', icon: ShieldCheck }]
+    : baseNavigation;
 
   const sidebarContent = (isMobile: boolean = false) => (
     <>

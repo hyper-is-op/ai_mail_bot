@@ -152,8 +152,35 @@ def ensure_paused_emails_table():
     except Exception as e:
         logger.warning(f"⚠️ Failed to ensure paused_emails table: {e}")
 
+# @asynccontextmanager
+# async def lifespan(app: FastAPI):
+#     await asyncio.to_thread(ensure_create_payload_table)
+#     await asyncio.to_thread(ensure_payload_get_ticket_table)
+#     await asyncio.to_thread(ensure_users_table)
+#     await asyncio.to_thread(preload_chroma_embeddings)
+#     await asyncio.to_thread(backfill_client_ids)
+#     await asyncio.to_thread(ensure_paused_emails_table)
+    
+#     listener_task = asyncio.create_task(redis_pubsub_listener(app))
+#     yield
+#     listener_task.cancel()
+#     try:
+#         await listener_task
+#     except asyncio.CancelledError:
+#         pass
+
+def _run_ensure_accounts_table():
+    from app.db import get_db_ctx
+    from app.email_credential import ensure_accounts_table_startup
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            ensure_accounts_table_startup(cursor)
+        db.commit()
+    logger.info("✅ email_accounts table ensured at startup")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await asyncio.to_thread(_run_ensure_accounts_table)
     await asyncio.to_thread(ensure_create_payload_table)
     await asyncio.to_thread(ensure_payload_get_ticket_table)
     await asyncio.to_thread(ensure_users_table)
@@ -201,6 +228,18 @@ class CreateAdminRequest(BaseModel):
 def create_admin(data: CreateAdminRequest, user: dict = Depends(require_admin())):
     from app.auth import register_admin_by_admin
     res = register_admin_by_admin(data.email, data.password, user["client_id"])
+    if not res["success"]:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+class AdminResetPasswordRequest(BaseModel):
+    client_id: str
+    new_password: str
+
+@app.post("/admin/reset-client-password")
+def reset_client_password_endpoint(data: AdminResetPasswordRequest, user: dict = Depends(require_admin())):
+    from app.auth import admin_reset_client_password
+    res = admin_reset_client_password(data.client_id, data.new_password)
     if not res["success"]:
         raise HTTPException(status_code=400, detail=res["error"])
     return res
@@ -256,6 +295,30 @@ def login(data: LoginRequest):
     res = login_user(data.email, data.password)
     if not res["success"]:
         raise HTTPException(status_code=401, detail=res["error"])
+    return res
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+class ResetPasswordWithOtpRequest(BaseModel):
+    email: EmailStr
+    otp: str
+    new_password: str
+
+@app.post("/forgot-password/send-otp", dependencies=[Depends(RedisRateLimiter(limit=5, window=60))])
+def send_otp_endpoint(data: ForgotPasswordRequest):
+    from app.auth import send_reset_otp
+    res = send_reset_otp(data.email)
+    if not res["success"]:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+@app.post("/forgot-password/reset", dependencies=[Depends(RedisRateLimiter(limit=5, window=60))])
+def reset_password_endpoint(data: ResetPasswordWithOtpRequest):
+    from app.auth import reset_password_with_otp
+    res = reset_password_with_otp(data.email, data.otp, data.new_password)
+    if not res["success"]:
+        raise HTTPException(status_code=400, detail=res["error"])
     return res
 
 
