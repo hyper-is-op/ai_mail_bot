@@ -314,17 +314,23 @@ def generate_reply_llm(
     """
 
     response_tone = "Formal"
+    agent_type_override = agent_type  # keep caller's value as fallback
+    department_name = None
+    company_name = None
     client_id = current_client_id.get()
     if client_id and client_id != "SYSTEM":
         try:
             from app.email_credential import get_email_account
             account = get_email_account(client_id)
-            if account and "response_tone" in account:
-                response_tone = account["response_tone"]
+            if account:
+                response_tone   = account.get("response_tone", "Formal")
+                agent_type_override = account.get("agent_type", agent_type)
+                department_name = account.get("department_name")
+                company_name    = account.get("company_name")
         except Exception as e:
-            logger.warning(f"Failed to fetch response tone: {e}")
+            logger.warning(f"Failed to fetch account profile: {e}")
 
-    system_prompt = AGENT_PROMPTS[agent_type] + f"\n\nCRITICAL: You MUST write your reply in a {response_tone} tone. Adhere strictly to this tone (e.g., if Formal, be polite and structured; if Friendly, be warm and personal; if Concise, write the shortest possible correct reply; if Technical, explain technical details clearly)."
+    system_prompt = AGENT_PROMPTS.get(agent_type_override, AGENT_PROMPTS["customer_support_agent"]) + f"\n\nCRITICAL: You MUST write your reply in a {response_tone} tone. Adhere strictly to this tone (e.g., if Formal, be polite and structured; if Friendly, be warm and personal; if Concise, write the shortest possible correct reply; if Technical, explain technical details clearly)."
 
     customer_name = (
         extract_name_from_email(from_email)
@@ -343,12 +349,15 @@ def generate_reply_llm(
     # ==========================================
     if is_ticket and ticket_id:
 
-        agent_team_map = {
-            "customer_support_agent":  "Customer Support Team",
-            "ecommerce_support_agent": "E-Commerce Support Team",
-            "crm_support_agent":       "CRM Support Team"
-        }
-        team_name = agent_team_map.get(agent_type, "Support Team")
+        if department_name:
+            team_name = department_name
+        else:
+            agent_team_map = {
+                "customer_support_agent":  "Customer Support Team",
+                "ecommerce_support_agent": "E-Commerce Support Team",
+                "crm_support_agent":       "CRM Support Team"
+            }
+            team_name = agent_team_map.get(agent_type_override, "Support Team")
 
         prompt = f"""
 Generate a ticket acknowledgment email body using ONLY the information provided in the context below.
@@ -416,8 +425,8 @@ Write the email reply.
 Email Ending
 Thanks & Regards,
 dont add name section example "[Your Name]"
-{agent_type} from this get some meaningful Team name like "logistics Support Agent", "Customer Support Agent", "CRM Support Agent" etc.
-Get the company name if possible from anywhere, like context,email etc.
+Department: {department_name or 'derive from agent_type'}
+Company: {company_name or 'derive from context/email'}
 """
 
     try:

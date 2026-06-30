@@ -3,7 +3,7 @@ from pydantic import BaseModel, EmailStr, field_validator
 from worker.tasks import process_email_task
 from app.email_credential import ensure_payload_get_ticket_table, insert_payload_get_ticket, save_email_account, get_email_account, create_email_record_db, ensure_create_payload_table, insert_create_payload_ticket, get_create_payload_table, get_payload_get_ticket_table
 from app.order_routes import get_order_by_id
-from app.auth import ensure_users_table, register_user, login_user
+from app.auth import ensure_users_table, login_user #,register_user
 from app.rate_limiter import RedisRateLimiter
 from enum import Enum
 from contextlib import asynccontextmanager
@@ -282,13 +282,13 @@ class LoginRequest(BaseModel):
     email: EmailStr
     password: str
 
-@app.post("/register", dependencies=[Depends(RedisRateLimiter(limit=5, window=60))])
-def register(data: RegisterRequest):
-    from app.auth import register_user
-    res = register_user(data.email, data.password)
-    if not res["success"]:
-        raise HTTPException(status_code=400, detail=res["error"])
-    return res
+# @app.post("/register", dependencies=[Depends(RedisRateLimiter(limit=5, window=60))])
+# def register(data: RegisterRequest):
+#     from app.auth import register_user
+#     res = register_user(data.email, data.password)
+#     if not res["success"]:
+#         raise HTTPException(status_code=400, detail=res["error"])
+#     return res
 
 @app.post("/login", dependencies=[Depends(RedisRateLimiter(limit=5, window=60))])
 def login(data: LoginRequest):
@@ -1039,48 +1039,48 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
         logger.error(f"❌ Failed to fetch LLM analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/approve-registration")
-def approve_registration_endpoint(data: ApproveRequest, user: dict = Depends(require_admin())):
-    email = data.email
-    try:
-        from app.db import get_db_ctx
-        with get_db_ctx() as db:
-            with db.cursor() as cursor:
-                cursor.execute("SELECT client_id, role, status FROM users WHERE email = %s", (email,))
-                user = cursor.fetchone()
-                if not user:
-                    raise HTTPException(status_code=404, detail="User not found")
+# @app.post("/approve-registration")
+# def approve_registration_endpoint(data: ApproveRequest, user: dict = Depends(require_admin())):
+#     email = data.email
+#     try:
+#         from app.db import get_db_ctx
+#         with get_db_ctx() as db:
+#             with db.cursor() as cursor:
+#                 cursor.execute("SELECT client_id, role, status FROM users WHERE email = %s", (email,))
+#                 user = cursor.fetchone()
+#                 if not user:
+#                     raise HTTPException(status_code=404, detail="User not found")
                 
-                client_id, role, status = user[0], user[1], user[2]
-                if status == 'approved':
-                    return {"status": "success", "message": "User is already approved"}
+#                 client_id, role, status = user[0], user[1], user[2]
+#                 if status == 'active':
+#                     return {"status": "success", "message": "User is already active"}
                 
-                cursor.execute("UPDATE users SET status = 'approved' WHERE email = %s", (email,))
-                db.commit()
+#                 cursor.execute("UPDATE users SET status = 'active' WHERE email = %s", (email,))
+#                 db.commit()
                 
-                try:
-                    cursor.execute("SELECT client_id FROM email_accounts LIMIT 1")
-                    row = cursor.fetchone()
-                    sender_client_id = row[0] if row else "CLI-7AE811F3"
+#                 try:
+#                     cursor.execute("SELECT client_id FROM email_accounts LIMIT 1")
+#                     row = cursor.fetchone()
+#                     sender_client_id = row[0] if row else "CLI-7AE811F3"
                     
-                    from app.mailer import send_email
-                    subject = "Your Mail AI Account is Approved!"
-                    body = (
-                        f"Hello,\n\n"
-                        f"Your registration request has been approved by the admin.\n"
-                        f"You can now log in to your account at:\n"
-                        f"http://172.16.3.215:1947/login\n\n"
-                        f"Best regards,\n"
-                        f"Mail AI Team"
-                    )
-                    send_email(sender_client_id, email, subject, body)
-                except Exception as mail_err:
-                    logger.error(f"Failed to send confirmation email: {mail_err}")
+#                     from app.mailer import send_email
+#                     subject = "Your Mail AI Account is Approved!"
+#                     body = (
+#                         f"Hello,\n\n"
+#                         f"Your registration request has been approved by the admin.\n"
+#                         f"You can now log in to your account at:\n"
+#                         f"http://172.16.3.215:1947/login\n\n"
+#                         f"Best regards,\n"
+#                         f"Mail AI Team"
+#                     )
+#                     send_email(sender_client_id, email, subject, body)
+#                 except Exception as mail_err:
+#                     logger.error(f"Failed to send confirmation email: {mail_err}")
                 
-                return {"status": "success", "message": f"User {email} has been approved successfully."}
-    except Exception as e:
-        logger.error(f"Approval error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+#                 return {"status": "success", "message": f"User {email} has been approved successfully."}
+#     except Exception as e:
+#         logger.error(f"Approval error: {e}")
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/logout")
@@ -1223,10 +1223,6 @@ def approve_pending_reply(data: ApprovePendingReplyRequest, user: dict = Depends
     return {"status": "success", "new_status": new_status}
 
 
-
-
-
-
 class ClientFeaturesRequest(BaseModel):
     client_id: str
     feature_ticket_creation: bool
@@ -1325,6 +1321,9 @@ class CreateClientRequest(BaseModel):
     imap_password: str
     score_threshold: int = 80
     response_tone: str = "Formal"
+    agent_type: str = "customer_support_agent"
+    department_name: str = None
+    company_name: str = None
 
     @field_validator("login_password")
     def login_pw_strength(cls, v):
@@ -1343,21 +1342,93 @@ def create_client(data: CreateClientRequest, user: dict = Depends(require_admin(
     from app.auth import create_client_atomic
     res = create_client_atomic(
         data.login_email, data.login_password, data.imap_email, data.imap_password,
-        data.score_threshold, data.response_tone
+        data.score_threshold, data.response_tone,
+        data.agent_type, data.department_name, data.company_name
     )
     if not res["success"]:
         raise HTTPException(status_code=400, detail=res["error"])
     return res
 
-@app.get("/admin/pending-users")
-def list_pending_users(user: dict = Depends(require_admin())):
-    from app.auth import get_pending_users
-    rows = get_pending_users()
-    return [
-        {"id": r["id"], "client_id": r["client_id"], "email": r["email"], "role": r["role"],
-         "created_at": r["created_at"].strftime("%b %d, %Y %H:%M") if r["created_at"] else ""}
-        for r in rows
-    ]
+# @app.get("/admin/pending-users")
+# def list_pending_users(user: dict = Depends(require_admin())):
+#     from app.auth import get_pending_users
+#     rows = get_pending_users()
+#     return [
+#         {"id": r["id"], "client_id": r["client_id"], "email": r["email"], "role": r["role"],
+#          "created_at": r["created_at"].strftime("%b %d, %Y %H:%M") if r["created_at"] else ""}
+#         for r in rows
+#     ]
 
 # also fix approve_registration_endpoint signature — was a GET with ?email= query param,
 # api.ts now POSTs a body. Update the existing route:
+
+
+@app.get("/admin/users")
+def admin_get_all_users(user: dict = Depends(require_admin())):
+    from app.auth import get_all_users
+    users = get_all_users()
+    return {"success": True, "users": users}
+
+
+
+class SetUserStatusRequest(BaseModel):
+    client_id: str
+    status: str  # 'active' or 'inactive'
+
+@app.post("/admin/set-user-status")
+def set_user_status_endpoint(data: SetUserStatusRequest, user: dict = Depends(require_admin())):
+    from app.auth import set_user_status
+    res = set_user_status(data.client_id, data.status)
+    if not res["success"]:
+        raise HTTPException(status_code=400, detail=res["error"])
+    return res
+
+
+class ClientProfileRequest(BaseModel):
+    client_id: str
+    agent_type: str = None
+    department_name: str = None
+    company_name: str = None
+
+@app.post("/admin/client-profile")
+def set_client_profile(data: ClientProfileRequest, user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("""
+                UPDATE email_accounts 
+                SET agent_type=%s, department_name=%s, company_name=%s
+                WHERE client_id=%s
+            """, (data.agent_type, data.department_name, data.company_name, data.client_id))
+            db.commit()
+    return {"success": True}
+
+
+class SelfProfileRequest(BaseModel):
+    client_id: str
+    department_name: str = None
+    company_name: str = None
+
+@app.post("/client/profile")
+def update_self_profile(data: SelfProfileRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("""
+                UPDATE email_accounts 
+                SET department_name=%s, company_name=%s
+                WHERE client_id=%s
+            """, (data.department_name, data.company_name, data.client_id))
+            db.commit()
+    return {"success": True}
+
+
+
+@app.delete("/admin/delete-client/{client_id}")
+def delete_client(client_id: str, user: dict = Depends(require_admin())):
+    from app.auth import delete_client_account
+    res = delete_client_account(client_id)
+    if not res["success"]:
+        raise HTTPException(status_code=404, detail=res["error"])
+    return res

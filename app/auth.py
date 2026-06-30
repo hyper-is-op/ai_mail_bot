@@ -17,7 +17,7 @@ def ensure_users_table():
                     email VARCHAR(255) UNIQUE NOT NULL,
                     password_hash VARCHAR(255) NOT NULL,
                     role ENUM('admin', 'client') DEFAULT 'client',
-                    status VARCHAR(20) DEFAULT 'pending',
+                    status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -29,42 +29,42 @@ def hash_password(password: str) -> str:
     # unsalted SHA256 — fine for now, flag separately if you want it hardened later
     return hashlib.sha256(password.encode()).hexdigest()
 
-def register_user(email, password):
-    """
-    Public self-registration. Role is ALWAYS 'client' — no caller-controlled role,
-    no magic email, no auto-approval. Every account starts pending.
-    """
-    ensure_users_table()
-    conn = get_db()
-    client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
-    try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT id FROM users WHERE email=%s", (email,))
-            if cursor.fetchone():
-                return {"success": False, "error": "Email already registered"}
+# def register_user(email, password):
+#     """
+#     Public self-registration. Role is ALWAYS 'client' — no caller-controlled role,
+#     no magic email, no auto-approval. Every account starts pending.
+#     """
+#     ensure_users_table()
+#     conn = get_db()
+#     client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
+#     try:
+#         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+#             cursor.execute("SELECT id FROM users WHERE email=%s", (email,))
+#             if cursor.fetchone():
+#                 return {"success": False, "error": "Email already registered"}
 
-            p_hash = hash_password(password)
-            cursor.execute(
-                "INSERT INTO users (client_id, email, password_hash, role, status) VALUES (%s, %s, %s, 'client', 'pending')",
-                (client_id, email, p_hash)
-            )
-        conn.commit()
+#             p_hash = hash_password(password)
+#             cursor.execute(
+#                 "INSERT INTO users (client_id, email, password_hash, role, status) VALUES (%s, %s, %s, 'client', 'pending')",
+#                 (client_id, email, p_hash)
+#             )
+#         conn.commit()
 
-        try:
-            admin_email = os.getenv("REGISTRATION_EMAIL", "monishrazammr@gmail.com")
-            from app.mailer import send_email
-            subject = "New User Registration Approval Request"
-            body = (
-                f"Hello Admin,\n\nA new user registered and is pending approval:\n"
-                f"Email: {email}\n\nApprove from the admin panel (login required).\n"
-            )
-            send_email("registration", admin_email, subject, body)
-        except Exception as mail_err:
-            print(f"Error sending approval request email: {mail_err}")
+#         try:
+#             admin_email = os.getenv("REGISTRATION_EMAIL", "monishrazammr@gmail.com")
+#             from app.mailer import send_email
+#             subject = "New User Registration Approval Request"
+#             body = (
+#                 f"Hello Admin,\n\nA new user registered and is pending approval:\n"
+#                 f"Email: {email}\n\nApprove from the admin panel (login required).\n"
+#             )
+#             send_email("registration", admin_email, subject, body)
+#         except Exception as mail_err:
+#             print(f"Error sending approval request email: {mail_err}")
 
-        return {"success": True, "message": "Registration successful. Pending admin approval.", "client_id": client_id, "status": "pending"}
-    finally:
-        conn.close()
+#         return {"success": True, "message": "Registration successful. Pending admin approval.", "client_id": client_id, "status": "pending"}
+#     finally:
+#         conn.close()
 
 def register_admin_by_admin(email, password, creator_client_id):
     """
@@ -81,7 +81,7 @@ def register_admin_by_admin(email, password, creator_client_id):
                 return {"success": False, "error": "Email already registered"}
             p_hash = hash_password(password)
             cursor.execute(
-                "INSERT INTO users (client_id, email, password_hash, role, status) VALUES (%s, %s, %s, 'admin', 'approved')",
+                "INSERT INTO users (client_id, email, password_hash, role, status) VALUES (%s, %s, %s, 'admin', 'active')",
                 (client_id, email, p_hash)
             )
         conn.commit()
@@ -98,8 +98,8 @@ def login_user(email, password):
             user = cursor.fetchone()
             if not user:
                 return {"success": False, "error": "Invalid email or password"}
-            if user.get("status") == "pending":
-                return {"success": False, "error": "Your registration is pending approval from the admin."}
+            if user.get("status") != "active":
+                return {"success": False, "error": "Your account is inactive. Contact admin."}
             if user["password_hash"] != hash_password(password):
                 return {"success": False, "error": "Invalid email or password"}
 
@@ -140,9 +140,11 @@ def destroy_session(token: str):
 
 
 def create_client_atomic(login_email, login_password, imap_email, imap_password,
-                          score_threshold=80, response_tone="Formal"):
+                          score_threshold=80, response_tone="Formal",
+                          agent_type="customer_support_agent",
+                          department_name=None, company_name=None):
     """
-    Admin-only: creates the login account (users, role=client, status=approved)
+    Admin-only: creates the login account (users, role=client, status=active)
     AND the IMAP/feature config (email_accounts) under one new client_id,
     in a single transaction. No separate approval step needed.
     """
@@ -157,13 +159,14 @@ def create_client_atomic(login_email, login_password, imap_email, imap_password,
 
             p_hash = hash_password(login_password)
             cursor.execute(
-                "INSERT INTO users (client_id, email, password_hash, role, status) VALUES (%s, %s, %s, 'client', 'approved')",
+                "INSERT INTO users (client_id, email, password_hash, role, status) VALUES (%s, %s, %s, 'client', 'active')",
                 (client_id, login_email, p_hash)
             )
             cursor.execute("""
-                INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, flag)
-                VALUES (%s, %s, %s, %s, %s, 1)
-            """, (client_id, imap_email, imap_password, score_threshold, response_tone))
+                INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type, department_name, company_name, flag)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
+            """, (client_id, imap_email, imap_password, score_threshold, response_tone,
+                agent_type, department_name, company_name)) 
         conn.commit()
 
         try:
@@ -186,15 +189,15 @@ def create_client_atomic(login_email, login_password, imap_email, imap_password,
         conn.close()
 
 
-def get_pending_users():
-    ensure_users_table()
-    conn = get_db()
-    try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT id, client_id, email, role, created_at FROM users WHERE status='pending' ORDER BY created_at ASC")
-            return cursor.fetchall()
-    finally:
-        conn.close()
+# def get_pending_users():
+#     ensure_users_table()
+#     conn = get_db()
+#     try:
+#         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+#             cursor.execute("SELECT id, client_id, email, role, created_at FROM users WHERE status='pending' ORDER BY created_at ASC")
+#             return cursor.fetchall()
+#     finally:
+#         conn.close()
 
 def send_reset_otp(email: str):
     ensure_users_table()
@@ -205,8 +208,8 @@ def send_reset_otp(email: str):
             user = cursor.fetchone()
             if not user:
                 return {"success": False, "error": "Email address not found"}
-            if user.get("status") == "pending":
-                return {"success": False, "error": "Your registration is still pending approval."}
+            if user.get("status") != "active":
+                return {"success": False, "error": "Your account is inactive. Contact admin."}
             
             import secrets
             otp = "".join(secrets.choice("0123456789") for _ in range(6))
@@ -270,5 +273,115 @@ def admin_reset_client_password(client_id: str, new_password: str):
             cursor.execute("UPDATE users SET password_hash=%s WHERE client_id=%s", (p_hash, client_id))
             conn.commit()
         return {"success": True, "message": "Client password updated successfully"}
+    finally:
+        conn.close()
+
+
+
+def set_user_status(client_id: str, status: str):
+    if status not in ('active', 'inactive'):
+        return {"success": False, "error": "Invalid status"}
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("UPDATE users SET status=%s WHERE client_id=%s", (status, client_id))
+        conn.commit()
+        return {"success": True}
+    finally:
+        conn.close()
+
+def get_all_users():
+    conn = get_db()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("""
+                SELECT id, client_id, email, role, status, created_at 
+                FROM users 
+                ORDER BY created_at DESC
+            """)
+            return cursor.fetchall()
+    finally:
+        conn.close()
+
+
+def delete_client_account(client_id: str) -> dict:
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            # verify client exists
+            cursor.execute("SELECT email FROM users WHERE client_id = %s", (client_id,))
+            row = cursor.fetchone()
+            if not row:
+                return {"success": False, "error": "Client not found"}
+            email = row[0]
+
+            # delete all MySQL data
+            cursor.execute("DELETE FROM celery_task_log WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM chat_history WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM client_model_config WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM create_payload_table WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM email_accounts WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM email_customers WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM email_logs WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM llm_logs WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM paused_emails WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM payload_get_table WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM ticket_record WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM users WHERE client_id = %s", (client_id,))
+
+        conn.commit()
+
+        # purge Redis
+        try:
+            import redis as _redis_lib
+
+            # DB 2 — sessions
+            r_sessions = _session_redis()
+            for key in r_sessions.scan_iter("session:*"):
+                raw = r_sessions.get(key)
+                if raw:
+                    try:
+                        data = json.loads(raw)
+                        if data.get("client_id") == client_id:
+                            r_sessions.delete(key)
+                    except Exception:
+                        pass
+
+            # DB 0 — reset OTP
+            r_main = _redis_lib.from_url(
+                os.getenv("REDIS_SESSION_URL", "redis://mail_ai_redis:6379/0"),
+                decode_responses=True
+            )
+            r_main.delete(f"reset_otp:{email}")
+
+            # DB 1 — chat history
+            r_history = _redis_lib.from_url(
+                os.getenv("REDIS_HISTORY_URL", "redis://mail_ai_redis:6379/1"),
+                decode_responses=True
+            )
+            for key in r_history.scan_iter(f"chat_history:{client_id}:*"):
+                r_history.delete(key)
+
+        except Exception as redis_err:
+            print(f"Redis purge error: {redis_err}")
+
+        # purge ChromaDB RAG data
+        try:
+            from app.rag import get_chroma_client
+            chroma = get_chroma_client()
+            if chroma:
+                collection_name = f"client_{client_id.replace('-', '_').lower()}"
+                try:
+                    chroma.delete_collection(collection_name)
+                except Exception:
+                    pass
+        except Exception as rag_err:
+            print(f"ChromaDB purge error: {rag_err}")
+
+        return {"success": True, "message": f"Client {client_id} deleted successfully"}
+
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "error": str(e)}
     finally:
         conn.close()

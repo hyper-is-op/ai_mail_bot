@@ -52,20 +52,23 @@ def get_email_account(client_id: str) -> dict:
     try:
         _ensure_accounts_table(cursor)
         cursor.execute("""
-            SELECT client_id, email, password, score_threshold, response_tone FROM email_accounts WHERE client_id = %s LIMIT 1
+            SELECT client_id, email, password, score_threshold, response_tone,
+                   agent_type, department_name, company_name
+            FROM email_accounts WHERE client_id = %s LIMIT 1
         """, (client_id,))
         row = cursor.fetchone()
-        logger.info(f"📦 Query result for client_id={client_id}: {row}")
         if not row:
             logger.warning(f"⚠️ No account found for client_id={client_id}")
             return {}
-        logger.info(f"✅ Account found for client_id={client_id} email={row[1]}")
         return {
-            "client_id": row[0],
-            "email": row[1],
-            "password": row[2],
-            "score_threshold": row[3] if len(row) > 3 and row[3] is not None else 80,
-            "response_tone": row[4] if len(row) > 4 and row[4] is not None else "Formal"
+            "client_id":       row[0],
+            "email":           row[1],
+            "password":        row[2],
+            "score_threshold": row[3] if row[3] is not None else 80,
+            "response_tone":   row[4] if row[4] is not None else "Formal",
+            "agent_type":      row[5] if row[5] is not None else "customer_support_agent",
+            "department_name": row[6] if row[6] is not None else None,
+            "company_name":    row[7] if row[7] is not None else None,
         }
     except Exception as e:
         logger.error(f"❌ Failed to fetch email account for client_id={client_id}: {str(e)}", exc_info=True)
@@ -73,7 +76,6 @@ def get_email_account(client_id: str) -> dict:
     finally:
         cursor.close()
         db.close()
-        logger.info("🔒 DB connection closed")
 
 
 def _ensure_accounts_table(cursor):
@@ -152,6 +154,21 @@ def ensure_accounts_table_startup(cursor):
 
     try:
         cursor.execute("ALTER TABLE email_accounts ADD COLUMN response_tone VARCHAR(50) DEFAULT 'Formal'")
+    except:
+        pass
+    
+    try:
+        cursor.execute("ALTER TABLE email_accounts ADD COLUMN agent_type VARCHAR(50) DEFAULT 'customer_support_agent'")
+    except:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE email_accounts ADD COLUMN department_name VARCHAR(100) DEFAULT NULL")
+    except:
+        pass
+    
+    try:
+        cursor.execute("ALTER TABLE email_accounts ADD COLUMN company_name VARCHAR(100) DEFAULT NULL")
     except:
         pass
 
