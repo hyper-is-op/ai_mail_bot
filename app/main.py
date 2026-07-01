@@ -1105,6 +1105,7 @@ class ManualReplyRequest(BaseModel):
     subject: str
     body: str = ""
     reply_text: str
+    blocked_record_id: int | None = None  # optional, only for keyword-blocked emails
 
 @app.post("/pause-email")
 def pause_email(data: PauseEmailRequest, user: dict = Depends(get_current_user)):
@@ -1139,24 +1140,71 @@ def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current
     try:
         from app.mailer import send_email
         import json
-        
-        # 1. Send the email
-        send_email(data.client_id, data.to_email, data.subject, data.reply_text)
-        
-        # 2. Log in email_logs
+
         from app.db import get_db_ctx
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                exec_steps = ["Start", "Manual_Reply", "SMTP_Send"]
+
+                # STEP 1 — validate blocked_record_id before anything irreversible
+                if data.blocked_record_id is not None:
+                    cursor.execute("""
+                        SELECT status FROM reply_blocked_by_keyword
+                        WHERE id = %s AND client_id = %s
+                    """, (data.blocked_record_id, data.client_id))
+                    record = cursor.fetchone()
+
+                    if not record:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"blocked_record_id={data.blocked_record_id} not found for this client"
+                        )
+                    if record[0] != 'pending_review':
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Record already actioned — current status is '{record[0]}'"
+                        )
+
+                # STEP 2 — send email, capture result, never let it throw
+                send_status = send_email(
+                    data.client_id, data.to_email, data.subject, data.reply_text
+                )
+
+                # STEP 3 — log regardless of send outcome
+                exec_steps = ["Start", "Manual_Reply", "SMTP_Send" if send_status else "SMTP_Failed"]
                 cursor.execute("""
                     INSERT INTO email_logs (client_id, from_email, subject, body, reply, score, status, priority, sentiment, execution_steps)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
-                    data.client_id, data.to_email, data.subject, data.body, data.reply_text, 100, 'manual_reply', 'Medium', 'Neutral', json.dumps(exec_steps)
+                    data.client_id, data.to_email, data.subject, data.body,
+                    data.reply_text, 100,
+                    'manual_reply' if send_status else 'manual_reply_send_failed',
+                    'Medium', 'Neutral',
+                    json.dumps(exec_steps)
                 ))
+
+                # STEP 4 — only mark replied if SMTP confirmed success
+                if data.blocked_record_id is not None:
+                    if send_status:
+                        cursor.execute("""
+                            UPDATE reply_blocked_by_keyword
+                            SET status = 'replied'
+                            WHERE id = %s AND client_id = %s
+                        """, (data.blocked_record_id, data.client_id))
+                    else:
+                        logger.warning(
+                            f"⚠️ SMTP failed for blocked_record_id={data.blocked_record_id}"
+                            f" — status stays 'pending_review'"
+                        )
+
                 db.commit()
-                
-        # 3. Add to chat history
+
+                if not send_status:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Email failed to send — record kept as pending_review, log entry written"
+                    )
+
+        # STEP 5 — chat history
         from app.chat_history import push_message
         push_message(
             client_id=data.client_id,
@@ -1166,25 +1214,27 @@ def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current
             body=data.reply_text,
             ticket_id=""
         )
-        
-        # 4. Broadcast via Redis
+
+        # STEP 6 — Redis broadcast
         import redis
         import os
-        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
-        if not redis_url:
-            redis_url = "redis://localhost:6379/0"
+        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0") or "redis://localhost:6379/0"
         try:
             r = redis.from_url(redis_url)
-            r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": data.client_id}))
+            r.publish("email_updates", json.dumps({
+                "type": "NEW_EMAIL",
+                "client_id": data.client_id
+            }))
         except Exception as ex:
             logger.warning(f"Redis publish failed: {ex}")
-            
+
         return {"status": "success", "message": "Manual reply sent"}
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Manual reply error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 
 
@@ -1432,3 +1482,169 @@ def delete_client(client_id: str, user: dict = Depends(require_admin())):
     if not res["success"]:
         raise HTTPException(status_code=404, detail=res["error"])
     return res
+
+
+
+class BlockedKeywordRequest(BaseModel):
+    client_id: str
+    keyword: str
+
+@app.post("/blocked-keywords/add")
+def add_blocked_keyword(data: BlockedKeywordRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            from app.keyword_filter import _ensure_table
+            _ensure_table(cursor)
+            cursor.execute(
+                "INSERT IGNORE INTO blocked_keywords (client_id, keyword) VALUES (%s, %s)",
+                (data.client_id, data.keyword.strip())
+            )
+            db.commit()
+    return {"status": "success"}
+
+@app.delete("/blocked-keywords/{client_id}/{keyword}")
+def remove_blocked_keyword(client_id: str, keyword: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+    from app.keyword_filter import _ensure_table
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            _ensure_table(cursor)
+            cursor.execute("DELETE FROM blocked_keywords WHERE client_id=%s AND keyword=%s", (client_id, keyword))
+            db.commit()
+    return {"status": "success"}
+
+@app.get("/blocked-keywords/{client_id}")
+def list_blocked_keywords(client_id: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+    from app.keyword_filter import get_blocked_keywords
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            return {"keywords": get_blocked_keywords(cursor, client_id)}
+
+
+
+class ReplyBlockedPolicyRequest(BaseModel):
+    client_id: str
+    action: str   # 'reply' (manual review) or 'ignore'
+
+@app.post("/blocked-keywords/policy")
+def set_block_policy(data: ReplyBlockedPolicyRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    if data.action not in ("reply", "ignore"):
+        raise HTTPException(status_code=400, detail="action must be 'reply' or 'ignore'")
+
+    from app.db import get_db_ctx
+    from app.keyword_filter import _ensure_reply_blocked_table
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            _ensure_reply_blocked_table(cursor)
+            cursor.execute("""
+                INSERT INTO reply_blocked_by_keyword (client_id, action)
+                VALUES (%s, %s)
+                ON DUPLICATE KEY UPDATE action=VALUES(action)
+            """, (data.client_id, data.action))
+            db.commit()
+    return {"status": "success"}
+
+@app.get("/blocked-keywords/policy/{client_id}")
+def get_block_policy_endpoint(client_id: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+    from app.keyword_filter import get_block_policy
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            return {"action": get_block_policy(cursor, client_id)}
+
+
+
+
+class UpdateBlockedEmailStatusRequest(BaseModel):
+    status: str  # 'ignored' or 'replied'
+
+@app.get("/blocked-emails/{client_id}")
+def list_blocked_emails(
+    client_id: str,
+    status: str = None,
+    user: dict = Depends(get_current_user)
+):
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+    from app.keyword_filter import _ensure_reply_blocked_table
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            _ensure_reply_blocked_table(cursor)
+            if status:
+                cursor.execute("""
+                    SELECT id, from_email, subject, body, matched_keyword, status, created_at
+                    FROM reply_blocked_by_keyword
+                    WHERE client_id = %s AND status = %s
+                    ORDER BY created_at DESC
+                """, (client_id, status))
+            else:
+                cursor.execute("""
+                    SELECT id, from_email, subject, body, matched_keyword, status, created_at
+                    FROM reply_blocked_by_keyword
+                    WHERE client_id = %s
+                    ORDER BY created_at DESC
+                """, (client_id,))
+            rows = cursor.fetchall()
+    return [
+        {
+            "id": r[0],
+            "from_email": r[1],
+            "subject": r[2],
+            "body": r[3],
+            "matched_keyword": r[4],
+            "status": r[5],
+            "created_at": r[6].strftime("%Y-%m-%d %H:%M:%S") if r[6] else ""
+        }
+        for r in rows
+    ]
+
+
+@app.patch("/blocked-emails/{client_id}/{record_id}")
+def update_blocked_email_status(
+    client_id: str,
+    record_id: int,
+    data: UpdateBlockedEmailStatusRequest,
+    user: dict = Depends(get_current_user)
+):
+    require_client_access(client_id, user)
+    if data.status not in ("ignored", "replied"):
+        raise HTTPException(status_code=400, detail="status must be 'ignored' or 'replied'")
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("""
+                UPDATE reply_blocked_by_keyword
+                SET status = %s
+                WHERE id = %s AND client_id = %s
+            """, (data.status, record_id, client_id))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Record not found")
+            db.commit()
+    return {"status": "success"}
+
+
+@app.patch("/blocked-emails/{client_id}/bulk-ignore")
+def bulk_ignore_blocked_emails(
+    client_id: str,
+    user: dict = Depends(get_current_user)
+):
+    """Marks all pending_review rows as ignored for this client."""
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("""
+                UPDATE reply_blocked_by_keyword
+                SET status = 'ignored'
+                WHERE client_id = %s AND status = 'pending_review'
+            """, (client_id,))
+            affected = cursor.rowcount
+            db.commit()
+    return {"status": "success", "rows_updated": affected}

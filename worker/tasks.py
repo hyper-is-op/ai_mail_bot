@@ -9,6 +9,7 @@ from app.chat_history import push_message, get_history, get_pending_state, upser
 import random
 from datetime import datetime
 from app.request_handler import call_create_ticket, get_order_status
+from app.keyword_filter import get_blocked_keywords, is_blocked, insert_blocked_email
 
 import logging
 import re
@@ -240,6 +241,28 @@ def process_email_task(self, data):
             except Exception as e:
                 pass
                 
+            return
+        
+        blocked_keywords = get_blocked_keywords(cursor, client_id)
+        email_text = f"{data.get('subject','')} {data.get('body','')}"
+        matched_kw = is_blocked(email_text, blocked_keywords) if blocked_keywords else None
+
+        if matched_kw:
+            logger.info(f"🚫 Email matched blocked keyword '{matched_kw}' — routing to pending_review")
+            insert_blocked_email(
+                cursor, client_id,
+                data["from_email"], data["subject"], data["body"],
+                matched_kw
+            )
+            cursor.execute("""
+                INSERT INTO email_logs (client_id, from_email, subject, body, status, priority, sentiment, execution_steps)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (client_id, data.get('from_email'), data.get('subject'), data.get('body'),
+                'blocked_keyword', 'High', 'Neutral',
+                json.dumps(["Start", f"Blocked_Keyword:{matched_kw}"])))
+            cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s", (task_id,))
+            db.commit()
+            db.close()
             return
 
         # ==============================

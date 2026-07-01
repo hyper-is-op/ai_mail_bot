@@ -322,12 +322,16 @@ def delete_client_account(client_id: str) -> dict:
             cursor.execute("DELETE FROM create_payload_table WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM email_accounts WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM email_customers WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM email_logs WHERE client_id = %s", (client_id,))
+            #cursor.execute("DELETE FROM email_logs WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM llm_logs WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM paused_emails WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM payload_get_table WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM ticket_record WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM users WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM blocked_keywords WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM reply_blocked WHERE client_id = %s", (client_id,))
+            #cursor.execute("DELETE FROM reply_blocked_by_keyword WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM reply_blocked_by_keyword_ignore_list WHERE client_id = %s", (client_id,))
 
         conn.commit()
 
