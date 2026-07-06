@@ -19,7 +19,8 @@ import {
   MessageSquare,
   PauseCircle,
   PlayCircle,
-  Send
+  Send,
+  Trash2
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
@@ -42,7 +43,7 @@ export default function Inbox() {
   const [replyLoading, setReplyLoading] = useState(false);
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [selectedClientId, setSelectedClientId] = useState(user?.role === 'admin' ? 'ALL' : (user?.client_id || ''));
   const [clients, setClients] = useState<any[]>([]);
 
   // Fetch helper
@@ -74,9 +75,6 @@ export default function Inbox() {
       api.getAllEmailAccounts()
         .then((data) => {
           setClients(data);
-          if (data.length > 0 && !selectedClientId) {
-            setSelectedClientId(data[0].client_id);
-          }
         })
         .catch((err) => console.error("Failed to fetch clients for admin inbox:", err));
     }
@@ -110,7 +108,7 @@ export default function Inbox() {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data);
-          if (message.type === 'NEW_EMAIL' && message.client_id === selectedClientId) {
+          if (message.type === 'NEW_EMAIL' && (selectedClientId === 'ALL' || message.client_id === selectedClientId)) {
             console.log("📡 New email processed. Refreshing inbox silently...");
             fetchEmails(true, selectedClientId);
           }
@@ -259,7 +257,8 @@ export default function Inbox() {
   };
 
   const handleCreateTicket = async (email: any) => {
-    if (!selectedClientId || !email) {
+    const activeCid = selectedClientId === "ALL" ? (email.client_id || '') : selectedClientId;
+    if (!activeCid || !email) {
       setToastMsg('Error: No active email or client session found');
       setTimeout(() => setToastMsg(''), 5000);
       return;
@@ -268,7 +267,7 @@ export default function Inbox() {
     setToastMsg('');
     try {
       const res = await api.createTicket({
-        client_id: selectedClientId,
+        client_id: activeCid,
         mail_id: email.mailId,
         subject: email.subject,
         body: email.preview,
@@ -287,13 +286,15 @@ export default function Inbox() {
 
   const handlePauseToggle = async (email: string) => {
     const isPaused = pausedEmails.includes(email);
+    const activeCid = selectedClientId === "ALL" ? (selectedThread?.latest_email?.client_id || '') : selectedClientId;
+    if (!activeCid) return;
     try {
       if (isPaused) {
-        await api.unpauseEmail({ client_id: selectedClientId, email });
+        await api.unpauseEmail({ client_id: activeCid, email });
         setPausedEmails(prev => prev.filter(e => e !== email));
         setToastMsg(`Unpaused auto-replies for ${email}`);
       } else {
-        await api.pauseEmail({ client_id: selectedClientId, email });
+        await api.pauseEmail({ client_id: activeCid, email });
         setPausedEmails(prev => [...prev, email]);
         setToastMsg(`Paused auto-replies for ${email}`);
       }
@@ -306,10 +307,12 @@ export default function Inbox() {
 
   const handleSendManualReply = async () => {
     if (!selectedThread || !replyText.trim()) return;
+    const activeCid = selectedClientId === "ALL" ? (selectedThread.latest_email.client_id || '') : selectedClientId;
+    if (!activeCid) return;
     setReplyLoading(true);
     try {
       await api.sendManualReply({
-        client_id: selectedClientId,
+        client_id: activeCid,
         to_email: selectedThread.sender,
         subject: `Re: ${selectedThread.subject}`,
         body: selectedThread.latest_email.body || selectedThread.latest_email.preview || "",
@@ -325,6 +328,19 @@ export default function Inbox() {
       setTimeout(() => setToastMsg(''), 5000);
     } finally {
       setReplyLoading(false);
+    }
+  };
+
+  const handleClearHistory = async (senderEmail: string) => {
+    const activeCid = selectedClientId === "ALL" ? (selectedThread?.latest_email?.client_id || '') : selectedClientId;
+    if (!activeCid) return;
+    if (!window.confirm("Are you sure you want to clear the AI conversation history/session cache for this sender? This resets verification state and context memory.")) return;
+    try {
+      await api.clearChatHistory(activeCid, senderEmail);
+      setToastMsg('AI memory cache successfully reset for this contact.');
+      setTimeout(() => setToastMsg(''), 4000);
+    } catch (err: any) {
+      alert(err.message || 'Failed to clear session cache.');
     }
   };
 
@@ -364,6 +380,7 @@ export default function Inbox() {
                   onChange={(e) => setSelectedClientId(e.target.value)}
                   className="bg-transparent text-xs text-foreground focus:outline-none cursor-pointer flex-1"
                 >
+                  <option value="ALL" className="bg-zinc-950 text-foreground">ALL</option>
                   {clients.map((c) => (
                     <option key={c.client_id} value={c.client_id} className="bg-zinc-950 text-foreground">
                       {c.client_id} ({c.email})
@@ -524,6 +541,14 @@ export default function Inbox() {
                 title="Reply"
               >
                 <Reply className="w-4 h-4" />
+              </button>
+              <button 
+                onClick={() => handleClearHistory(selectedThread.sender)}
+                className="px-3 py-1.5 border border-rose-500/25 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 rounded-lg text-xs font-semibold transition-colors flex items-center gap-1.5"
+                title="Clear AI memory session cache for this contact."
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Reset Session
               </button>
               <button className="p-2 border border-white/10 rounded-lg text-zinc-300 hover:bg-white/5 transition-colors" title="Mark Complete"><CheckCircle className="w-4 h-4" /></button>
               <button className="p-2 border border-white/10 rounded-lg text-zinc-300 hover:bg-white/5 transition-colors" title="More"><MoreVertical className="w-4 h-4" /></button>

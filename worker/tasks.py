@@ -248,11 +248,14 @@ def process_email_task(self, data):
         matched_kw = is_blocked(email_text, blocked_keywords) if blocked_keywords else None
 
         if matched_kw:
-            logger.info(f"🚫 Email matched blocked keyword '{matched_kw}' — routing to pending_review")
+            from app.keyword_filter import get_block_policy
+            policy = get_block_policy(cursor, client_id)
+            status = 'ignored' if policy == 'ignore' else 'pending_review'
+            logger.info(f"🚫 Email matched blocked keyword '{matched_kw}' — policy={policy}, routing to {status}")
             insert_blocked_email(
                 cursor, client_id,
                 data["from_email"], data["subject"], data["body"],
-                matched_kw
+                matched_kw, status=status
             )
             cursor.execute("""
                 INSERT INTO email_logs (client_id, from_email, subject, body, status, priority, sentiment, execution_steps)

@@ -105,48 +105,50 @@ export default function EmailAccounts() {
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         {/* Left Form: Add / Edit Credentials Form (Always Visible, Client ID hidden/automatic) */}
-        <div className="glass-panel p-6 rounded-2xl border border-white/10 xl:col-span-4 h-fit">
-          <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <PlusCircle className="w-5 h-5 text-primary" /> Save Credentials
-          </h3>
-          <form onSubmit={handleSave} className="space-y-4">
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-zinc-300">Email Address</label>
-              <input 
-                type="email" required
-                placeholder="support@gmail.com"
-                value={formData.email}
-                onChange={(e) => setFormData({...formData, email: e.target.value})}
-                className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-white" 
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-sm font-medium text-zinc-300">App Password / Token</label>
-              <div className="relative">
+        {!isAdmin && (
+          <div className="glass-panel p-6 rounded-2xl border border-white/10 xl:col-span-4 h-fit">
+            <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+              <PlusCircle className="w-5 h-5 text-primary" /> Save Credentials
+            </h3>
+            <form onSubmit={handleSave} className="space-y-4">
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-zinc-300">Email Address</label>
                 <input 
-                  type={showFormPassword ? 'text' : 'password'} required minLength={8}
-                  placeholder="Gmail 16-character App Password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({...formData, password: e.target.value})}
-                  className="w-full bg-white/5 border border-white/10 rounded-lg pl-4 pr-10 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-white font-mono" 
+                  type="email" required
+                  placeholder="support@gmail.com"
+                  value={formData.email}
+                  onChange={(e) => setFormData({...formData, email: e.target.value})}
+                  className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-white" 
                 />
-                <button
-                  type="button"
-                  onClick={() => setShowFormPassword(!showFormPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
-                >
-                  {showFormPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                </button>
               </div>
-            </div>
-            <button disabled={saveLoading} type="submit" className="w-full bg-primary text-primary-foreground py-2.5 rounded-lg font-medium shadow-lg shadow-primary/20 hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 mt-4">
-              {saveLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Save Securely'}
-            </button>
-          </form>
-        </div>
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-zinc-300">App Password / Token</label>
+                <div className="relative">
+                  <input 
+                    type={showFormPassword ? 'text' : 'password'} required minLength={8}
+                    placeholder="Gmail 16-character App Password"
+                    value={formData.password}
+                    onChange={(e) => setFormData({...formData, password: e.target.value})}
+                    className="w-full bg-white/5 border border-white/10 rounded-lg pl-4 pr-10 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-white font-mono" 
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowFormPassword(!showFormPassword)}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-white transition-colors"
+                  >
+                    {showFormPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+              <button disabled={saveLoading} type="submit" className="w-full bg-primary text-primary-foreground py-2.5 rounded-lg font-medium shadow-lg shadow-primary/20 hover:bg-primary/90 transition-colors flex items-center justify-center gap-2 mt-4">
+                {saveLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : 'Save Securely'}
+              </button>
+            </form>
+          </div>
+        )}
 
         {/* Right Section: Master Accounts (Admin) or Active Config Card (Client) */}
-        <div className="xl:col-span-8 flex flex-col">
+        <div className={isAdmin ? "xl:col-span-12 flex flex-col" : "xl:col-span-8 flex flex-col"}>
           {isAdmin ? (
             // Admin View - Shows all Client Accounts Table
             <div className="glass-panel p-6 rounded-2xl border border-white/10 flex flex-col h-full">

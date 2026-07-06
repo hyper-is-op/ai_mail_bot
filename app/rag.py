@@ -219,10 +219,71 @@ def add_knowledge(client_id: str, title: str, content: str) -> str:
 
 def get_knowledge_base(client_id: str) -> list[dict]:
     """
-    Retrieves all knowledge entries for a specific client_id.
+    Retrieves all knowledge entries for a specific client_id (or ALL clients).
     """
     logger.info(f"Fetching knowledge base for client_id={client_id}")
     
+    if client_id == "ALL":
+        # Fetch all collections/clients
+        all_clients = []
+        try:
+            from app.db import get_db_ctx
+            with get_db_ctx() as db:
+                cursor = db.cursor()
+                cursor.execute("SELECT client_id, collect_name FROM email_customers")
+                all_clients = cursor.fetchall()
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to fetch all clients for list: {e}")
+            
+        chroma_client = get_chroma_client()
+        all_docs = []
+        if chroma_client:
+            try:
+                collections = [col.name for col in chroma_client.list_collections()]
+                for cid, collect_name in all_clients:
+                    collection_name = collect_name or f"client_{cid.replace('-', '_').lower()}"
+                    if collection_name in collections:
+                        collection = chroma_client.get_collection(name=collection_name)
+                        results = collection.get()
+                        
+                        unique_docs = {}
+                        for i in range(len(results.get("ids", []))):
+                            metadata = results["metadatas"][i]
+                            p_doc_id = metadata.get("doc_id", results["ids"][i].split("_chunk_")[0])
+                            title = metadata.get("title", "Untitled Document")
+                            content = results["documents"][i]
+                            
+                            if p_doc_id not in unique_docs:
+                                unique_docs[p_doc_id] = {
+                                    "id": p_doc_id,
+                                    "title": f"[{cid}] {title}",
+                                    "chunks_count": 1,
+                                    "content": content,
+                                    "client_id": cid
+                                }
+                            else:
+                                unique_docs[p_doc_id]["chunks_count"] += 1
+                                if len(unique_docs[p_doc_id]["content"]) < 300:
+                                    unique_docs[p_doc_id]["content"] += "\n" + content
+                                    
+                        all_docs.extend(list(unique_docs.values()))
+                return all_docs
+            except Exception as e:
+                logger.error(f"❌ ChromaDB get failed for ALL, falling back to JSON: {e}")
+                
+        # Fallback JSON
+        db = load_fallback_db()
+        fallback_docs = []
+        for cid, docs in db.items():
+            for doc in docs:
+                fallback_docs.append({
+                    "id": doc["id"],
+                    "title": f"[{cid}] {doc['title']}",
+                    "content": doc["content"],
+                    "client_id": cid
+                })
+        return fallback_docs
+
     # Fetch rag_id from database
     # rag_id = client_id
     collect_name = f"client_{client_id.replace('-', '_').lower()}"  # default fallback
@@ -460,9 +521,36 @@ def query_rag(collect_name: str, query: str) -> dict:
 # 📂 ADVANCED DOCUMENT PARSERS
 # ==========================================
 
+def parse_docx(file_content: bytes) -> str:
+    import zipfile
+    import xml.etree.ElementTree as ET
+    from io import BytesIO
+    
+    try:
+        f = BytesIO(file_content)
+        with zipfile.ZipFile(f) as docx:
+            xml_content = docx.read('word/document.xml')
+            root = ET.fromstring(xml_content)
+            
+            # Namespace for word processing ML
+            ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
+            
+            paragraphs = []
+            for para in root.findall('.//w:p', ns):
+                text_parts = []
+                for run in para.findall('.//w:t', ns):
+                    if run.text:
+                        text_parts.append(run.text)
+                if text_parts:
+                    paragraphs.append("".join(text_parts))
+            return "\n".join(paragraphs)
+    except Exception as e:
+        logger.error(f"Failed to parse docx: {e}")
+        return file_content.decode('utf-8', errors='ignore')
+
 def parse_uploaded_file(file_name: str, file_content: bytes) -> tuple[str, str]:
     """
-    Parses a PDF, CSV, Excel (XLS/XLSX), or TXT file and returns a tuple (title, content).
+    Parses a PDF, DOCX, DOC, or TXT file and returns a tuple (title, content).
     Only allows these specific formats.
     """
     ext = file_name.split('.')[-1].lower()
@@ -472,38 +560,20 @@ def parse_uploaded_file(file_name: str, file_content: bytes) -> tuple[str, str]:
         content = file_content.decode('utf-8', errors='ignore')
         return file_name, content.strip()
 
-    elif ext == 'csv':
-        import io
-        import csv
-        text = file_content.decode('utf-8', errors='ignore')
-        f = io.StringIO(text)
-        reader = csv.reader(f)
-        text_lines = []
-        for row in reader:
-            row_str = ", ".join([val.strip() for val in row if val.strip()])
-            if row_str.strip():
-                text_lines.append(row_str)
-        return file_name, "\n".join(text_lines)
+    elif ext == 'docx':
+        content = parse_docx(file_content)
+        return file_name, content.strip()
 
-    elif ext in ['xlsx', 'xls']:
-        import io
-        import openpyxl
-        f = io.BytesIO(file_content)
+    elif ext == 'doc':
         try:
-            wb = openpyxl.load_workbook(f, data_only=True)
-            text_lines = []
-            for sheet in wb.worksheets:
-                text_lines.append(f"--- Sheet: {sheet.title} ---")
-                for row in sheet.iter_rows(values_only=True):
-                    row_str = ", ".join([str(val).strip() for val in row if val is not None])
-                    if row_str.strip():
-                        text_lines.append(row_str)
-            return file_name, "\n".join(text_lines)
-        except Exception as e:
-            logger.error(f"❌ Excel parse failed: {e}")
-            # Text based fallback
+            decoded = file_content.decode('utf-16', errors='ignore')
+            content = "".join([c for c in decoded if c.isprintable() or c in '\n\r\t'])
+            if len(content.strip()) < 50:
+                decoded = file_content.decode('utf-8', errors='ignore')
+                content = "".join([c for c in decoded if c.isprintable() or c in '\n\r\t'])
+        except Exception:
             content = file_content.decode('utf-8', errors='ignore')
-            return file_name, content.strip()
+        return file_name, content.strip()
 
     elif ext == 'pdf':
         import io
@@ -518,7 +588,7 @@ def parse_uploaded_file(file_name: str, file_content: bytes) -> tuple[str, str]:
         return file_name, text.strip()
 
     else:
-        raise ValueError(f"Unsupported file format: .{ext}. Only .pdf, .csv, .xlsx, .xls, and .txt files are allowed.")
+        raise ValueError(f"Unsupported file format: .{ext}. Only .pdf, .doc, .docx, and .txt files are allowed.")
 
 
 def retrieve_knowledge(client_id: str, query: str, top_k: int = 3) -> list[dict]:
@@ -528,6 +598,70 @@ def retrieve_knowledge(client_id: str, query: str, top_k: int = 3) -> list[dict]
     """
     logger.info(f"Retrieving structured knowledge for client_id={client_id}, query={query[:50]}")
     
+    if client_id == "ALL":
+        # Fetch all collections/clients
+        all_clients = []
+        try:
+            from app.db import get_db_ctx
+            with get_db_ctx() as db:
+                cursor = db.cursor()
+                cursor.execute("SELECT client_id, collect_name FROM email_customers")
+                all_clients = cursor.fetchall()
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to fetch all clients for retrieve: {e}")
+            
+        chroma_client = get_chroma_client()
+        all_results = []
+        if chroma_client:
+            try:
+                collections = [col.name for col in chroma_client.list_collections()]
+                for cid, collect_name in all_clients:
+                    collection_name = collect_name or f"client_{cid.replace('-', '_').lower()}"
+                    if collection_name in collections:
+                        collection = chroma_client.get_collection(name=collection_name)
+                        results = collection.query(
+                            query_texts=[query],
+                            n_results=min(top_k, collection.count())
+                        )
+                        
+                        documents = results.get("documents", [[]])[0]
+                        metadatas = results.get("metadatas", [[]])[0]
+                        distances = results.get("distances", [[]])[0] if results.get("distances") else [0.0] * len(documents)
+                        ids = results.get("ids", [[]])[0]
+                        
+                        for i in range(len(documents)):
+                            if documents[i] is not None:
+                                score = round(1.0 - min(1.0, distances[i] / 2.0), 3) if results.get("distances") else 1.0
+                                all_results.append({
+                                    "id": ids[i],
+                                    "title": f"[{cid}] {metadatas[i].get('title', 'Untitled Document')}",
+                                    "doc_id": metadatas[i].get("doc_id", ids[i].split("_chunk_")[0]),
+                                    "content": documents[i],
+                                    "score": score,
+                                    "client_id": cid
+                                })
+                all_results.sort(key=lambda x: x["score"], reverse=True)
+                return all_results[:top_k]
+            except Exception as e:
+                logger.error(f"❌ ChromaDB retrieval failed for ALL, falling back to JSON: {e}")
+                
+        # Fallback JSON
+        db = load_fallback_db()
+        fallback_results = []
+        for cid, docs in db.items():
+            for doc in docs:
+                score = jaccard_similarity(query, doc["content"])
+                fallback_results.append({
+                    "id": doc["id"],
+                    "title": f"[{cid}] {doc['title']}",
+                    "doc_id": doc["id"],
+                    "content": doc["content"],
+                    "score": round(score, 3),
+                    "client_id": cid
+                })
+        fallback_results.sort(key=lambda x: x["score"], reverse=True)
+        return [r for r in fallback_results[:top_k] if r["score"] > 0.0]
+
     collect_name = f"client_{client_id.replace('-', '_').lower()}"
     try:
         from app.db import get_db_ctx

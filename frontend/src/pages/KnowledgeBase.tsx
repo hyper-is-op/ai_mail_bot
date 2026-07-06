@@ -12,14 +12,11 @@ export default function KnowledgeBase() {
   const [uploadLoading, setUploadLoading] = useState(false);
   const [fetchLoading, setFetchLoading] = useState(false);
   const [msg, setMsg] = useState({ type: '', text: '' });
-
-  // Sandbox Query State
   const [sandboxQuery, setSandboxQuery] = useState('');
   const [sandboxResult, setSandboxResult] = useState<any[]>([]);
   const [sandboxLoading, setSandboxLoading] = useState(false);
-
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [selectedClientId, setSelectedClientId] = useState(user?.role === 'admin' ? 'ALL' : (user?.client_id || ''));
   const [clients, setClients] = useState<any[]>([]);
 
   useEffect(() => {
@@ -27,9 +24,6 @@ export default function KnowledgeBase() {
       api.getAllEmailAccounts()
         .then((data) => {
           setClients(data);
-          if (data.length > 0 && !selectedClientId) {
-            setSelectedClientId(data[0].client_id);
-          }
         })
         .catch((err) => console.error("Failed to fetch clients for admin knowledge base:", err));
     }
@@ -73,10 +67,10 @@ export default function KnowledgeBase() {
       setTitle('');
       setContent('');
       fetchDocuments(selectedClientId);
+      fetchAdminStats();
     } catch (err: any) {
       setMsg({ type: 'error', text: err.message || 'Failed to upload knowledge base.' });
     } finally {
-      setUploadLoading(true); // Wait, this was setUploadLoading(false) originally! Let's be careful. Let's make sure it's false.
       setUploadLoading(false);
     }
   };
@@ -85,7 +79,7 @@ export default function KnowledgeBase() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const allowedExtensions = ['pdf', 'csv', 'xlsx', 'xls', 'txt'];
+    const allowedExtensions = ['pdf', 'doc', 'docx', 'txt'];
     const ext = file.name.split('.').pop()?.toLowerCase();
 
     if (!ext || !allowedExtensions.includes(ext)) {
@@ -120,6 +114,7 @@ export default function KnowledgeBase() {
       const fileInput = document.getElementById('rag-file-input') as HTMLInputElement;
       if (fileInput) fileInput.value = '';
       fetchDocuments(selectedClientId);
+      fetchAdminStats();
     } catch (err: any) {
       setMsg({ type: 'error', text: err.message || 'Failed to upload and parse file.' });
     } finally {
@@ -127,12 +122,15 @@ export default function KnowledgeBase() {
     }
   };
 
-  const handleDelete = async (docId: string) => {
+  const handleDelete = async (doc: any) => {
     if (!confirm('Are you sure you want to delete this knowledge document?')) return;
+    const activeCid = selectedClientId === "ALL" ? (doc.client_id || '') : selectedClientId;
+    if (!activeCid) return;
     try {
-      await api.deleteRagDocument(selectedClientId, docId);
-      setDocuments(prev => prev.filter(doc => doc.id !== docId));
+      await api.deleteRagDocument(activeCid, doc.id);
+      setDocuments(prev => prev.filter(d => d.id !== doc.id));
       setMsg({ type: 'success', text: 'Document deleted from knowledge base.' });
+      fetchAdminStats();
     } catch (err: any) {
       setMsg({ type: 'error', text: err.message || 'Failed to delete document.' });
     }
@@ -174,6 +172,7 @@ export default function KnowledgeBase() {
               onChange={(e) => setSelectedClientId(e.target.value)}
               className="bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
             >
+              <option value="ALL" className="bg-zinc-900 text-foreground">ALL</option>
               {clients.map((c) => (
                 <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
                   {c.client_id} ({c.email})
@@ -206,81 +205,83 @@ export default function KnowledgeBase() {
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6">
         {/* Left Column: Upload Knowledge */}
-        <div className="xl:col-span-5 space-y-6">
-          <div className="glass-panel p-6 rounded-2xl border border-white/10">
-            <div className="flex border-b border-white/10 mb-4 pb-1">
-              <button 
-                onClick={() => { setActiveTab('text'); setMsg({ type: '', text: '' }); }}
-                className={`flex-1 pb-2 text-sm font-semibold transition-all ${activeTab === 'text' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-white'}`}
-              >
-                Paste Text
-              </button>
-              <button 
-                onClick={() => { setActiveTab('file'); setMsg({ type: '', text: '' }); }}
-                className={`flex-1 pb-2 text-sm font-semibold transition-all ${activeTab === 'file' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-white'}`}
-              >
-                Upload File
-              </button>
-            </div>
+        {user?.role !== 'admin' && (
+          <div className="xl:col-span-5 space-y-6">
+            <div className="glass-panel p-6 rounded-2xl border border-white/10">
+              <div className="flex border-b border-white/10 mb-4 pb-1">
+                <button 
+                  onClick={() => { setActiveTab('text'); setMsg({ type: '', text: '' }); }}
+                  className={`flex-1 pb-2 text-sm font-semibold transition-all ${activeTab === 'text' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-white'}`}
+                >
+                  Paste Text
+                </button>
+                <button 
+                  onClick={() => { setActiveTab('file'); setMsg({ type: '', text: '' }); }}
+                  className={`flex-1 pb-2 text-sm font-semibold transition-all ${activeTab === 'file' ? 'text-primary border-b-2 border-primary' : 'text-muted-foreground hover:text-white'}`}
+                >
+                  Upload File
+                </button>
+              </div>
 
-            {activeTab === 'text' ? (
-              <form onSubmit={handleUpload} className="space-y-4">
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-zinc-300">Document Title / Topic</label>
-                  <input 
-                    type="text" required
-                    placeholder="e.g. Return Policy, Pricing FAQ"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-white" 
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-sm font-medium text-zinc-300">Document Content (Text)</label>
-                  <textarea 
-                    required rows={6}
-                    placeholder="Paste product specifications, FAQs, store hours, or general instructions..."
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
-                    className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-white font-sans resize-none" 
-                  />
-                </div>
-                <button disabled={uploadLoading} type="submit" className="w-full bg-primary text-primary-foreground py-2.5 rounded-lg font-medium shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all flex items-center justify-center gap-2">
-                  {uploadLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Save to Vector Store <Sparkles className="w-4 h-4" /></>}
-                </button>
-              </form>
-            ) : (
-              <form onSubmit={handleFileUpload} className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium text-zinc-300 block">Supported Formats: PDF, CSV, Excel, TXT only</label>
-                  <div className="border-2 border-dashed border-white/10 hover:border-primary/50 transition-all rounded-xl p-8 flex flex-col items-center justify-center relative cursor-pointer group">
+              {activeTab === 'text' ? (
+                <form onSubmit={handleUpload} className="space-y-4">
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-zinc-300">Document Title / Topic</label>
                     <input 
-                      type="file" 
-                      id="rag-file-input"
-                      required
-                      accept=".pdf,.csv,.xlsx,.xls,.txt"
-                      onChange={handleFileChange}
-                      className="absolute inset-0 opacity-0 cursor-pointer"
+                      type="text" required
+                      placeholder="e.g. Return Policy, Pricing FAQ"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-white" 
                     />
-                    <UploadCloud className="w-10 h-10 text-muted-foreground group-hover:text-primary transition-all mb-2" />
-                    <span className="text-sm font-semibold text-white">
-                      {selectedFile ? selectedFile.name : 'Select or drag your file here'}
-                    </span>
-                    <span className="text-xs text-muted-foreground mt-1">
-                      {selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB` : 'Maximum file size 10MB'}
-                    </span>
                   </div>
-                </div>
-                <button disabled={fileLoading || !selectedFile} type="submit" className="w-full bg-primary disabled:opacity-50 text-primary-foreground py-2.5 rounded-lg font-medium shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all flex items-center justify-center gap-2">
-                  {fileLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Process & Upload File <Sparkles className="w-4 h-4" /></>}
-                </button>
-              </form>
-            )}
+                  <div className="space-y-1">
+                    <label className="text-sm font-medium text-zinc-300">Document Content (Text)</label>
+                    <textarea 
+                      required rows={6}
+                      placeholder="Paste product specifications, FAQs, store hours, or general instructions..."
+                      value={content}
+                      onChange={(e) => setContent(e.target.value)}
+                      className="w-full bg-white/5 border border-white/10 rounded-lg px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 text-white font-sans resize-none" 
+                    />
+                  </div>
+                  <button disabled={uploadLoading} type="submit" className="w-full bg-primary text-primary-foreground py-2.5 rounded-lg font-medium shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all flex items-center justify-center gap-2">
+                    {uploadLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Save to Vector Store <Sparkles className="w-4 h-4" /></>}
+                  </button>
+                </form>
+              ) : (
+                <form onSubmit={handleFileUpload} className="space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-sm font-medium text-zinc-300 block">Supported Formats: PDF, DOC, DOCX, TXT only</label>
+                    <div className="border-2 border-dashed border-white/10 hover:border-primary/50 transition-all rounded-xl p-8 flex flex-col items-center justify-center relative cursor-pointer group">
+                      <input 
+                        type="file" 
+                        id="rag-file-input"
+                        required
+                        accept=".pdf,.doc,.docx,.txt"
+                        onChange={handleFileChange}
+                        className="absolute inset-0 opacity-0 cursor-pointer"
+                      />
+                      <UploadCloud className="w-10 h-10 text-muted-foreground group-hover:text-primary transition-all mb-2" />
+                      <span className="text-sm font-semibold text-white">
+                        {selectedFile ? selectedFile.name : 'Select or drag your file here'}
+                      </span>
+                      <span className="text-xs text-muted-foreground mt-1">
+                        {selectedFile ? `${(selectedFile.size / 1024).toFixed(1)} KB` : 'Maximum file size 10MB'}
+                      </span>
+                    </div>
+                  </div>
+                  <button disabled={fileLoading || !selectedFile} type="submit" className="w-full bg-primary disabled:opacity-50 text-primary-foreground py-2.5 rounded-lg font-medium shadow-lg shadow-primary/20 hover:bg-primary/90 transition-all flex items-center justify-center gap-2">
+                    {fileLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <>Process & Upload File <Sparkles className="w-4 h-4" /></>}
+                  </button>
+                </form>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Right Column: RAG Query Sandbox & Active Directory */}
-        <div className="xl:col-span-7 space-y-6">
+        <div className={user?.role === 'admin' ? "xl:col-span-12 space-y-6" : "xl:col-span-7 space-y-6"}>
           {/* Live RAG Query Sandbox */}
           <div className="glass-panel p-6 rounded-2xl border border-white/10 bg-accent/5">
             <h3 className="text-lg font-semibold mb-2 flex items-center gap-2 text-white">
@@ -324,6 +325,7 @@ export default function KnowledgeBase() {
             )}
           </div>
 
+
           {/* Active Knowledge Directory */}
           <div className="glass-panel p-6 rounded-2xl border border-white/10 flex flex-col min-h-60">
             <div className="flex justify-between items-center mb-6">
@@ -357,7 +359,7 @@ export default function KnowledgeBase() {
                       <p className="text-xs text-muted-foreground line-clamp-3 leading-relaxed">{doc.content}</p>
                     </div>
                     <button 
-                      onClick={() => handleDelete(doc.id)}
+                      onClick={() => handleDelete(doc)}
                       className="text-muted-foreground hover:text-rose-500 p-1.5 rounded-lg hover:bg-rose-500/10 transition-all shrink-0"
                     >
                       <Trash2 className="w-4 h-4" />

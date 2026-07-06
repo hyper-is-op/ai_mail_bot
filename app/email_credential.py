@@ -508,3 +508,63 @@ def get_budget_status(client_id, cursor):
         status = "ok"
 
     return {"budget": budget, "spent": round(spent, 4), "percent": round(percent, 1), "status": status}
+
+
+def get_all_create_payloads() -> list[dict]:
+    db = get_db()
+    try:
+        with db.cursor() as cursor:
+            cursor.execute("""
+                SELECT p.client_id, p.url, p.paylod, a.email 
+                FROM create_payload_table p
+                LEFT JOIN email_accounts a ON p.client_id = a.client_id
+            """)
+            rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            try:
+                pay = json.loads(r[2]) if r[2] else {}
+            except Exception:
+                pay = r[2]
+            result.append({
+                "client_id": r[0],
+                "url": r[1],
+                "paylod": pay,
+                "email": r[3] or r[0]
+            })
+        return result
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch all create payloads: {e}", exc_info=True)
+        return []
+    finally:
+        db.close()
+
+
+def get_all_get_payloads() -> list[dict]:
+    db = get_db()
+    try:
+        with db.cursor() as cursor:
+            cursor.execute("""
+                SELECT p.client_id, p.url, p.paylod, a.email 
+                FROM payload_get_table p
+                LEFT JOIN email_accounts a ON p.client_id = a.client_id
+            """)
+            rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            try:
+                pay = json.loads(r[2]) if r[2] else {}
+            except Exception:
+                pay = r[2]
+            result.append({
+                "client_id": r[0],
+                "url": r[1],
+                "paylod": pay,
+                "email": r[3] or r[0]
+            })
+        return result
+    except Exception as e:
+        logger.error(f"❌ Failed to fetch all get payloads: {e}", exc_info=True)
+        return []
+    finally:
+        db.close()

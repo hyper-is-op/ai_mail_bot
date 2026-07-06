@@ -21,6 +21,14 @@ def ensure_users_table():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+            try:
+                cursor.execute("ALTER TABLE users ADD COLUMN name VARCHAR(255) DEFAULT NULL")
+            except:
+                pass
+            try:
+                cursor.execute("ALTER TABLE users ADD COLUMN phone_number VARCHAR(50) DEFAULT NULL")
+            except:
+                pass
         conn.commit()
     finally:
         conn.close()
@@ -139,7 +147,7 @@ def destroy_session(token: str):
     r.delete(f"session:{token}")
 
 
-def create_client_atomic(login_email, login_password, imap_email, imap_password,
+def create_client_atomic(name, phone_number, login_email, login_password, imap_email, imap_password,
                           score_threshold=80, response_tone="Formal",
                           agent_type="customer_support_agent",
                           department_name=None, company_name=None):
@@ -159,13 +167,15 @@ def create_client_atomic(login_email, login_password, imap_email, imap_password,
 
             p_hash = hash_password(login_password)
             cursor.execute(
-                "INSERT INTO users (client_id, email, password_hash, role, status) VALUES (%s, %s, %s, 'client', 'active')",
-                (client_id, login_email, p_hash)
+                "INSERT INTO users (client_id, email, password_hash, role, status, name, phone_number) VALUES (%s, %s, %s, 'client', 'active', %s, %s)",
+                (client_id, login_email, p_hash, name, phone_number)
             )
+            
+            actual_imap = imap_email if imap_email else login_email
             cursor.execute("""
                 INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type, department_name, company_name, flag)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
-            """, (client_id, imap_email, imap_password, score_threshold, response_tone,
+            """, (client_id, actual_imap, imap_password or "", score_threshold, response_tone,
                 agent_type, department_name, company_name)) 
         conn.commit()
 
@@ -189,15 +199,15 @@ def create_client_atomic(login_email, login_password, imap_email, imap_password,
         conn.close()
 
 
-# def get_pending_users():
-#     ensure_users_table()
-#     conn = get_db()
-#     try:
-#         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-#             cursor.execute("SELECT id, client_id, email, role, created_at FROM users WHERE status='pending' ORDER BY created_at ASC")
-#             return cursor.fetchall()
-#     finally:
-#         conn.close()
+def get_pending_users():
+    ensure_users_table()
+    conn = get_db()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT id, client_id, email, role, created_at FROM users WHERE status='inactive' ORDER BY created_at ASC")
+            return cursor.fetchall()
+    finally:
+        conn.close()
 
 def send_reset_otp(email: str):
     ensure_users_table()
@@ -329,9 +339,7 @@ def delete_client_account(client_id: str) -> dict:
             cursor.execute("DELETE FROM ticket_record WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM users WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM blocked_keywords WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM reply_blocked WHERE client_id = %s", (client_id,))
-            #cursor.execute("DELETE FROM reply_blocked_by_keyword WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM reply_blocked_by_keyword_ignore_list WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM reply_blocked_by_keyword WHERE client_id = %s", (client_id,))
 
         conn.commit()
 

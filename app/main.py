@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends, Header
 from pydantic import BaseModel, EmailStr, field_validator
 from worker.tasks import process_email_task
-from app.email_credential import ensure_payload_get_ticket_table, insert_payload_get_ticket, save_email_account, get_email_account, create_email_record_db, ensure_create_payload_table, insert_create_payload_ticket, get_create_payload_table, get_payload_get_ticket_table
+from app.email_credential import ensure_payload_get_ticket_table, insert_payload_get_ticket, save_email_account, get_email_account, create_email_record_db, ensure_create_payload_table, insert_create_payload_ticket, get_create_payload_table, get_payload_get_ticket_table, get_all_create_payloads, get_all_get_payloads
 from app.order_routes import get_order_by_id
 from app.auth import ensure_users_table, login_user #,register_user
 from app.rate_limiter import RedisRateLimiter
@@ -366,11 +366,27 @@ def get_email_account_by_id(client_id: str):
 def get_all_email_accounts_endpoint(user: dict = Depends(require_admin())):
     try:
         from app.db import get_db_ctx
+        import pymysql
         with get_db_ctx() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT client_id, email, password FROM email_accounts")
+            cursor = db.cursor(pymysql.cursors.DictCursor)
+            cursor.execute("""
+                SELECT 
+                    ea.client_id, 
+                    COALESCE(u.email, ea.email) AS email, 
+                    ea.password,
+                    u.email AS login_email,
+                    ea.email AS imap_email,
+                    ea.password AS imap_password,
+                    u.name,
+                    u.phone_number,
+                    ea.agent_type,
+                    ea.department_name,
+                    ea.company_name
+                FROM email_accounts ea 
+                LEFT JOIN users u ON ea.client_id = u.client_id
+            """)
             rows = cursor.fetchall()
-            return [{"client_id": r[0], "email": r[1], "password": r[2]} for r in rows]
+            return rows
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -432,6 +448,8 @@ def payload_get_ticket(data: PayloadRequest, user: dict = Depends(get_current_us
 def get_create_payload_endpoint(client_id: str, user: dict = Depends(get_current_user)):
     require_client_access(client_id, user)
     try:
+        if client_id == "ALL":
+            return get_all_create_payloads()
         res = get_create_payload_table(client_id)
         return res
     except Exception as e:
@@ -442,6 +460,8 @@ def get_create_payload_endpoint(client_id: str, user: dict = Depends(get_current
 def get_payload_get_endpoint(client_id: str, user: dict = Depends(get_current_user)):
     require_client_access(client_id, user)
     try:
+        if client_id == "ALL":
+            return get_all_get_payloads()
         res = get_payload_get_ticket_table(client_id)
         return res
     except Exception as e:
@@ -507,35 +527,59 @@ def get_dashboard_stats_endpoint(client_id: str, range_type: str = "all", start_
                     logger.warning(f"⚠️ Could not describe email_accounts: {ex}")
                 
                 # 1. Total Emails
-                cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s" + date_filter, (client_id, *date_params))
+                if client_id == "ALL":
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE 1=1" + date_filter, tuple(date_params))
+                else:
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s" + date_filter, (client_id, *date_params))
                 stats_data["total_emails"] = cursor.fetchone()[0]
                 
                 # 2. Pending Emails
-                cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status = 'pending'" + date_filter, (client_id, *date_params))
+                if client_id == "ALL":
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE status = 'pending'" + date_filter, tuple(date_params))
+                else:
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status = 'pending'" + date_filter, (client_id, *date_params))
                 stats_data["pending_emails"] = cursor.fetchone()[0]
                 
                 # 3. AI Replies Sent
-                cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('sent', 'ticket_created_and_sent')" + date_filter, (client_id, *date_params))
+                if client_id == "ALL":
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE status IN ('sent', 'ticket_created_and_sent')" + date_filter, tuple(date_params))
+                else:
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('sent', 'ticket_created_and_sent')" + date_filter, (client_id, *date_params))
                 stats_data["ai_replies"] = cursor.fetchone()[0]
                 
                 # 4. Failed Emails
-                cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('send_failed', 'ticket_created_send_failed')" + date_filter, (client_id, *date_params))
+                if client_id == "ALL":
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE status IN ('send_failed', 'ticket_created_send_failed')" + date_filter, tuple(date_params))
+                else:
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('send_failed', 'ticket_created_send_failed')" + date_filter, (client_id, *date_params))
                 stats_data["failed_emails"] = cursor.fetchone()[0]
                 
                 # 5. Tickets Generated (representing processed request tickets)
-                cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('ticket_created_and_sent', 'ticket_created_send_failed')" + date_filter, (client_id, *date_params))
+                if client_id == "ALL":
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE status IN ('ticket_created_and_sent', 'ticket_created_send_failed')" + date_filter, tuple(date_params))
+                else:
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('ticket_created_and_sent', 'ticket_created_send_failed')" + date_filter, (client_id, *date_params))
                 stats_data["tickets_generated"] = cursor.fetchone()[0]
                 
                 # 6. Orders Tracked (approx based on queries containing 'order')
-                cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND (subject LIKE '%%order%%' OR body LIKE '%%order%%')" + date_filter, (client_id, *date_params))
+                if client_id == "ALL":
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE (subject LIKE '%%order%%' OR body LIKE '%%order%%')" + date_filter, tuple(date_params))
+                else:
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND (subject LIKE '%%order%%' OR body LIKE '%%order%%')" + date_filter, (client_id, *date_params))
                 stats_data["orders_tracked"] = cursor.fetchone()[0]
                 
                 # 7. Active Accounts
-                cursor.execute(f"SELECT COUNT(*) FROM email_accounts WHERE {acct_col} = %s", (client_id,))
+                if client_id == "ALL":
+                    cursor.execute(f"SELECT COUNT(*) FROM email_accounts")
+                else:
+                    cursor.execute(f"SELECT COUNT(*) FROM email_accounts WHERE {acct_col} = %s", (client_id,))
                 stats_data["active_accounts"] = cursor.fetchone()[0]
                 
                 # 7b. Average AI Confidence
-                cursor.execute(f"SELECT AVG(score) FROM email_logs WHERE {col} = %s AND score IS NOT NULL" + date_filter, (client_id, *date_params))
+                if client_id == "ALL":
+                    cursor.execute(f"SELECT AVG(score) FROM email_logs WHERE score IS NOT NULL" + date_filter, tuple(date_params))
+                else:
+                    cursor.execute(f"SELECT AVG(score) FROM email_logs WHERE {col} = %s AND score IS NOT NULL" + date_filter, (client_id, *date_params))
                 avg_score = cursor.fetchone()[0]
                 stats_data["avg_confidence"] = round(float(avg_score), 1) if avg_score is not None else 0.0
                 
@@ -565,20 +609,36 @@ def get_dashboard_stats_endpoint(client_id: str, range_type: str = "all", start_
                     group_by_name = "%%b %%d"
                     chart_interval = "DATE(created_at) BETWEEN %s AND %s"
                     
-                chart_params = [client_id]
-                if range_type == "custom" and start_date and end_date:
-                    chart_params.extend([start_date, end_date])
+                if client_id == "ALL":
+                    chart_params = []
+                    if range_type == "custom" and start_date and end_date:
+                        chart_params.extend([start_date, end_date])
                     
-                cursor.execute(f"""
-                    SELECT DATE_FORMAT(created_at, '{group_by_name}') as formatted_time, 
-                           COUNT(*) as emails, 
-                           SUM(CASE WHEN status IN ('sent', 'ticket_created_and_sent') THEN 1 ELSE 0 END) as ai_replies,
-                           DATE_FORMAT(created_at, '{group_by_format}') as sort_key
-                    FROM email_logs
-                    WHERE {col} = %s AND {chart_interval}
-                    GROUP BY sort_key, formatted_time
-                    ORDER BY sort_key ASC
-                """, tuple(chart_params))
+                    cursor.execute(f"""
+                        SELECT DATE_FORMAT(created_at, '{group_by_name}') as formatted_time, 
+                               COUNT(*) as emails, 
+                               SUM(CASE WHEN status IN ('sent', 'ticket_created_and_sent') THEN 1 ELSE 0 END) as ai_replies,
+                               DATE_FORMAT(created_at, '{group_by_format}') as sort_key
+                        FROM email_logs
+                        WHERE {chart_interval}
+                        GROUP BY sort_key, formatted_time
+                        ORDER BY sort_key ASC
+                    """, tuple(chart_params))
+                else:
+                    chart_params = [client_id]
+                    if range_type == "custom" and start_date and end_date:
+                        chart_params.extend([start_date, end_date])
+                    
+                    cursor.execute(f"""
+                        SELECT DATE_FORMAT(created_at, '{group_by_name}') as formatted_time, 
+                               COUNT(*) as emails, 
+                               SUM(CASE WHEN status IN ('sent', 'ticket_created_and_sent') THEN 1 ELSE 0 END) as ai_replies,
+                               DATE_FORMAT(created_at, '{group_by_format}') as sort_key
+                        FROM email_logs
+                        WHERE {col} = %s AND {chart_interval}
+                        GROUP BY sort_key, formatted_time
+                        ORDER BY sort_key ASC
+                    """, tuple(chart_params))
                 rows = cursor.fetchall()
                 
         chart_data = []
@@ -620,12 +680,19 @@ def get_emails_logs_endpoint(client_id: str, user: dict = Depends(get_current_us
                 except Exception:
                     pass
                 
-                cursor.execute(f"""
-                    SELECT id, from_email, subject, body, reply, score, status, created_at, rag_id, sentiment, priority, execution_steps, summary 
-                    FROM email_logs 
-                    WHERE {col} = %s 
-                    ORDER BY created_at DESC
-                """, (client_id,))
+                if client_id == "ALL":
+                    cursor.execute(f"""
+                        SELECT id, from_email, subject, body, reply, score, status, created_at, rag_id, sentiment, priority, execution_steps, summary, {col} as client_id 
+                        FROM email_logs 
+                        ORDER BY created_at DESC
+                    """)
+                else:
+                    cursor.execute(f"""
+                        SELECT id, from_email, subject, body, reply, score, status, created_at, rag_id, sentiment, priority, execution_steps, summary, {col} as client_id 
+                        FROM email_logs 
+                        WHERE {col} = %s 
+                        ORDER BY created_at DESC
+                    """, (client_id,))
                 rows = cursor.fetchall()
                 
                 import json
@@ -666,7 +733,8 @@ def get_emails_logs_endpoint(client_id: str, user: dict = Depends(get_current_us
                         "sentiment": r[9] if len(r) > 9 and r[9] else "Neutral",
                         "priority": r[10] if len(r) > 10 and r[10] else "Medium",
                         "execution_steps": steps,
-                        "summary": r[12] if len(r) > 12 and r[12] else ""
+                        "summary": r[12] if len(r) > 12 and r[12] else "",
+                        "client_id": r[13] if len(r) > 13 else None
                     })
                 return emails_list
     except Exception as e:
@@ -716,12 +784,19 @@ def get_tickets_logs_endpoint(client_id: str, user: dict = Depends(get_current_u
                 except Exception as ex:
                     logger.warning(f"⚠️ Could not describe ticket_record: {ex}")
                 
-                cursor.execute(f"""
-                    SELECT ticket_id, mail_id, subject, body, status, created_at, sentiment, priority 
-                    FROM ticket_record 
-                    WHERE {col} = %s 
-                    ORDER BY created_at DESC
-                """, (client_id,))
+                if client_id == "ALL":
+                    cursor.execute(f"""
+                        SELECT ticket_id, mail_id, subject, body, status, created_at, sentiment, priority 
+                        FROM ticket_record 
+                        ORDER BY created_at DESC
+                    """)
+                else:
+                    cursor.execute(f"""
+                        SELECT ticket_id, mail_id, subject, body, status, created_at, sentiment, priority 
+                        FROM ticket_record 
+                        WHERE {col} = %s 
+                        ORDER BY created_at DESC
+                    """, (client_id,))
                 rows = cursor.fetchall()
                 
                 tickets_list = []
@@ -814,6 +889,37 @@ def retrieve_rag_endpoint(data: RagRetrieveRequest, user: dict = Depends(get_cur
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/admin/knowledge-stats")
+def get_admin_knowledge_stats(user: dict = Depends(require_admin())):
+    try:
+        from app.db import get_db_ctx
+        from app.rag import get_knowledge_base
+        
+        with get_db_ctx() as db:
+            cursor = db.cursor()
+            cursor.execute("""
+                SELECT ea.client_id, COALESCE(u.email, ea.email) AS email 
+                FROM email_accounts ea 
+                LEFT JOIN users u ON ea.client_id = u.client_id
+            """)
+            clients = cursor.fetchall()
+            
+        stats = []
+        for cid, email in clients:
+            try:
+                docs = get_knowledge_base(cid)
+                doc_count = len(docs)
+            except Exception:
+                doc_count = 0
+            stats.append({
+                "client_id": cid,
+                "email": email,
+                "documents_count": doc_count
+            })
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/rag/upload-file", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
 async def upload_rag_file_endpoint(
     client_id: str = Form(...),
@@ -824,8 +930,8 @@ async def upload_rag_file_endpoint(
     try:
         from app.rag import parse_uploaded_file, add_knowledge
         ext = file.filename.split('.')[-1].lower()
-        if ext not in ['pdf', 'csv', 'xlsx', 'xls', 'txt']:
-            raise HTTPException(status_code=400, detail="Unsupported file format. Only .pdf, .csv, .xlsx, .xls, and .txt files are allowed.")
+        if ext not in ['pdf', 'doc', 'docx', 'txt']:
+            raise HTTPException(status_code=400, detail="Unsupported file format. Only .pdf, .doc, .docx, and .txt files are allowed.")
         file_bytes = await file.read()
         title, content = parse_uploaded_file(file.filename, file_bytes)
         if not content.strip():
@@ -910,16 +1016,27 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                 db.commit()
                 
                 # 1. Total statistics
-                cursor.execute("""
-                    SELECT 
-                        COUNT(id) as total_requests,
-                        SUM(prompt_tokens) as total_prompt_tokens,
-                        SUM(completion_tokens) as total_completion_tokens,
-                        SUM(cost) as total_cost,
-                        AVG(latency_ms) as avg_latency
-                    FROM llm_logs
-                    WHERE client_id = %s
-                """, (client_id,))
+                if client_id == "ALL":
+                    cursor.execute("""
+                        SELECT 
+                            COUNT(id) as total_requests,
+                            SUM(prompt_tokens) as total_prompt_tokens,
+                            SUM(completion_tokens) as total_completion_tokens,
+                            SUM(cost) as total_cost,
+                            AVG(latency_ms) as avg_latency
+                        FROM llm_logs
+                    """)
+                else:
+                    cursor.execute("""
+                        SELECT 
+                            COUNT(id) as total_requests,
+                            SUM(prompt_tokens) as total_prompt_tokens,
+                            SUM(completion_tokens) as total_completion_tokens,
+                            SUM(cost) as total_cost,
+                            AVG(latency_ms) as avg_latency
+                        FROM llm_logs
+                        WHERE client_id = %s
+                    """, (client_id,))
                 total_row = cursor.fetchone()
                 
                 totals = {
@@ -931,18 +1048,31 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                 }
                 
                 # 2. Breakdown by Model
-                cursor.execute("""
-                    SELECT 
-                        model_name,
-                        COUNT(id) as requests,
-                        SUM(prompt_tokens) as prompt_tokens,
-                        SUM(completion_tokens) as completion_tokens,
-                        SUM(cost) as cost,
-                        AVG(latency_ms) as avg_latency
-                    FROM llm_logs
-                    WHERE client_id = %s
-                    GROUP BY model_name
-                """, (client_id,))
+                if client_id == "ALL":
+                    cursor.execute("""
+                        SELECT 
+                            model_name,
+                            COUNT(id) as requests,
+                            SUM(prompt_tokens) as prompt_tokens,
+                            SUM(completion_tokens) as completion_tokens,
+                            SUM(cost) as cost,
+                            AVG(latency_ms) as avg_latency
+                        FROM llm_logs
+                        GROUP BY model_name
+                    """)
+                else:
+                    cursor.execute("""
+                        SELECT 
+                            model_name,
+                            COUNT(id) as requests,
+                            SUM(prompt_tokens) as prompt_tokens,
+                            SUM(completion_tokens) as completion_tokens,
+                            SUM(cost) as cost,
+                            AVG(latency_ms) as avg_latency
+                        FROM llm_logs
+                        WHERE client_id = %s
+                        GROUP BY model_name
+                    """, (client_id,))
                 model_rows = cursor.fetchall()
                 model_breakdown = []
                 for row in model_rows:
@@ -956,18 +1086,31 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                     })
                     
                 # 3. Breakdown by Caller Function
-                cursor.execute("""
-                    SELECT 
-                        caller_function,
-                        COUNT(id) as requests,
-                        SUM(prompt_tokens) as prompt_tokens,
-                        SUM(completion_tokens) as completion_tokens,
-                        SUM(cost) as cost,
-                        AVG(latency_ms) as avg_latency
-                    FROM llm_logs
-                    WHERE client_id = %s
-                    GROUP BY caller_function
-                """, (client_id,))
+                if client_id == "ALL":
+                    cursor.execute("""
+                        SELECT 
+                            caller_function,
+                            COUNT(id) as requests,
+                            SUM(prompt_tokens) as prompt_tokens,
+                            SUM(completion_tokens) as completion_tokens,
+                            SUM(cost) as cost,
+                            AVG(latency_ms) as avg_latency
+                        FROM llm_logs
+                        GROUP BY caller_function
+                    """)
+                else:
+                    cursor.execute("""
+                        SELECT 
+                            caller_function,
+                            COUNT(id) as requests,
+                            SUM(prompt_tokens) as prompt_tokens,
+                            SUM(completion_tokens) as completion_tokens,
+                            SUM(cost) as cost,
+                            AVG(latency_ms) as avg_latency
+                        FROM llm_logs
+                        WHERE client_id = %s
+                        GROUP BY caller_function
+                    """, (client_id,))
                 caller_rows = cursor.fetchall()
                 caller_breakdown = []
                 for row in caller_rows:
@@ -990,14 +1133,23 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                     })
                     
                 # 4. Recent Logs (last 30)
-                cursor.execute("""
-                    SELECT 
-                        id, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function, created_at
-                    FROM llm_logs
-                    WHERE client_id = %s
-                    ORDER BY created_at DESC
-                    LIMIT 30
-                """, (client_id,))
+                if client_id == "ALL":
+                    cursor.execute("""
+                        SELECT 
+                            id, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function, created_at
+                        FROM llm_logs
+                        ORDER BY created_at DESC
+                        LIMIT 30
+                    """)
+                else:
+                    cursor.execute("""
+                        SELECT 
+                            id, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function, created_at
+                        FROM llm_logs
+                        WHERE client_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT 30
+                    """, (client_id,))
                 log_rows = cursor.fetchall()
                 recent_logs = []
                 for row in log_rows:
@@ -1039,48 +1191,48 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
         logger.error(f"❌ Failed to fetch LLM analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-# @app.post("/approve-registration")
-# def approve_registration_endpoint(data: ApproveRequest, user: dict = Depends(require_admin())):
-#     email = data.email
-#     try:
-#         from app.db import get_db_ctx
-#         with get_db_ctx() as db:
-#             with db.cursor() as cursor:
-#                 cursor.execute("SELECT client_id, role, status FROM users WHERE email = %s", (email,))
-#                 user = cursor.fetchone()
-#                 if not user:
-#                     raise HTTPException(status_code=404, detail="User not found")
+@app.post("/approve-registration")
+def approve_registration_endpoint(data: ApproveRequest, user: dict = Depends(require_admin())):
+    email = data.email
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("SELECT client_id, role, status FROM users WHERE email = %s", (email,))
+                db_user = cursor.fetchone()
+                if not db_user:
+                    raise HTTPException(status_code=404, detail="User not found")
                 
-#                 client_id, role, status = user[0], user[1], user[2]
-#                 if status == 'active':
-#                     return {"status": "success", "message": "User is already active"}
+                client_id, role, status = db_user[0], db_user[1], db_user[2]
+                if status == 'active':
+                    return {"status": "success", "message": "User is already active"}
                 
-#                 cursor.execute("UPDATE users SET status = 'active' WHERE email = %s", (email,))
-#                 db.commit()
+                cursor.execute("UPDATE users SET status = 'active' WHERE email = %s", (email,))
+                db.commit()
                 
-#                 try:
-#                     cursor.execute("SELECT client_id FROM email_accounts LIMIT 1")
-#                     row = cursor.fetchone()
-#                     sender_client_id = row[0] if row else "CLI-7AE811F3"
+                try:
+                    cursor.execute("SELECT client_id FROM email_accounts LIMIT 1")
+                    row = cursor.fetchone()
+                    sender_client_id = row[0] if row else "CLI-7AE811F3"
                     
-#                     from app.mailer import send_email
-#                     subject = "Your Mail AI Account is Approved!"
-#                     body = (
-#                         f"Hello,\n\n"
-#                         f"Your registration request has been approved by the admin.\n"
-#                         f"You can now log in to your account at:\n"
-#                         f"http://172.16.3.215:1947/login\n\n"
-#                         f"Best regards,\n"
-#                         f"Mail AI Team"
-#                     )
-#                     send_email(sender_client_id, email, subject, body)
-#                 except Exception as mail_err:
-#                     logger.error(f"Failed to send confirmation email: {mail_err}")
+                    from app.mailer import send_email
+                    subject = "Your Mail AI Account is Approved!"
+                    body = (
+                        f"Hello,\n\n"
+                        f"Your registration request has been approved by the admin.\n"
+                        f"You can now log in to your account at:\n"
+                        f"http://172.16.3.215:1947/login\n\n"
+                        f"Best regards,\n"
+                        f"Mail AI Team"
+                    )
+                    send_email(sender_client_id, email, subject, body)
+                except Exception as mail_err:
+                    logger.error(f"Failed to send confirmation email: {mail_err}")
                 
-#                 return {"status": "success", "message": f"User {email} has been approved successfully."}
-#     except Exception as e:
-#         logger.error(f"Approval error: {e}")
-#         raise HTTPException(status_code=500, detail=str(e))
+                return {"status": "success", "message": f"User {email} has been approved successfully."}
+    except Exception as e:
+        logger.error(f"Approval error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/logout")
@@ -1131,6 +1283,22 @@ def unpause_email(data: PauseEmailRequest, user: dict = Depends(get_current_user
                 cursor.execute("DELETE FROM paused_emails WHERE client_id = %s AND paused_email = %s", (data.client_id, data.email))
                 db.commit()
         return {"status": "success", "message": f"{data.email} is unpaused."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/paused-emails/{client_id}")
+def get_paused_emails_endpoint(client_id: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                if client_id == "ALL":
+                    cursor.execute("SELECT paused_email FROM paused_emails")
+                else:
+                    cursor.execute("SELECT paused_email FROM paused_emails WHERE client_id = %s", (client_id,))
+                rows = cursor.fetchall()
+                return [r[0] for r in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1365,10 +1533,12 @@ def get_all_budget_statuses(user: dict = Depends(require_admin())):
 
 
 class CreateClientRequest(BaseModel):
+    name: str
+    phone_number: str
     login_email: EmailStr
     login_password: str
-    imap_email: EmailStr
-    imap_password: str
+    imap_email: str = ""
+    imap_password: str = ""
     score_threshold: int = 80
     response_tone: str = "Formal"
     agent_type: str = "customer_support_agent"
@@ -1383,7 +1553,7 @@ class CreateClientRequest(BaseModel):
 
     @field_validator("imap_password")
     def imap_pw_strength(cls, v):
-        if len(v) < 8:
+        if v and len(v) < 8:
             raise ValueError("IMAP password must be at least 8 characters")
         return v
 
@@ -1391,7 +1561,7 @@ class CreateClientRequest(BaseModel):
 def create_client(data: CreateClientRequest, user: dict = Depends(require_admin())):
     from app.auth import create_client_atomic
     res = create_client_atomic(
-        data.login_email, data.login_password, data.imap_email, data.imap_password,
+        data.name, data.phone_number, data.login_email, data.login_password, data.imap_email, data.imap_password,
         data.score_threshold, data.response_tone,
         data.agent_type, data.department_name, data.company_name
     )
@@ -1399,15 +1569,15 @@ def create_client(data: CreateClientRequest, user: dict = Depends(require_admin(
         raise HTTPException(status_code=400, detail=res["error"])
     return res
 
-# @app.get("/admin/pending-users")
-# def list_pending_users(user: dict = Depends(require_admin())):
-#     from app.auth import get_pending_users
-#     rows = get_pending_users()
-#     return [
-#         {"id": r["id"], "client_id": r["client_id"], "email": r["email"], "role": r["role"],
-#          "created_at": r["created_at"].strftime("%b %d, %Y %H:%M") if r["created_at"] else ""}
-#         for r in rows
-#     ]
+@app.get("/admin/pending-users")
+def list_pending_users(user: dict = Depends(require_admin())):
+    from app.auth import get_pending_users
+    rows = get_pending_users()
+    return [
+        {"id": r["id"], "client_id": r["client_id"], "email": r["email"], "role": r["role"],
+         "created_at": r["created_at"].strftime("%b %d, %Y %H:%M") if r["created_at"] else ""}
+        for r in rows
+    ]
 
 # also fix approve_registration_endpoint signature — was a GET with ?email= query param,
 # api.ts now POSTs a body. Update the existing route:
@@ -1436,6 +1606,11 @@ def set_user_status_endpoint(data: SetUserStatusRequest, user: dict = Depends(re
 
 class ClientProfileRequest(BaseModel):
     client_id: str
+    name: str = None
+    phone_number: str = None
+    login_email: str = None
+    imap_email: str = None
+    imap_password: str = None
     agent_type: str = None
     department_name: str = None
     company_name: str = None
@@ -1445,11 +1620,20 @@ def set_client_profile(data: ClientProfileRequest, user: dict = Depends(require_
     from app.db import get_db_ctx
     with get_db_ctx() as db:
         with db.cursor() as cursor:
+            # Update users table if exists
+            cursor.execute("""
+                UPDATE users 
+                SET name=%s, phone_number=%s, email=%s
+                WHERE client_id=%s
+            """, (data.name or "", data.phone_number or "", data.login_email or "", data.client_id))
+            
+            # Update email_accounts table
             cursor.execute("""
                 UPDATE email_accounts 
-                SET agent_type=%s, department_name=%s, company_name=%s
+                SET agent_type=%s, department_name=%s, company_name=%s, email=%s, password=%s
                 WHERE client_id=%s
-            """, (data.agent_type, data.department_name, data.company_name, data.client_id))
+            """, (data.agent_type or "", data.department_name or "", data.company_name or "", data.imap_email or "", data.imap_password or "", data.client_id))
+            
             db.commit()
     return {"success": True}
 
@@ -1538,12 +1722,12 @@ def set_block_policy(data: ReplyBlockedPolicyRequest, user: dict = Depends(get_c
         raise HTTPException(status_code=400, detail="action must be 'reply' or 'ignore'")
 
     from app.db import get_db_ctx
-    from app.keyword_filter import _ensure_reply_blocked_table
+    from app.keyword_filter import _ensure_policy_table
     with get_db_ctx() as db:
         with db.cursor() as cursor:
-            _ensure_reply_blocked_table(cursor)
+            _ensure_policy_table(cursor)
             cursor.execute("""
-                INSERT INTO reply_blocked_by_keyword (client_id, action)
+                INSERT INTO keyword_block_policy (client_id, action)
                 VALUES (%s, %s)
                 ON DUPLICATE KEY UPDATE action=VALUES(action)
             """, (data.client_id, data.action))

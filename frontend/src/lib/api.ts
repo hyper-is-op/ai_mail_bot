@@ -312,8 +312,19 @@ export const api = {
     return result;
   },
 
-  // ===== Admin-only =====
-  async createClient(data: { login_email: string; login_password: string; imap_email: string; imap_password: string; score_threshold?: number; response_tone?: string }) {
+  async createClient(data: { 
+    name: string; 
+    phone_number: string; 
+    login_email: string; 
+    login_password: string; 
+    imap_email?: string; 
+    imap_password?: string; 
+    score_threshold?: number; 
+    response_tone?: string;
+    agent_type?: string;
+    department_name?: string;
+    company_name?: string;
+  }) {
     const res = await fetch(`${BASE_URL}/admin/create-client`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(data),
     });
@@ -368,6 +379,158 @@ export const api = {
     const result = await res.json();
     await handleAuthFailure(res);
     if (!res.ok) throw new Error(result.detail || 'Failed to fetch budget statuses');
+    return result;
+  },
+  async getAdminKnowledgeStats() {
+    const res = await fetch(`${BASE_URL}/admin/knowledge-stats`, { headers: authHeaders() });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to fetch knowledge stats');
+    return result;
+  },
+
+  // ===== Delete Client =====
+  async deleteClient(clientId: string) {
+    const res = await fetch(`${BASE_URL}/admin/delete-client/${clientId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to delete client');
+    return result;
+  },
+
+  // ===== Blocked Keywords =====
+  async getBlockedKeywords(clientId: string) {
+    const res = await fetch(`${BASE_URL}/blocked-keywords/${clientId}`, { headers: authHeaders() });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to fetch blocked keywords');
+    return result;
+  },
+  async addBlockedKeyword(clientId: string, keyword: string) {
+    const res = await fetch(`${BASE_URL}/blocked-keywords/add`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ client_id: clientId, keyword }),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to add blocked keyword');
+    return result;
+  },
+  async deleteBlockedKeyword(clientId: string, keyword: string) {
+    const res = await fetch(`${BASE_URL}/blocked-keywords/${clientId}/${encodeURIComponent(keyword)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to delete blocked keyword');
+    return result;
+  },
+  async getBlockedPolicy(clientId: string) {
+    const res = await fetch(`${BASE_URL}/blocked-keywords/policy/${clientId}`, { headers: authHeaders() });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to fetch blocked policy');
+    return result;
+  },
+  async setBlockedPolicy(clientId: string, action: string) {
+    const res = await fetch(`${BASE_URL}/blocked-keywords/policy`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ client_id: clientId, action }),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to set blocked policy');
+    return result;
+  },
+
+  // ===== Blocked Emails =====
+  async getBlockedEmails(clientId: string, status?: string) {
+    let url = `${BASE_URL}/blocked-emails/${clientId}`;
+    if (status) url += `?status=${status}`;
+    const res = await fetch(url, { headers: authHeaders() });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to fetch blocked emails');
+    return result;
+  },
+  async updateBlockedEmailStatus(clientId: string, recordId: number, status: string) {
+    const res = await fetch(`${BASE_URL}/blocked-emails/${clientId}/${recordId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ status }),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to update blocked email status');
+    return result;
+  },
+  async bulkIgnoreBlockedEmails(clientId: string) {
+    const res = await fetch(`${BASE_URL}/blocked-emails/${clientId}/bulk-ignore`, {
+      method: 'PATCH',
+      headers: authHeaders(),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to bulk ignore blocked emails');
+    return result;
+  },
+
+  // ===== Chat History =====
+  async getChatHistory(clientId: string, fromEmail: string) {
+    const res = await fetch(`${BASE_URL}/chat-history/${clientId}/${encodeURIComponent(fromEmail)}`, { headers: authHeaders() });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to fetch chat history');
+    return result;
+  },
+  async clearChatHistory(clientId: string, fromEmail: string) {
+    const res = await fetch(`${BASE_URL}/chat-history/${clientId}/${encodeURIComponent(fromEmail)}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to clear chat history');
+    return result;
+  },
+
+  // ===== Profile Settings =====
+  async updateClientProfile(data: { 
+    client_id: string; 
+    name?: string;
+    phone_number?: string;
+    login_email?: string;
+    imap_email?: string;
+    imap_password?: string;
+    agent_type?: string; 
+    department_name?: string; 
+    company_name?: string;
+  }) {
+    const res = await fetch(`${BASE_URL}/admin/client-profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(data),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to update client profile');
+    return result;
+  },
+  async updateSelfProfile(data: { client_id: string; department_name?: string; company_name?: string }) {
+    const res = await fetch(`${BASE_URL}/client/profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(data),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to update profile');
     return result;
   },
 };

@@ -51,12 +51,36 @@ def is_blocked(text: str, keywords: list) -> str | None:
     return None
 
 
-def insert_blocked_email(cursor, client_id, from_email, subject, body, matched_keyword):
-    """Inserts a blocked email record with default status pending_review."""
+def insert_blocked_email(cursor, client_id, from_email, subject, body, matched_keyword, status='pending_review'):
+    """Inserts a blocked email record with status."""
     _ensure_reply_blocked_table(cursor)
     cursor.execute("""
         INSERT INTO reply_blocked_by_keyword
-            (client_id, from_email, subject, body, matched_keyword)
-        VALUES (%s, %s, %s, %s, %s)
-    """, (client_id, from_email, subject, body, matched_keyword))
+            (client_id, from_email, subject, body, matched_keyword, status)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """, (client_id, from_email, subject, body, matched_keyword, status))
     return cursor.lastrowid
+
+
+def _ensure_policy_table(cursor):
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS keyword_block_policy (
+            client_id VARCHAR(50) PRIMARY KEY,
+            action VARCHAR(50) NOT NULL DEFAULT 'reply'
+        )
+    """)
+
+
+def get_block_policy(cursor, client_id: str) -> str:
+    _ensure_policy_table(cursor)
+    cursor.execute(
+        "SELECT action FROM keyword_block_policy WHERE client_id = %s",
+        (client_id,)
+    )
+    res = cursor.fetchone()
+    if res:
+        return res[0]
+    return "reply"
+
+
+_ensure_table = _ensure_blocked_keywords_table

@@ -8,7 +8,7 @@ export default function Tickets() {
   const [searchQuery, setSearchQuery] = useState('');
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
+  const [selectedClientId, setSelectedClientId] = useState(user?.role === 'admin' ? 'ALL' : (user?.client_id || ''));
   const [clients, setClients] = useState<any[]>([]);
 
   useEffect(() => {
@@ -16,9 +16,6 @@ export default function Tickets() {
       api.getAllEmailAccounts()
         .then((data) => {
           setClients(data);
-          if (data.length > 0 && !selectedClientId) {
-            setSelectedClientId(data[0].client_id);
-          }
         })
         .catch((err) => console.error("Failed to fetch clients for admin tickets:", err));
     }
@@ -78,6 +75,7 @@ export default function Tickets() {
                 onChange={(e) => setSelectedClientId(e.target.value)}
                 className="bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
               >
+                <option value="ALL" className="bg-zinc-900 text-foreground">ALL</option>
                 {clients.map((c) => (
                   <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
                     {c.client_id} ({c.email})

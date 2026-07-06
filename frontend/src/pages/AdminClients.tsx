@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { Loader2, UserPlus, CheckCircle, XCircle, ShieldCheck, Settings2, DollarSign, Clock, Lock } from 'lucide-react';
+import { Loader2, UserPlus, CheckCircle, XCircle, ShieldCheck, Settings2, DollarSign, Clock, Lock, Eye, EyeOff } from 'lucide-react';
 
 const CALLER_FUNCTIONS = [
     'detect_intent_llm', 'generate_reply_llm', 'design_payload',
@@ -28,11 +28,16 @@ export default function AdminClients() {
     const [expanded, setExpanded] = useState<string | null>(null);
 
     const [createForm, setCreateForm] = useState({
-        login_email: '', login_password: '', imap_email: '', imap_password: '',
+        name: '', phone_number: '', login_email: '', login_password: '', imap_email: '', imap_password: '',
+        agent_type: '', department_name: '', company_name: ''
     });
     const [creating, setCreating] = useState(false);
 
     const [manageState, setManageState] = useState<Record<string, any>>({});
+    const [showLoginPass, setShowLoginPass] = useState(false);
+    const [showImapPass, setShowImapPass] = useState(false);
+    const [showResetPass, setShowResetPass] = useState<Record<string, boolean>>({});
+    const [showManageImapPass, setShowManageImapPass] = useState<Record<string, boolean>>({});
 
     useEffect(() => { loadAll(); }, []);
 
@@ -59,7 +64,10 @@ export default function AdminClients() {
         try {
             const res = await api.createClient(createForm);
             setMsg({ type: 'success', text: `Client ${res.client_id} created. Credentials emailed to ${createForm.login_email}.` });
-            setCreateForm({ login_email: '', login_password: '', imap_email: '', imap_password: '' });
+            setCreateForm({ 
+                name: '', phone_number: '', login_email: '', login_password: '', imap_email: '', imap_password: '',
+                agent_type: '', department_name: '', company_name: '' 
+            });
             loadAll();
         } catch (err: any) {
             setMsg({ type: 'error', text: err.message });
@@ -82,6 +90,7 @@ export default function AdminClients() {
         if (expanded === clientId) { setExpanded(null); return; }
         setExpanded(clientId);
         if (!manageState[clientId]) {
+            const acc = accounts.find(a => a.client_id === clientId) || {};
             try {
                 const modelConfig = await api.getClientModelConfig(clientId);
                 const modelMap: Record<string, string> = {};
@@ -94,11 +103,68 @@ export default function AdminClients() {
                         cost_multiplier: 1.0, monthly_budget_usd: '',
                         models: modelMap,
                         new_password: '',
+                        name: acc.name || '',
+                        phone_number: acc.phone_number || '',
+                        login_email: acc.login_email || '',
+                        imap_email: acc.imap_email || '',
+                        imap_password: acc.imap_password || '',
+                        agent_type: acc.agent_type || '',
+                        department_name: acc.department_name || '',
+                        company_name: acc.company_name || '',
                     }
                 }));
             } catch {
-                setManageState(prev => ({ ...prev, [clientId]: { models: {}, new_password: '' } }));
+                setManageState(prev => ({
+                    ...prev,
+                    [clientId]: {
+                        models: {},
+                        new_password: '',
+                        name: acc.name || '',
+                        phone_number: acc.phone_number || '',
+                        login_email: acc.login_email || '',
+                        imap_email: acc.imap_email || '',
+                        imap_password: acc.imap_password || '',
+                        agent_type: acc.agent_type || '',
+                        department_name: acc.department_name || '',
+                        company_name: acc.company_name || '',
+                    }
+                }));
             }
+        }
+    };
+
+    const saveProfile = async (clientId: string) => {
+        const s = manageState[clientId];
+        try {
+            await api.updateClientProfile({
+                client_id: clientId,
+                name: s.name,
+                phone_number: s.phone_number,
+                login_email: s.login_email,
+                imap_email: s.imap_email,
+                imap_password: s.imap_password,
+                agent_type: s.agent_type,
+                department_name: s.department_name,
+                company_name: s.company_name,
+            });
+            setMsg({ type: 'success', text: `Profile details updated for ${clientId}.` });
+            loadAll();
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
+        }
+    };
+
+    const handleDeleteClient = async (clientId: string) => {
+        if (!window.confirm(`⚠️ WARNING: Are you sure you want to permanently delete client "${clientId}" and all associated logs, credentials, and data? This action cannot be undone.`)) {
+            return;
+        }
+        try {
+            await api.deleteClient(clientId);
+            setMsg({ type: 'success', text: `Client "${clientId}" has been successfully deleted.` });
+            setExpanded(null);
+            loadAll();
+        } catch (err: any) {
+            setMsg({ type: 'error', text: err.message });
         }
     };
 
@@ -183,18 +249,51 @@ export default function AdminClients() {
             <div className="glass-panel p-6 rounded-2xl border border-white/10">
                 <h3 className="text-lg font-semibold mb-4 flex items-center gap-2"><UserPlus className="w-5 h-5 text-primary" /> Create New Client</h3>
                 <form onSubmit={handleCreate} className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <input required type="text" placeholder="Client Name" value={createForm.name}
+                        onChange={e => setCreateForm({ ...createForm, name: e.target.value })}
+                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
+                    <input required type="text" placeholder="Phone Number" value={createForm.phone_number}
+                        onChange={e => setCreateForm({ ...createForm, phone_number: e.target.value })}
+                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
                     <input required type="email" placeholder="Client login email" value={createForm.login_email}
                         onChange={e => setCreateForm({ ...createForm, login_email: e.target.value })}
                         className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
-                    <input required type="text" minLength={8} placeholder="Client login password (min 8 chars)" value={createForm.login_password}
-                        onChange={e => setCreateForm({ ...createForm, login_password: e.target.value })}
-                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
-                    <input required type="email" placeholder="IMAP/Gmail address" value={createForm.imap_email}
+                    <div className="relative">
+                        <input required type={showLoginPass ? "text" : "password"} minLength={8} placeholder="Client login password (min 8 chars)" value={createForm.login_password}
+                            onChange={e => setCreateForm({ ...createForm, login_password: e.target.value })}
+                            className="bg-white/5 border border-white/10 rounded-lg pl-4 pr-10 py-2 text-sm w-full" />
+                        <button
+                            type="button"
+                            onClick={() => setShowLoginPass(!showLoginPass)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white transition-colors"
+                        >
+                            {showLoginPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                    </div>
+                    <input type="email" placeholder="IMAP/Gmail address (optional)" value={createForm.imap_email}
                         onChange={e => setCreateForm({ ...createForm, imap_email: e.target.value })}
                         className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
-                    <input required type="text" minLength={8} placeholder="IMAP app password" value={createForm.imap_password}
-                        onChange={e => setCreateForm({ ...createForm, imap_password: e.target.value })}
+                    <div className="relative">
+                        <input type={showImapPass ? "text" : "password"} placeholder="IMAP app password (optional)" value={createForm.imap_password}
+                            onChange={e => setCreateForm({ ...createForm, imap_password: e.target.value })}
+                            className="bg-white/5 border border-white/10 rounded-lg pl-4 pr-10 py-2 text-sm w-full" />
+                        <button
+                            type="button"
+                            onClick={() => setShowImapPass(!showImapPass)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white transition-colors"
+                        >
+                            {showImapPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                    </div>
+                    <input type="text" placeholder="Agent Type/Persona (optional, e.g. Support Agent)" value={createForm.agent_type}
+                        onChange={e => setCreateForm({ ...createForm, agent_type: e.target.value })}
                         className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
+                    <input type="text" placeholder="Department Name (optional, e.g. Customer Support)" value={createForm.department_name}
+                        onChange={e => setCreateForm({ ...createForm, department_name: e.target.value })}
+                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm" />
+                    <input type="text" placeholder="Company Name (optional, e.g. C-Zentrix)" value={createForm.company_name}
+                        onChange={e => setCreateForm({ ...createForm, company_name: e.target.value })}
+                        className="bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm md:col-span-2" />
                     <button disabled={creating} type="submit" className="md:col-span-2 bg-primary text-primary-foreground py-2.5 rounded-lg font-medium flex items-center justify-center gap-2">
                         {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Create Client & Email Credentials'}
                     </button>
@@ -315,18 +414,96 @@ export default function AdminClients() {
                                             </div>
                                         </div>
 
-                                        {/* Reset Login Password */}
+                                        {/* Client Profile & Account Settings */}
+                                        <div className="pt-2 border-t border-white/10">
+                                            <p className="text-xs font-semibold text-muted-foreground mb-2">CLIENT PROFILE & ACCOUNT SETTINGS</p>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-semibold text-zinc-400">Client Name</label>
+                                                    <input required type="text" placeholder="Client Name" value={s.name || ''}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], name: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full text-white" />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-semibold text-zinc-400">Phone Number</label>
+                                                    <input required type="text" placeholder="Phone Number" value={s.phone_number || ''}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], phone_number: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full text-white" />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-semibold text-zinc-400">Login Email</label>
+                                                    <input required type="email" placeholder="Login Email" value={s.login_email || ''}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], login_email: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full text-white" />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-semibold text-zinc-400">IMAP/Gmail Email</label>
+                                                    <input type="email" placeholder="IMAP Email Address" value={s.imap_email || ''}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], imap_email: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full text-white" />
+                                                </div>
+                                                <div className="space-y-1 relative">
+                                                    <label className="text-[10px] font-semibold text-zinc-400">IMAP Password</label>
+                                                    <div className="relative">
+                                                        <input 
+                                                            type={showManageImapPass[acc.client_id] ? "text" : "password"} 
+                                                            placeholder="IMAP App Password" 
+                                                            value={s.imap_password || ''}
+                                                            onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], imap_password: e.target.value } }))}
+                                                            className="bg-white/5 border border-white/10 rounded-lg pl-3 pr-10 py-1.5 text-sm w-full text-white" 
+                                                        />
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setShowManageImapPass(prev => ({ ...prev, [acc.client_id]: !prev[acc.client_id] }))}
+                                                            className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white transition-colors"
+                                                        >
+                                                            {showManageImapPass[acc.client_id] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-semibold text-zinc-400">Agent Type/Persona</label>
+                                                    <input type="text" placeholder="e.g. Support Agent" value={s.agent_type || ''}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], agent_type: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full text-white" />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-semibold text-zinc-400">Department Name</label>
+                                                    <input type="text" placeholder="e.g. Customer Support" value={s.department_name || ''}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], department_name: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full text-white" />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <label className="text-[10px] font-semibold text-zinc-400">Company Name</label>
+                                                    <input type="text" placeholder="e.g. C-Zentrix" value={s.company_name || ''}
+                                                        onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], company_name: e.target.value } }))}
+                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full text-white" />
+                                                </div>
+                                            </div>
+                                            <button onClick={() => saveProfile(acc.client_id)} className="mt-2 text-xs bg-primary/20 hover:bg-primary/30 text-primary px-3 py-1.5 rounded-lg transition-all">
+                                                Update Profile & Credentials
+                                            </button>
+                                        </div>
+
+                                         {/* Reset Login Password */}
                                         <div className="pt-2 border-t border-white/10">
                                             <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1"><Lock className="w-3.5 h-3.5" /> RESET LOGIN PASSWORD</p>
                                             <div className="flex gap-2 items-end">
-                                                <div className="flex-1 max-w-xs">
+                                                <div className="flex-1 max-w-xs relative">
                                                     <input 
-                                                        type="password" 
+                                                        type={showResetPass[acc.client_id] ? "text" : "password"} 
                                                         placeholder="New password (min 8 chars)" 
                                                         value={s.new_password || ''}
                                                         onChange={e => setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], new_password: e.target.value } }))}
-                                                        className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm w-full block text-white placeholder-white/30" 
+                                                        className="bg-white/5 border border-white/10 rounded-lg pl-3 pr-10 py-1.5 text-sm w-full block text-white placeholder-white/30" 
                                                     />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setShowResetPass(prev => ({ ...prev, [acc.client_id]: !prev[acc.client_id] }))}
+                                                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white transition-colors"
+                                                    >
+                                                        {showResetPass[acc.client_id] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                                    </button>
                                                 </div>
                                                 <button 
                                                     onClick={() => handleAdminResetPassword(acc.client_id)} 
@@ -335,6 +512,17 @@ export default function AdminClients() {
                                                     Reset Password
                                                 </button>
                                             </div>
+                                        </div>
+
+                                        {/* Danger Zone: Delete Client */}
+                                        <div className="pt-4 border-t border-rose-500/20">
+                                            <p className="text-xs font-semibold text-rose-400 mb-2">DANGER ZONE</p>
+                                            <button 
+                                                onClick={() => handleDeleteClient(acc.client_id)} 
+                                                className="text-xs bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 px-3 py-2 rounded-lg font-semibold transition-all"
+                                            >
+                                                Delete Client Account & Data
+                                            </button>
                                         </div>
                                     </div>
                                 )}

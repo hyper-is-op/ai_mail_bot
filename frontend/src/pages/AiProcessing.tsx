@@ -27,19 +27,31 @@ export default function AiProcessing() {
   const [activeFilter, setActiveFilter] = useState('All');
   
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const clientId = user?.client_id || '';
+  const [selectedClientId, setSelectedClientId] = useState(user?.role === 'admin' ? 'ALL' : (user?.client_id || ''));
+  const [clients, setClients] = useState<any[]>([]);
 
   useEffect(() => {
-    if (clientId) {
-      fetchLogs();
+    if (user?.role === 'admin') {
+      api.getAllEmailAccounts()
+        .then((data) => {
+          setClients(data);
+        })
+        .catch((err) => console.error("Failed to fetch clients for admin AI processing:", err));
     }
-  }, [clientId]);
+  }, []);
 
-  const fetchLogs = async () => {
+  useEffect(() => {
+    if (selectedClientId) {
+      fetchLogs(selectedClientId);
+    }
+  }, [selectedClientId]);
+
+  const fetchLogs = async (cid = selectedClientId) => {
+    if (!cid) return;
     setLoading(true);
     try {
-      const data = await api.getEmails(clientId);
-      setLogs(data);
+      const data = await api.getEmails(cid);
+      setLogs(data || []);
     } catch (err) {
       console.error("Failed to fetch AI processing logs:", err);
     } finally {
@@ -76,7 +88,7 @@ export default function AiProcessing() {
   return (
     <div className="space-y-6 relative h-[calc(100vh-140px)] overflow-y-auto pr-2">
       {/* Top Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-4">
         <div>
           <h2 className="text-3xl font-extrabold text-white tracking-tight flex items-center gap-2">
             <Cpu className="w-8 h-8 text-primary animate-pulse" />
@@ -86,13 +98,32 @@ export default function AiProcessing() {
             Real-time execution pipeline, intent classification scoreboards, and RAG retrieval traces.
           </p>
         </div>
-        <button 
-          onClick={fetchLogs} 
-          className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl border border-white/10 transition-colors text-sm font-medium"
-        >
-          <RefreshCw className="w-4 h-4" />
-          Sync Traces
-        </button>
+        <div className="flex flex-wrap items-center gap-3 self-start sm:self-auto">
+          {user?.role === 'admin' && clients.length > 0 && (
+            <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-1.5">
+              <span className="text-xs text-muted-foreground font-semibold">Client:</span>
+              <select
+                value={selectedClientId}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="bg-transparent text-xs text-foreground focus:outline-none cursor-pointer"
+              >
+                <option value="ALL" className="bg-zinc-900 text-foreground">ALL</option>
+                {clients.map((c) => (
+                  <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
+                    {c.client_id} ({c.email})
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <button 
+            onClick={() => fetchLogs(selectedClientId)} 
+            className="flex items-center gap-2 px-4 py-2 bg-white/5 hover:bg-white/10 text-white rounded-xl border border-white/10 transition-colors text-sm font-medium"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Sync Traces
+          </button>
+        </div>
       </div>
 
       {/* Telemetry Stats Grid */}
