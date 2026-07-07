@@ -16,7 +16,8 @@ import {
   PanelLeftOpen,
   X,
   BarChart3,
-  ShieldCheck
+  ShieldCheck,
+  Cpu
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -53,7 +54,13 @@ export default function Sidebar({ mobileOpen, setMobileOpen }: SidebarProps) {
 
   const user = JSON.parse(localStorage.getItem('user') || '{}');
   const navigation = user?.role === 'admin'
-    ? [...baseNavigation, { name: 'Admin · Clients', href: '/admin/clients', icon: ShieldCheck }]
+    ? [
+        { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+        { name: 'LLM Analytics', href: '/llm-analytics', icon: BarChart3 },
+        { name: 'Settings', href: '/settings', icon: Settings },
+        { name: 'Admin · Clients', href: '/admin/clients', icon: ShieldCheck },
+        { name: 'LLM Configuration', href: '/admin/llm-configs', icon: Cpu }
+      ]
     : baseNavigation;
 
   const sidebarContent = (isMobile: boolean = false) => (

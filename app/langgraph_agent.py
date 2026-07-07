@@ -42,18 +42,13 @@ async def run_mcp_agent(client_id: str, customer_email: str, email_body: str) ->
         }
     }
 
-    # Initialize OpenAI-compatible ChatOpenAI model pointing to Groq API
-    groq_api_key = os.getenv("GROQ_API_KEY")
-    if not groq_api_key:
-        logger.error("❌ GROQ_API_KEY environment variable is missing. Cannot initialize agent.")
-        return {"status": "error", "message": "GROQ_API_KEY is not configured in .env"}
-
-    model = ChatOpenAI(
-        model=os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile"),
-        openai_api_key=groq_api_key,
-        openai_api_base="https://api.groq.com/openai/v1",
-        temperature=0.2
-    )
+    # Resolve the LangChain Chat Model dynamically using database settings
+    from app.llm import resolve_langchain_model
+    try:
+        model = resolve_langchain_model(client_id, "run_mcp_agent", temperature=0.2)
+    except Exception as e:
+        logger.error(f"❌ Failed to resolve LLM config for agent: {e}")
+        return {"status": "error", "message": f"LLM configuration error: {e}"}
 
     logger.info("🔌 Connecting to MCP Server and loading dynamic tools...")
     

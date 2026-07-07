@@ -13,12 +13,12 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+# Dynamic placeholders - all actual calls resolve credentials dynamically from the database
 client = OpenAI(
-    api_key=os.getenv("GROQ_API_KEY"),
-    base_url="https://api.groq.com/openai/v1"
+    api_key="placeholder-api-key-unused"
 )
 
-MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+MODEL = "dynamic-resolved-model"
 
 import time
 import inspect
@@ -68,6 +68,191 @@ def log_llm_metrics_db(client_id: str, model_name: str, prompt_tokens: int, comp
 # Save original create method
 _original_create = client.chat.completions.create
 
+_llm_configs_cache = {}
+_LLM_CONFIGS_CACHE_TTL = 30  # seconds
+_dynamic_clients_cache = {}
+
+def get_llm_config(config_id: int) -> dict | None:
+    now = time.time()
+    cached = _llm_configs_cache.get(config_id)
+    if cached and now - cached[1] < _LLM_CONFIGS_CACHE_TTL:
+        return cached[0]
+    
+    config = None
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "SELECT provider, api_key, base_url, model_name, api_version, name FROM llm_configs WHERE id=%s",
+                    (config_id,)
+                )
+                row = cursor.fetchone()
+                if row:
+                    config = {
+                        "provider": row[0],
+                        "api_key": row[1],
+                        "base_url": row[2],
+                        "model_name": row[3],
+                        "api_version": row[4],
+                        "name": row[5]
+                    }
+    except Exception as e:
+        logger.warning(f"Failed to fetch llm config {config_id}: {e}")
+    
+    if config:
+        _llm_configs_cache[config_id] = (config, now)
+    return config
+
+def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
+    """
+    Dynamically resolves the LLM Configuration dict to use for the given client_id and caller_function.
+    Does NOT use any environment variables. Only queries the database.
+    """
+    from app.db import get_db_ctx
+
+    # 1. Check for specific override in client_model_config table
+    override_model = None
+    if client_id and client_id != "SYSTEM":
+        try:
+            with get_db_ctx() as db:
+                with db.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT model_name FROM client_model_config WHERE client_id=%s AND caller_function=%s",
+                        (client_id, caller_function)
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        override_model = row[0]
+        except Exception as e:
+            logger.warning(f"Error checking client_model_config override: {e}")
+
+    # If the override model points to a config_ID, fetch that config directly
+    if override_model and override_model.startswith("config_"):
+        try:
+            config_id = int(override_model.split("_")[1])
+            config = get_llm_config(config_id)
+            if config:
+                config["id"] = config_id
+                return config
+        except Exception as e:
+            logger.warning(f"Error resolving override config {override_model}: {e}")
+
+    # 2. Check if the client has a specific configuration in llm_configs table
+    if client_id and client_id != "SYSTEM":
+        try:
+            with get_db_ctx() as db:
+                with db.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT id, provider, api_key, base_url, model_name, api_version, name FROM llm_configs WHERE client_id=%s LIMIT 1",
+                        (client_id,)
+                    )
+                    row = cursor.fetchone()
+                    if row:
+                        return {
+                            "id": row[0],
+                            "provider": row[1],
+                            "api_key": row[2],
+                            "base_url": row[3],
+                            "model_name": row[4],
+                            "api_version": row[5],
+                            "name": row[6]
+                        }
+        except Exception as e:
+            logger.warning(f"Error fetching custom llm_config for client {client_id}: {e}")
+
+    # 3. Fall back to the Global (SYSTEM) default configuration in llm_configs table
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, provider, api_key, base_url, model_name, api_version, name FROM llm_configs WHERE client_id='SYSTEM' LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "provider": row[1],
+                        "api_key": row[2],
+                        "base_url": row[3],
+                        "model_name": row[4],
+                        "api_version": row[5],
+                        "name": row[6]
+                    }
+    except Exception as e:
+        logger.warning(f"Error fetching SYSTEM llm_config: {e}")
+
+    # 4. Fall back to ANY available configuration in llm_configs table if no SYSTEM default is set yet
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id, provider, api_key, base_url, model_name, api_version, name FROM llm_configs LIMIT 1"
+                )
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        "id": row[0],
+                        "provider": row[1],
+                        "api_key": row[2],
+                        "base_url": row[3],
+                        "model_name": row[4],
+                        "api_version": row[5],
+                        "name": row[6]
+                    }
+    except Exception as e:
+        logger.warning(f"Error fetching fallback llm_config: {e}")
+
+    # 5. No configurations found in database
+    raise ValueError(
+        "No LLM configurations are defined in the database. "
+        "Please add at least one LLM Provider configuration in the LLM Configuration page of the Admin UI."
+    )
+
+def get_dynamic_client(config_id: int, config: dict):
+    cache_key = (
+        config_id,
+        config["provider"],
+        config["api_key"],
+        config["base_url"],
+        config["api_version"]
+    )
+    if cache_key in _dynamic_clients_cache:
+        return _dynamic_clients_cache[cache_key]
+    
+    provider = config["provider"].lower()
+    api_key = config["api_key"]
+    base_url = config["base_url"]
+    api_version = config["api_version"]
+    
+    # Resolve default base URL if not explicitly provided
+    if not base_url:
+        if provider == "groq":
+            base_url = "https://api.groq.com/openai/v1"
+        elif provider == "openai":
+            base_url = "https://api.openai.com/v1"
+        elif provider == "grok":
+            base_url = "https://api.x.ai/v1"
+        elif provider == "gemini":
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+    
+    if provider == "azure":
+        from openai import AzureOpenAI
+        new_client = AzureOpenAI(
+            api_key=api_key,
+            api_version=api_version or "2024-02-15-preview",
+            azure_endpoint=base_url
+        )
+    else:
+        from openai import OpenAI
+        new_client = OpenAI(
+            api_key=api_key,
+            base_url=base_url or None
+        )
+        
+    _dynamic_clients_cache[cache_key] = new_client
+    return new_client
+
 def telemetry_create(*args, **kwargs):
     caller = "unknown"
     try:
@@ -78,25 +263,71 @@ def telemetry_create(*args, **kwargs):
         pass
 
     start_time = time.time()
-    res = _original_create(*args, **kwargs)
+    client_id = current_client_id.get()
+
+    try:
+        config = get_llm_config_for_client(client_id, caller)
+        actual_model = config["model_name"]
+        kwargs["model"] = actual_model
+        target_client = get_dynamic_client(config.get("id", 0), config)
+    except Exception as exc:
+        logger.error(f"❌ LLM Config Resolution Failed: {exc}")
+        raise exc
+
+    res = target_client.chat.completions.create(*args, **kwargs)
     latency_ms = (time.time() - start_time) * 1000
 
     try:
-        model_name = kwargs.get("model", MODEL)
         prompt_tokens = 0
         completion_tokens = 0
         if res and hasattr(res, "usage") and res.usage:
             prompt_tokens = res.usage.prompt_tokens
             completion_tokens = res.usage.completion_tokens
         
-        client_id = current_client_id.get()
-        log_llm_metrics_db(client_id, model_name, prompt_tokens, completion_tokens, latency_ms, caller)
+        log_llm_metrics_db(client_id, actual_model, prompt_tokens, completion_tokens, latency_ms, caller)
     except Exception as telemetry_err:
         logger.warning(f"Telemetry tracking error: {telemetry_err}")
 
     return res
 
 client.chat.completions.create = telemetry_create
+
+def resolve_langchain_model(client_id: str, caller_function: str, temperature: float = 0.2):
+    """
+    Resolves the LLM config for LangChain usage, returns a ChatOpenAI or AzureChatOpenAI instance
+    configured with database credentials.
+    """
+    config = get_llm_config_for_client(client_id, caller_function)
+    provider = config["provider"].lower()
+    
+    base_url = config["base_url"]
+    if not base_url:
+        if provider == "groq":
+            base_url = "https://api.groq.com/openai/v1"
+        elif provider == "openai":
+            base_url = "https://api.openai.com/v1"
+        elif provider == "grok":
+            base_url = "https://api.x.ai/v1"
+        elif provider == "gemini":
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+            
+    if provider == "azure":
+        from langchain_openai import AzureChatOpenAI
+        return AzureChatOpenAI(
+            model=config["model_name"],
+            openai_api_key=config["api_key"],
+            openai_api_version=config["api_version"] or "2024-02-15-preview",
+            azure_endpoint=base_url,
+            temperature=temperature
+        )
+    else:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=config["model_name"],
+            openai_api_key=config["api_key"],
+            openai_api_base=base_url or None,
+            temperature=temperature
+        )
 
 # MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3-32b")
 
@@ -795,26 +1026,18 @@ _model_cache = {}
 _MODEL_CACHE_TTL = 60  # seconds
 
 def resolve_model(client_id: str, caller_function: str) -> str:
-    if not client_id or client_id == "SYSTEM":
-        return MODEL
     cache_key = (client_id, caller_function)
     now = time.time()
     cached = _model_cache.get(cache_key)
     if cached and now - cached[1] < _MODEL_CACHE_TTL:
         return cached[0]
-    model = MODEL
+    
     try:
-        from app.db import get_db_ctx
-        with get_db_ctx() as db:
-            with db.cursor() as cursor:
-                cursor.execute(
-                    "SELECT model_name FROM client_model_config WHERE client_id=%s AND caller_function=%s",
-                    (client_id, caller_function)
-                )
-                row = cursor.fetchone()
-                if row:
-                    model = row[0]
+        config = get_llm_config_for_client(client_id, caller_function)
+        model = config["model_name"]
     except Exception as e:
-        logger.warning(f"resolve_model lookup failed, using default: {e}")
+        logger.warning(f"resolve_model lookup failed, using fallback: {e}")
+        model = "llama-3.3-70b-versatile"
+        
     _model_cache[cache_key] = (model, now)
     return model

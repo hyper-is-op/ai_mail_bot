@@ -15,6 +15,7 @@ import Register from './pages/auth/Register';
 import Logout from './pages/auth/Logout';
 import ApproveRegistration from './pages/auth/ApproveRegistration';
 import AdminClients from './pages/AdminClients';
+import LlmConfigManager from './pages/LlmConfigManager';
 
 function App() {
   useEffect(() => {
@@ -44,6 +45,7 @@ function App() {
           <Route path="llm-analytics" element={<LlmAnalytics />} />
           <Route path="settings" element={<Settings />} />
           <Route path="admin/clients" element={<AdminClients />} />
+          <Route path="admin/llm-configs" element={<LlmConfigManager />} />
         </Route>
       </Routes>
     </Router>

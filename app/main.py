@@ -152,6 +152,29 @@ def ensure_paused_emails_table():
     except Exception as e:
         logger.warning(f"⚠️ Failed to ensure paused_emails table: {e}")
 
+def ensure_llm_configs_table():
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS llm_configs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    client_id VARCHAR(50) NOT NULL,
+                    name VARCHAR(100) NOT NULL,
+                    provider VARCHAR(50) NOT NULL,
+                    api_key VARCHAR(255) NOT NULL,
+                    base_url VARCHAR(255) NULL,
+                    model_name VARCHAR(100) NOT NULL,
+                    api_version VARCHAR(50) NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+                db.commit()
+                logger.info("✅ Ensured llm_configs table exists")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure llm_configs table: {e}")
+
 # @asynccontextmanager
 # async def lifespan(app: FastAPI):
 #     await asyncio.to_thread(ensure_create_payload_table)
@@ -160,7 +183,7 @@ def ensure_paused_emails_table():
 #     await asyncio.to_thread(preload_chroma_embeddings)
 #     await asyncio.to_thread(backfill_client_ids)
 #     await asyncio.to_thread(ensure_paused_emails_table)
-    
+#     
 #     listener_task = asyncio.create_task(redis_pubsub_listener(app))
 #     yield
 #     listener_task.cancel()
@@ -187,6 +210,7 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(preload_chroma_embeddings)
     await asyncio.to_thread(backfill_client_ids)
     await asyncio.to_thread(ensure_paused_emails_table)
+    await asyncio.to_thread(ensure_llm_configs_table)
     
     listener_task = asyncio.create_task(redis_pubsub_listener(app))
     yield
@@ -1505,6 +1529,80 @@ def set_client_cost_config(data: ClientCostConfigRequest, user: dict = Depends(r
             )
             db.commit()
     return {"status": "success"}
+
+
+class LlmConfigRequest(BaseModel):
+    id: int | None = None
+    client_id: str
+    name: str
+    provider: str
+    api_key: str
+    base_url: str | None = None
+    model_name: str
+    api_version: str | None = None
+
+@app.get("/admin/llm-configs")
+def get_llm_configs_endpoint(user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, client_id, name, provider, api_key, base_url, model_name, api_version, created_at 
+                    FROM llm_configs 
+                    ORDER BY id DESC
+                """)
+                rows = cursor.fetchall()
+                configs = []
+                for r in rows:
+                    configs.append({
+                        "id": r[0],
+                        "client_id": r[1],
+                        "name": r[2],
+                        "provider": r[3],
+                        "api_key": r[4],
+                        "base_url": r[5],
+                        "model_name": r[6],
+                        "api_version": r[7],
+                        "created_at": str(r[8])
+                    })
+                return configs
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/llm-configs")
+def save_llm_config_endpoint(data: LlmConfigRequest, user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                if data.id:
+                    cursor.execute("""
+                        UPDATE llm_configs 
+                        SET client_id=%s, name=%s, provider=%s, api_key=%s, base_url=%s, model_name=%s, api_version=%s
+                        WHERE id=%s
+                    """, (data.client_id, data.name, data.provider, data.api_key, data.base_url, data.model_name, data.api_version, data.id))
+                else:
+                    cursor.execute("""
+                        INSERT INTO llm_configs (client_id, name, provider, api_key, base_url, model_name, api_version)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (data.client_id, data.name, data.provider, data.api_key, data.base_url, data.model_name, data.api_version))
+            db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/admin/llm-configs/{config_id}")
+def delete_llm_config_endpoint(config_id: int, user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("DELETE FROM llm_configs WHERE id=%s", (config_id,))
+            db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/budget-status/{client_id}")

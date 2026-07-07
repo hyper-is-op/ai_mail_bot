@@ -327,3 +327,8 @@ def get_history_count(client_id: str, from_email: str) -> int:
     except Exception as e:
         logger.error(f"❌ Redis llen failed: {e}")
         return 0
+
+
+
+
+        

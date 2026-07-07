@@ -5,8 +5,6 @@ from app.llm import resolve_model, current_client_id, client
 
 logger = logging.getLogger(__name__)
 
-MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
-
 
 # ==============================
 # 🧠 LLM BASED SCORING

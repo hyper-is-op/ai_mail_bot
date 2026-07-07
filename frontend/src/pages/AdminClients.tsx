@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Navigate } from 'react-router-dom';
 import { api } from '@/lib/api';
-import { Loader2, UserPlus, CheckCircle, XCircle, ShieldCheck, Settings2, DollarSign, Clock, Lock, Eye, EyeOff } from 'lucide-react';
+import { Loader2, UserPlus, CheckCircle, XCircle, ShieldCheck, Settings2, DollarSign, Clock, Lock, Eye, EyeOff, Cpu, Key, Globe, Plus, Trash2, Edit3, Server } from 'lucide-react';
 
 const CALLER_FUNCTIONS = [
     'detect_intent_llm', 'generate_reply_llm', 'design_payload',
@@ -23,6 +23,7 @@ export default function AdminClients() {
     const [accounts, setAccounts] = useState<any[]>([]);
     const [pending, setPending] = useState<any[]>([]);
     const [budgets, setBudgets] = useState<any[]>([]);
+    const [llmConfigs, setLlmConfigs] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [msg, setMsg] = useState({ type: '', text: '' });
     const [expanded, setExpanded] = useState<string | null>(null);
@@ -44,12 +45,13 @@ export default function AdminClients() {
     const loadAll = async () => {
         setLoading(true);
         try {
-            const [accs, pend, budg] = await Promise.all([
-                api.getAllEmailAccounts(), api.getPendingUsers(), api.getAllBudgetStatuses(),
+            const [accs, pend, budg, configs] = await Promise.all([
+                api.getAllEmailAccounts(), api.getPendingUsers(), api.getAllBudgetStatuses(), api.getLlmConfigs()
             ]);
             setAccounts(accs);
             setPending(pend);
             setBudgets(budg);
+            setLlmConfigs(configs);
         } catch (err: any) {
             setMsg({ type: 'error', text: err.message });
         } finally {
@@ -380,12 +382,28 @@ export default function AdminClients() {
                                                             onChange={e => {
                                                                 const model = e.target.value;
                                                                 setManageState(prev => ({ ...prev, [acc.client_id]: { ...prev[acc.client_id], models: { ...prev[acc.client_id].models, [fn]: model } } }));
-                                                                if (model) saveModel(acc.client_id, fn, model);
+                                                                saveModel(acc.client_id, fn, model);
                                                             }}
-                                                            className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs"
+                                                            className="bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-xs text-white bg-zinc-900"
                                                         >
-                                                            <option value="">(use global default)</option>
-                                                            {MODEL_OPTIONS.map(m => <option key={m} value={m}>{m}</option>)}
+                                                            <option value="" className="bg-zinc-900 text-zinc-400">(use global default)</option>
+                                                            <optgroup label="Standard Models" className="bg-zinc-900 text-zinc-300">
+                                                                {MODEL_OPTIONS.map(m => (
+                                                                    <option key={m} value={m} className="bg-zinc-900 text-white">{m}</option>
+                                                                ))}
+                                                            </optgroup>
+                                                            {llmConfigs.length > 0 && (
+                                                                <optgroup label="Custom Provider Configs" className="bg-zinc-900 text-zinc-300">
+                                                                    {llmConfigs
+                                                                        .filter(c => c.client_id === 'SYSTEM' || c.client_id === acc.client_id)
+                                                                        .map(c => (
+                                                                            <option key={c.id} value={`config_${c.id}`} className="bg-zinc-900 text-white font-medium">
+                                                                                {c.client_id === 'SYSTEM' ? '🌐 [Global]' : '🔒 [Client]'} {c.name} ({c.provider}: {c.model_name})
+                                                                            </option>
+                                                                        ))
+                                                                    }
+                                                                </optgroup>
+                                                            )}
                                                         </select>
                                                     </div>
                                                 ))}

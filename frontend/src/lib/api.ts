@@ -374,6 +374,31 @@ export const api = {
     if (!res.ok) throw new Error(result.detail || 'Failed to update cost config');
     return result;
   },
+  async getLlmConfigs() {
+    const res = await fetch(`${BASE_URL}/admin/llm-configs`, { headers: authHeaders() });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to fetch LLM configurations');
+    return result;
+  },
+  async saveLlmConfig(data: { id?: number; client_id: string; name: string; provider: string; api_key: string; base_url?: string | null; model_name: string; api_version?: string | null }) {
+    const res = await fetch(`${BASE_URL}/admin/llm-configs`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(data),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to save LLM configuration');
+    return result;
+  },
+  async deleteLlmConfig(configId: number) {
+    const res = await fetch(`${BASE_URL}/admin/llm-configs/${configId}`, {
+      method: 'DELETE', headers: authHeaders(),
+    });
+    const result = await res.json();
+    await handleAuthFailure(res);
+    if (!res.ok) throw new Error(result.detail || 'Failed to delete LLM configuration');
+    return result;
+  },
   async getAllBudgetStatuses() {
     const res = await fetch(`${BASE_URL}/admin/budget-status`, { headers: authHeaders() });
     const result = await res.json();

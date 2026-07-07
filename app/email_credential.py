@@ -517,7 +517,8 @@ def get_all_create_payloads() -> list[dict]:
             cursor.execute("""
                 SELECT p.client_id, p.url, p.paylod, a.email 
                 FROM create_payload_table p
-                LEFT JOIN email_accounts a ON p.client_id = a.client_id
+                LEFT JOIN email_accounts a 
+                  ON p.client_id COLLATE utf8mb4_unicode_ci = a.client_id COLLATE utf8mb4_unicode_ci
             """)
             rows = cursor.fetchall()
         result = []
@@ -547,7 +548,8 @@ def get_all_get_payloads() -> list[dict]:
             cursor.execute("""
                 SELECT p.client_id, p.url, p.paylod, a.email 
                 FROM payload_get_table p
-                LEFT JOIN email_accounts a ON p.client_id = a.client_id
+                LEFT JOIN email_accounts a 
+                  ON p.client_id COLLATE utf8mb4_unicode_ci = a.client_id COLLATE utf8mb4_unicode_ci
             """)
             rows = cursor.fetchall()
         result = []

@@ -68,6 +68,9 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
             while not stop_event.is_set():
                 try:
                     mail.noop()
+
+                    logger.info(f"🔄 [Client {client_id}] Poll cycle — checking UNSEEN")
+                    
                     status, messages = mail.search(None, 'UNSEEN')
                     
                     if messages[0]:
