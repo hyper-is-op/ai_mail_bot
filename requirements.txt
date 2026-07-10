@@ -8,7 +8,6 @@ pymysql
 openai
 cryptography
 email-validator
-chromadb==1.5.9
 pypdf
 openpyxl
 python-multipart
@@ -18,3 +17,4 @@ langchain-mcp-adapters
 langgraph
 langchain-openai
 dbutils
+qdrant-client>=1.10,<2.0

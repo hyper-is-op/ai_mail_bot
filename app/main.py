@@ -17,18 +17,24 @@ from fastapi import Depends
 logger = logging.getLogger(__name__)
 
 
-def preload_chroma_embeddings():
+def preload_qdrant_collection():
+    """
+    Startup equivalent of the old Chroma warmup — here it just means
+    "make sure the shared collection exists" and log whether embed_service
+    is reachable. There's no per-request model warmup to do on this side
+    anymore; that lives entirely in embed_service's own startup.
+    """
     try:
-        from app.rag import get_chroma_client
-        client = get_chroma_client()
-        if client:
-            col = client.get_or_create_collection("warmup-model-preload")
-            col.add(documents=["warmup"], ids=["warmup"])
-            col.query(query_texts=["warmup"], n_results=1)
-            client.delete_collection("warmup-model-preload")
-            logger.info("✅ ChromaDB embedding model pre-loaded")
+        from app.vector_store import ensure_collection
+        from app.embed_client import embed_service_healthy
+        if ensure_collection():
+            logger.info("✅ Qdrant collection ensured at startup")
+        else:
+            logger.warning("⚠️ Qdrant not reachable at API startup — RAG will degrade until it recovers")
+        if not embed_service_healthy():
+            logger.warning("⚠️ embed_service not reachable at API startup — RAG will degrade until it recovers")
     except Exception as e:
-        logger.warning(f"⚠️ ChromaDB warmup failed: {e}")
+        logger.warning(f"⚠️ Qdrant/embed_service startup check failed: {e}")
 
 def backfill_client_ids():
     try:
@@ -207,7 +213,7 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(ensure_create_payload_table)
     await asyncio.to_thread(ensure_payload_get_ticket_table)
     await asyncio.to_thread(ensure_users_table)
-    await asyncio.to_thread(preload_chroma_embeddings)
+    await asyncio.to_thread(preload_qdrant_collection)
     await asyncio.to_thread(backfill_client_ids)
     await asyncio.to_thread(ensure_paused_emails_table)
     await asyncio.to_thread(ensure_llm_configs_table)

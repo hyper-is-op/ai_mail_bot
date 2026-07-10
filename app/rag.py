@@ -1,55 +1,60 @@
+"""
+app/rag.py
+
+RAG layer — rewritten to use Qdrant (single shared collection, client_id
+payload filter) + the standalone embed_service, instead of ChromaDB.
+
+Public function signatures are UNCHANGED from the Chroma version so that
+worker/tasks.py, worker/tasks_new.py and app/mcp_server.py need no changes
+beyond import paths (per migration spec — those files call through here).
+
+Fallback behaviour: if Qdrant OR embed_service is unavailable, every
+function here degrades to the same JSON/Jaccard fallback store the old
+Chroma implementation used — kept deliberately, and applied consistently
+across all functions (not just some), per migration spec. The fallback
+JSON file lives under CHROMA_PATH — renamed conceptually but the directory
+is kept as a stable, already-mounted shared volume path across
+api/worker/listener containers. Do NOT remove that volume mount without
+also moving FALLBACK_DB_PATH, or the fallback goes split-brain across
+containers.
+
+Existing Chroma data is intentionally NOT migrated — clients re-upload
+after cutover, per migration spec. RAG returns empty until re-upload;
+worker/tasks.py's existing "no context found" -> PATH C ticket-creation
+handles that gap without any change on its end.
+"""
+
 import os
 import json
 import logging
 import uuid
-import requests
-from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import Any
-
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Persistent path for ChromaDB/Fallback inside workspace
+# Kept as the same on-disk path/volume the old Chroma implementation used —
+# this directory is already mounted into api/worker/listener in
+# docker-compose.yml. Only the fallback JSON file lives here now.
 CHROMA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "chroma_db")
 os.makedirs(CHROMA_PATH, exist_ok=True)
-logger.info(f"📂 CHROMA_PATH={CHROMA_PATH}")  # ← add here (temp)
-
-CHROMA_AVAILABLE = False
-try:
-    import chromadb
-    CHROMA_AVAILABLE = True
-except Exception as e:
-    logger.warning(f"⚠️ ChromaDB import failed: {str(e)}. Fallback JSON database will be used automatically.")
-
-
-
-_chroma_client = None
-
-CHROMA_HOST = os.getenv("CHROMA_HOST", "mail_ai_chroma")
-CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
-
-def get_chroma_client():
-    global _chroma_client
-    if not CHROMA_AVAILABLE:
-        return None
-    if _chroma_client is None:
-        try:
-            import chromadb
-            _chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-            _chroma_client.heartbeat()
-            logger.info(f"✅ Connected to ChromaDB HTTP server at {CHROMA_HOST}:{CHROMA_PORT}")
-        except Exception as e:
-            logger.error(f"❌ Failed to connect to ChromaDB HTTP server: {e}")
-            return None
-    return _chroma_client
-
-# ==========================================
-# 🛠️ FALLBACK JSON DATABASE SERVICES
-# ==========================================
 FALLBACK_DB_PATH = os.path.join(CHROMA_PATH, "fallback_db.json")
 
+from app.vector_store import (
+    ensure_collection,
+    upsert_chunks,
+    search as qdrant_search,
+    search_all_clients as qdrant_search_all_clients,
+    get_client_documents as qdrant_get_client_documents,
+    get_all_documents as qdrant_get_all_documents,
+    delete_document as qdrant_delete_document,
+    collection_count,
+)
+from app.embed_client import embed_passages, embed_query
+
+
+# ==========================================
+# 🛠️ FALLBACK JSON DATABASE (unchanged philosophy, now backs Qdrant-down)
+# ==========================================
 def load_fallback_db() -> dict:
     if os.path.exists(FALLBACK_DB_PATH):
         try:
@@ -60,12 +65,14 @@ def load_fallback_db() -> dict:
             return {}
     return {}
 
+
 def save_fallback_db(data: dict):
     try:
         with open(FALLBACK_DB_PATH, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
     except Exception as e:
         logger.error(f"❌ Failed to save fallback DB: {e}")
+
 
 def jaccard_similarity(text1: str, text2: str) -> float:
     words1 = set(text1.lower().split())
@@ -74,15 +81,13 @@ def jaccard_similarity(text1: str, text2: str) -> float:
         return 0.0
     return len(words1.intersection(words2)) / len(words1.union(words2))
 
+
 # ==========================================
 # 🚀 CORE RAG API INTERFACES (USER-ISOLATED)
 # ==========================================
 
 def split_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> list[str]:
-    """
-    Splits text content into overlapping chunks to optimize vector database retrieval
-    accuracy and stay within token/embedding constraints.
-    """
+    """Unchanged from the Chroma implementation — chunking strategy is not part of this migration."""
     chunks = []
     start = 0
     while start < len(text):
@@ -94,90 +99,16 @@ def split_text(text: str, chunk_size: int = 1500, overlap: int = 200) -> list[st
     return chunks
 
 
-def add_knowledge(client_id: str, title: str, content: str) -> str:
-    existing_rag_id = None
-    try:
-        from app.db import get_db_ctx
-        with get_db_ctx() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT collect_name FROM email_customers WHERE client_id = %s LIMIT 1", (client_id,))
-            res = cursor.fetchone()
-            if res and res[0]:
-                existing_collect_name = res[0]
-                logger.info(f"🔎 Found existing collect_name={existing_collect_name} in database for client_id={client_id}")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to check for existing collect_name: {e}")
-
-    rag_id = existing_rag_id if existing_rag_id else str(uuid.uuid4())
-    doc_id = str(uuid.uuid4())
-    logger.info(f"Adding knowledge for client_id={client_id}, rag_id={rag_id}, doc_id={doc_id}, title={title}")
-
-    collection_name = f"client_{client_id.replace('-', '_').lower()}"
-    saved_successfully = False
-    try:
-        chroma_client = get_chroma_client()
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize ChromaDB: {e}")
-        chroma_client = None
-        
-    if chroma_client:
-        try:
-            collection = chroma_client.get_or_create_collection(name=collection_name)
-
-            # Clean corrupted documents
-            try:
-                existing = collection.get()
-                bad_ids = [
-                    existing["ids"][i]
-                    for i, doc in enumerate(existing.get("documents", []))
-                    if doc is None
-                ]
-                if bad_ids:
-                    collection.delete(ids=bad_ids)
-                    logger.info(f"🧹 Cleaned {len(bad_ids)} corrupted documents from collection")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to clean corrupted documents: {e}")
-
-            # Split document into overlapping chunks
-            chunks = split_text(content)
-            if not chunks:
-                chunks = [content]
-
-            chunk_ids = [f"{doc_id}_chunk_{i}" for i in range(len(chunks))]
-            chunk_metadatas = [
-                {
-                    "title": title, 
-                    "client_id": client_id, 
-                    "doc_id": doc_id, 
-                    "chunk_index": i,
-                    "total_chunks": len(chunks)
-                } 
-                for i in range(len(chunks))
-            ]
-
-            collection.add(
-                documents=chunks,
-                metadatas=chunk_metadatas,
-                ids=chunk_ids
-            )
-            logger.info(f"✅ Chunked and saved to ChromaDB collection: {collection_name} ({len(chunks)} chunks)")
-            saved_successfully = True
-        except Exception as e:
-            logger.error(f"❌ ChromaDB add failed, falling back to JSON: {e}")
-
-    if not saved_successfully:
-        db = load_fallback_db()
-        if client_id not in db:
-            db[client_id] = []
-        db[client_id].append({
-            "id": doc_id,
-            "title": title,
-            "content": content
-        })
-        save_fallback_db(db)
-        logger.info("✅ Saved to Fallback JSON Database")
-
-
+def _link_client_in_db(client_id: str):
+    """
+    Preserves the email_customers linkage/customer_name lookup behaviour
+    from the old implementation. collect_name is no longer a Chroma
+    collection name (Qdrant uses one shared collection) — it's kept purely
+    as a stable identifier column for backward-compat with any existing
+    reads of email_customers.collect_name, set equal to a normalized
+    client_id.
+    """
+    collect_name = f"client_{client_id.replace('-', '_').lower()}"
     try:
         from app.db import get_db_ctx
         with get_db_ctx() as db:
@@ -196,11 +127,7 @@ def add_knowledge(client_id: str, title: str, content: str) -> str:
                     user_res = cursor.fetchone()
                     if user_res and user_res[0]:
                         val = user_res[0]
-                        if name_col == "email":
-                            customer_name = val.split('@')[0].capitalize()
-                        else:
-                            customer_name = str(val).capitalize()
-                logger.info(f"👤 Retrieved customer name from users table: {customer_name}")
+                        customer_name = val.split('@')[0].capitalize() if name_col == "email" else str(val).capitalize()
             except Exception as ue:
                 logger.warning(f"⚠️ Could not fetch customer name from users table: {ue}")
 
@@ -208,179 +135,78 @@ def add_knowledge(client_id: str, title: str, content: str) -> str:
                 INSERT INTO email_customers (client_id, collect_name, customer_name)
                 VALUES (%s, %s, %s)
                 ON DUPLICATE KEY UPDATE collect_name = VALUES(collect_name), customer_name = VALUES(customer_name)
-            """, (client_id, collection_name, customer_name))
+            """, (client_id, collect_name, customer_name))
             db.commit()
-            logger.info(f"✅ Saved RAG ID link in database: client_id={client_id} -> rag_id={collection_name}, customer_name={customer_name}")
     except Exception as e:
-        logger.error(f"❌ Failed to save RAG ID to email_customers database: {e}")
+        logger.error(f"❌ Failed to save RAG ID link in database: {e}")
 
+    return collect_name
+
+
+def add_knowledge(client_id: str, title: str, content: str) -> str:
+    """
+    Chunks content, embeds it via embed_service, and upserts into the
+    shared Qdrant collection tagged with client_id. Falls back to the
+    JSON store if either Qdrant or embed_service is unavailable.
+    """
+    doc_id = str(uuid.uuid4())
+    logger.info(f"Adding knowledge for client_id={client_id}, doc_id={doc_id}, title={title}")
+
+    chunks = split_text(content) or [content]
+    saved_successfully = False
+
+    vectors = embed_passages(chunks)
+    if vectors is not None and ensure_collection():
+        saved_successfully = upsert_chunks(client_id, doc_id, title, chunks, vectors)
+    else:
+        logger.warning("⚠️ Embedding or Qdrant unavailable — falling back to JSON store")
+
+    if not saved_successfully:
+        db = load_fallback_db()
+        if client_id not in db:
+            db[client_id] = []
+        db[client_id].append({"id": doc_id, "title": title, "content": content})
+        save_fallback_db(db)
+        logger.info("✅ Saved to Fallback JSON Database")
+
+    _link_client_in_db(client_id)
     return doc_id
 
 
 def get_knowledge_base(client_id: str) -> list[dict]:
-    """
-    Retrieves all knowledge entries for a specific client_id (or ALL clients).
-    """
+    """Retrieves all knowledge entries for a specific client_id (or ALL clients)."""
     logger.info(f"Fetching knowledge base for client_id={client_id}")
-    
+
     if client_id == "ALL":
-        # Fetch all collections/clients
-        all_clients = []
-        try:
-            from app.db import get_db_ctx
-            with get_db_ctx() as db:
-                cursor = db.cursor()
-                cursor.execute("SELECT client_id, collect_name FROM email_customers")
-                all_clients = cursor.fetchall()
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to fetch all clients for list: {e}")
-            
-        chroma_client = get_chroma_client()
-        all_docs = []
-        if chroma_client:
-            try:
-                collections = [col.name for col in chroma_client.list_collections()]
-                for cid, collect_name in all_clients:
-                    collection_name = collect_name or f"client_{cid.replace('-', '_').lower()}"
-                    if collection_name in collections:
-                        collection = chroma_client.get_collection(name=collection_name)
-                        results = collection.get()
-                        
-                        unique_docs = {}
-                        for i in range(len(results.get("ids", []))):
-                            metadata = results["metadatas"][i]
-                            p_doc_id = metadata.get("doc_id", results["ids"][i].split("_chunk_")[0])
-                            title = metadata.get("title", "Untitled Document")
-                            content = results["documents"][i]
-                            
-                            if p_doc_id not in unique_docs:
-                                unique_docs[p_doc_id] = {
-                                    "id": p_doc_id,
-                                    "title": f"[{cid}] {title}",
-                                    "chunks_count": 1,
-                                    "content": content,
-                                    "client_id": cid
-                                }
-                            else:
-                                unique_docs[p_doc_id]["chunks_count"] += 1
-                                if len(unique_docs[p_doc_id]["content"]) < 300:
-                                    unique_docs[p_doc_id]["content"] += "\n" + content
-                                    
-                        all_docs.extend(list(unique_docs.values()))
-                return all_docs
-            except Exception as e:
-                logger.error(f"❌ ChromaDB get failed for ALL, falling back to JSON: {e}")
-                
+        docs = qdrant_get_all_documents()
+        if docs:
+            return docs
         # Fallback JSON
         db = load_fallback_db()
         fallback_docs = []
-        for cid, docs in db.items():
-            for doc in docs:
+        for cid, cdocs in db.items():
+            for doc in cdocs:
                 fallback_docs.append({
-                    "id": doc["id"],
-                    "title": f"[{cid}] {doc['title']}",
-                    "content": doc["content"],
-                    "client_id": cid
+                    "id": doc["id"], "title": f"[{cid}] {doc['title']}",
+                    "content": doc["content"], "client_id": cid
                 })
         return fallback_docs
 
-    # Fetch rag_id from database
-    # rag_id = client_id
-    collect_name = f"client_{client_id.replace('-', '_').lower()}"  # default fallback
-    try:
-        from app.db import get_db_ctx
-        with get_db_ctx() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT collect_name FROM email_customers WHERE client_id = %s LIMIT 1", (client_id,))
-            res = cursor.fetchone()
-            if res and res[0]:
-                collect_name = res[0]
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to fetch collect_name from database for list: {e}")
+    docs = qdrant_get_client_documents(client_id)
+    if docs:
+        return docs
 
-    chroma_client = get_chroma_client()
-    if chroma_client:
-        try:
-            collection_name = collect_name
-            # Check if collection exists
-            collections = [col.name for col in chroma_client.list_collections()]
-            if collection_name in collections:
-                collection = chroma_client.get_collection(name=collection_name)
-                results = collection.get()
-                
-                # Group chunks by doc_id to represent each uploaded document cleanly in the UI
-                unique_docs = {}
-                for i in range(len(results.get("ids", []))):
-                    metadata = results["metadatas"][i]
-                    # Determine parent doc_id (fall back to splitting chunk ID if missing)
-                    p_doc_id = metadata.get("doc_id", results["ids"][i].split("_chunk_")[0])
-                    title = metadata.get("title", "Untitled Document")
-                    content = results["documents"][i]
-                    
-                    if p_doc_id not in unique_docs:
-                        unique_docs[p_doc_id] = {
-                            "id": p_doc_id,
-                            "title": title,
-                            "chunks_count": 1,
-                            "content": content
-                        }
-                    else:
-                        unique_docs[p_doc_id]["chunks_count"] += 1
-                        # Build document preview content up to a threshold
-                        if len(unique_docs[p_doc_id]["content"]) < 300:
-                            unique_docs[p_doc_id]["content"] += "\n" + content
-                            
-                return list(unique_docs.values())
-            return []
-        except Exception as e:
-            logger.error(f"❌ ChromaDB get failed, falling back to JSON: {e}")
-
-            
-    # Fallback JSON
     db = load_fallback_db()
     return db.get(client_id, [])
 
 
 def delete_knowledge(client_id: str, doc_id: str) -> bool:
-    """
-    Deletes a knowledge document by ID.
-    """
     logger.info(f"Deleting knowledge for client_id={client_id}, doc_id={doc_id}")
-    
-    # Fetch rag_id from database
-    rag_id = client_id
-    collect_name = f"client_{client_id.replace('-', '_').lower()}"  # default fallback
-    try:
-        from app.db import get_db_ctx
-        with get_db_ctx() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT collect_name FROM email_customers WHERE client_id = %s LIMIT 1", (client_id,))
-            res = cursor.fetchone()
-            if res and res[0]:
-                collect_name = res[0]
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to fetch collect_name from database for delete: {e}")
 
-    chroma_client = get_chroma_client()
-    if chroma_client:
-        try:
-            collection_name = collect_name
-            collection = chroma_client.get_collection(name=collection_name)
-            
-            # Clean delete matching doc_id in metadata filter (covers all chunks securely)
-            try:
-                collection.delete(where={"doc_id": doc_id})
-                logger.info(f"✅ Deleted all vector store chunks matching doc_id={doc_id}")
-            except Exception as delete_err:
-                logger.warning(f"⚠️ Metadatas search deletion failed, trying direct ID lookup: {delete_err}")
-                collection.delete(ids=[doc_id])
-                
-            return True
-        except Exception as e:
-            logger.error(f"❌ ChromaDB delete failed, falling back to JSON: {e}")
+    deleted = qdrant_delete_document(client_id, doc_id)
+    if deleted:
+        return True
 
-            
-    # Fallback JSON
     db = load_fallback_db()
     if client_id in db:
         initial_len = len(db[client_id])
@@ -393,87 +219,110 @@ def delete_knowledge(client_id: str, doc_id: str) -> bool:
 
 def query_knowledge(client_id: str, query: str, top_k: int = 3) -> str:
     """
-    Queries ChromaDB (or Fallback Jaccard similarity) for isolated client_id RAG context.
+    Queries Qdrant (client_id-filtered) or falls back to Jaccard similarity
+    against the JSON store. Returns a single "\\n---\\n" joined context string,
+    same contract as the old Chroma implementation.
     """
     logger.info(f"Querying knowledge for client_id={client_id}, query={query[:100]}...")
-    
-    collect_name = f"client_{client_id.replace('-', '_').lower()}"  # default fallback
-    try:
-        from app.db import get_db_ctx
-        with get_db_ctx() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT collect_name FROM email_customers WHERE client_id = %s LIMIT 1", (client_id,))
-            res = cursor.fetchone()
-            if res and res[0]:
-                collect_name = res[0]
-                logger.info(f"🔎 Found collect_name={collect_name} in database for client_id={client_id}")
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to fetch collect_name from database: {e}")
 
-    chroma_client = None
-    try:
-        chroma_client = get_chroma_client()
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize ChromaDB: {e}")
-        chroma_client = None
-
-    if chroma_client:
-        try:
-            collection_name = collect_name
-            collections = [col.name for col in chroma_client.list_collections()]
-            if collection_name in collections:
-                collection = chroma_client.get_collection(name=collection_name)
-                logger.info(f"📊 Collection count: {collection.count()}")
-                results = collection.query(
-                    query_texts=[query],
-                    # n_results=top_k
-                    n_results=min(top_k, collection.count())  # ← temp fix this
-                )
-                logger.info(f"🔍 Raw ChromaDB results: {results.get('documents', [])}")
-                
-                documents = results.get("documents", [[]])[0]
-                documents = [doc for doc in documents if doc is not None]
-                if documents:
-                    context = "\n---\n".join(documents)
-                    logger.info(f"✅ ChromaDB RAG retrieved context length: {len(context)}")
-                    logger.info(f"🔍🔍🔍🔍 RAG context: {context[:1000]}")
-                    logger.info(f"🔍🔍🔍🔍 Ending")
-                    return context
-            names = [col.name for col in chroma_client.list_collections()]
-            logger.warning(f"⚠️ ChromaDB collections available: {names}")
-            logger.warning(f"⚠️ ChromaDB Collection {collection_name} not found or empty")
-        except Exception as e:
-            logger.error(f"❌ ChromaDB query failed, falling back to JSON: {e}")
+    query_vector = embed_query(query)
+    if query_vector is not None:
+        results = qdrant_search(client_id, query_vector, top_k=top_k)
+        if results:
+            context = "\n---\n".join(r["content"] for r in results if r.get("content"))
+            if context:
+                logger.info(f"✅ Qdrant RAG retrieved context length: {len(context)}")
+                return context
+        logger.warning(f"⚠️ Qdrant returned no results for client_id={client_id} — falling back to JSON")
+    else:
+        logger.warning("⚠️ embed_service unavailable — falling back to JSON")
 
     # Fallback Jaccard / Keyword matching
     db = load_fallback_db()
     docs = db.get(client_id, [])
     if not docs:
         return ""
-        
-    ranked = []
-    for doc in docs:
-        score = jaccard_similarity(query, doc["content"])
-        ranked.append((score, doc["content"]))
-        
+
+    ranked = [(jaccard_similarity(query, doc["content"]), doc["content"]) for doc in docs]
     ranked.sort(key=lambda x: x[0], reverse=True)
     top_matches = [doc[1] for doc in ranked[:top_k] if doc[0] > 0.0]
-    
+
     if top_matches:
         context = "\n---\n".join(top_matches)
         logger.info(f"✅ Fallback RAG retrieved context length: {len(context)}")
-        logger.info(f"🔍🔍🔍 RAG context: {context[:1000]}")
-        logger.info(f"🔍🔍🔍 Ending")
         return context
-        
+
     context = "\n---\n".join([doc["content"] for doc in docs[:2]])
     logger.info(f"✅ Fallback Default RAG context length: {len(context)}")
     return context
+
+
+def retrieve_knowledge(client_id: str, query: str, top_k: int = 3) -> list[dict]:
+    """
+    Structured semantic retriever — returns list of matching chunks with
+    metadata + similarity score. Same contract as the old Chroma version.
+    """
+    logger.info(f"Retrieving structured knowledge for client_id={client_id}, query={query[:50]}")
+
+    query_vector = embed_query(query)
+
+    if client_id == "ALL":
+        if query_vector is not None:
+            results = qdrant_search_all_clients(query_vector, top_k=top_k)
+            if results:
+                return [
+                    {
+                        "id": r["id"], "title": f"[{r.get('client_id','')}] {r['title']}",
+                        "doc_id": r["doc_id"], "content": r["content"],
+                        "score": r["score"], "client_id": r.get("client_id", "")
+                    }
+                    for r in results
+                ]
+        # Fallback
+        db = load_fallback_db()
+        fallback_results = []
+        for cid, docs in db.items():
+            for doc in docs:
+                score = jaccard_similarity(query, doc["content"])
+                fallback_results.append({
+                    "id": doc["id"], "title": f"[{cid}] {doc['title']}", "doc_id": doc["id"],
+                    "content": doc["content"], "score": round(score, 3), "client_id": cid
+                })
+        fallback_results.sort(key=lambda x: x["score"], reverse=True)
+        return [r for r in fallback_results[:top_k] if r["score"] > 0.0]
+
+    if query_vector is not None:
+        results = qdrant_search(client_id, query_vector, top_k=top_k)
+        if results:
+            return results
+
+    # Fallback JSON Jaccard Search
+    db = load_fallback_db()
+    docs = db.get(client_id, [])
+    if not docs:
+        return []
+
+    ranked = [
+        {"id": doc["id"], "title": doc["title"], "doc_id": doc["id"],
+         "content": doc["content"], "score": round(jaccard_similarity(query, doc["content"]), 3)}
+        for doc in docs
+    ]
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    return [r for r in ranked[:top_k] if r["score"] > 0.0]
+
 
 # ==========================================
 # 📦 LEGACY COMPATIBILITY API
 # ==========================================
 def get_rag_id(client_id: str) -> str:
+    """
+    Under Chroma this returned the per-client collection name. Under Qdrant
+    there is only ONE collection, so this no longer identifies a collection
+    — it's kept purely for backward compatibility with callers (email_logs.rag_id
+    column, worker/tasks.py) that expect a non-null identifying string.
+    Returns the same normalized collect_name value that used to be the
+    Chroma collection name, sourced from email_customers if present.
+    """
     if not client_id:
         return None
     try:
@@ -482,35 +331,38 @@ def get_rag_id(client_id: str) -> str:
             cursor = db.cursor()
             cursor.execute("SELECT collect_name FROM email_customers WHERE client_id = %s LIMIT 1", (client_id,))
             result = cursor.fetchone()
-            if result:
+            if result and result[0]:
                 return result[0]
-            return None
+            return f"client_{client_id.replace('-', '_').lower()}"
     except Exception as e:
         logger.error(f"❌ Error fetching collect_name: {str(e)}")
-        return None
+        return f"client_{client_id.replace('-', '_').lower()}"
+
 
 def query_rag(collect_name: str, query: str) -> dict:
+    """
+    Legacy wrapper. Resolves collect_name back to a real client_id (same
+    lookup the Chroma version did) and delegates to query_knowledge().
+    """
     if not collect_name:
         return {"answer": ""}
     try:
         real_client_id = collect_name
-        # If the passed collect_name is a UUID, look up the corresponding client_id in email_customers table
         try:
             from app.db import get_db_ctx
             with get_db_ctx() as db:
                 cursor = db.cursor()
-                cursor.execute("SELECT client_id FROM email_customers WHERE collect_name = %s OR client_id = %s LIMIT 1", (collect_name, collect_name))
+                cursor.execute(
+                    "SELECT client_id FROM email_customers WHERE collect_name = %s OR client_id = %s LIMIT 1",
+                    (collect_name, collect_name)
+                )
                 res = cursor.fetchone()
                 if res:
                     real_client_id = res[0]
-                    logger.info(f"🔎 Resolved collect_name={collect_name} to real_client_id={real_client_id}")
         except Exception as e:
-            logger.warning(f"⚠️ Failed to look up client_id for collect_name={collect_name} in email_customers: {e}")
+            logger.warning(f"⚠️ Failed to resolve client_id for collect_name={collect_name}: {e}")
 
-        # Search our own local client-isolated ChromaDB / Fallback JSON RAG database!
         context = query_knowledge(real_client_id, query)
-        # logger.info(f"🔍 RAG context returned: {context[:1000] if context else 'EMPTY'}")
-        # print("p-----------------================------==============-=")
         return {"answer": context if context else "No context found in local RAG database."}
     except Exception as e:
         logger.error(f"❌ Local Custom RAG API error: {str(e)}")
@@ -518,23 +370,20 @@ def query_rag(collect_name: str, query: str) -> dict:
 
 
 # ==========================================
-# 📂 ADVANCED DOCUMENT PARSERS
+# 📂 ADVANCED DOCUMENT PARSERS (unchanged)
 # ==========================================
 
 def parse_docx(file_content: bytes) -> str:
     import zipfile
     import xml.etree.ElementTree as ET
     from io import BytesIO
-    
+
     try:
         f = BytesIO(file_content)
         with zipfile.ZipFile(f) as docx:
             xml_content = docx.read('word/document.xml')
             root = ET.fromstring(xml_content)
-            
-            # Namespace for word processing ML
             ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'}
-            
             paragraphs = []
             for para in root.findall('.//w:p', ns):
                 text_parts = []
@@ -548,10 +397,11 @@ def parse_docx(file_content: bytes) -> str:
         logger.error(f"Failed to parse docx: {e}")
         return file_content.decode('utf-8', errors='ignore')
 
+
 def parse_uploaded_file(file_name: str, file_content: bytes) -> tuple[str, str]:
     """
     Parses a PDF, DOCX, DOC, or TXT file and returns a tuple (title, content).
-    Only allows these specific formats.
+    Only allows these specific formats. Unchanged from prior implementation.
     """
     ext = file_name.split('.')[-1].lower()
     logger.info(f"Parsing uploaded file: name={file_name}, ext={ext}")
@@ -589,147 +439,3 @@ def parse_uploaded_file(file_name: str, file_content: bytes) -> tuple[str, str]:
 
     else:
         raise ValueError(f"Unsupported file format: .{ext}. Only .pdf, .doc, .docx, and .txt files are allowed.")
-
-
-def retrieve_knowledge(client_id: str, query: str, top_k: int = 3) -> list[dict]:
-    """
-    Structured semantic retriever service for client-isolated vector index.
-    Returns a list of matching chunks with details (metadata, content, similarity score).
-    """
-    logger.info(f"Retrieving structured knowledge for client_id={client_id}, query={query[:50]}")
-    
-    if client_id == "ALL":
-        # Fetch all collections/clients
-        all_clients = []
-        try:
-            from app.db import get_db_ctx
-            with get_db_ctx() as db:
-                cursor = db.cursor()
-                cursor.execute("SELECT client_id, collect_name FROM email_customers")
-                all_clients = cursor.fetchall()
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to fetch all clients for retrieve: {e}")
-            
-        chroma_client = get_chroma_client()
-        all_results = []
-        if chroma_client:
-            try:
-                collections = [col.name for col in chroma_client.list_collections()]
-                for cid, collect_name in all_clients:
-                    collection_name = collect_name or f"client_{cid.replace('-', '_').lower()}"
-                    if collection_name in collections:
-                        collection = chroma_client.get_collection(name=collection_name)
-                        results = collection.query(
-                            query_texts=[query],
-                            n_results=min(top_k, collection.count())
-                        )
-                        
-                        documents = results.get("documents", [[]])[0]
-                        metadatas = results.get("metadatas", [[]])[0]
-                        distances = results.get("distances", [[]])[0] if results.get("distances") else [0.0] * len(documents)
-                        ids = results.get("ids", [[]])[0]
-                        
-                        for i in range(len(documents)):
-                            if documents[i] is not None:
-                                score = round(1.0 - min(1.0, distances[i] / 2.0), 3) if results.get("distances") else 1.0
-                                all_results.append({
-                                    "id": ids[i],
-                                    "title": f"[{cid}] {metadatas[i].get('title', 'Untitled Document')}",
-                                    "doc_id": metadatas[i].get("doc_id", ids[i].split("_chunk_")[0]),
-                                    "content": documents[i],
-                                    "score": score,
-                                    "client_id": cid
-                                })
-                all_results.sort(key=lambda x: x["score"], reverse=True)
-                return all_results[:top_k]
-            except Exception as e:
-                logger.error(f"❌ ChromaDB retrieval failed for ALL, falling back to JSON: {e}")
-                
-        # Fallback JSON
-        db = load_fallback_db()
-        fallback_results = []
-        for cid, docs in db.items():
-            for doc in docs:
-                score = jaccard_similarity(query, doc["content"])
-                fallback_results.append({
-                    "id": doc["id"],
-                    "title": f"[{cid}] {doc['title']}",
-                    "doc_id": doc["id"],
-                    "content": doc["content"],
-                    "score": round(score, 3),
-                    "client_id": cid
-                })
-        fallback_results.sort(key=lambda x: x["score"], reverse=True)
-        return [r for r in fallback_results[:top_k] if r["score"] > 0.0]
-
-    collect_name = f"client_{client_id.replace('-', '_').lower()}"
-    try:
-        from app.db import get_db_ctx
-        with get_db_ctx() as db:
-            cursor = db.cursor()
-            cursor.execute("SELECT collect_name FROM email_customers WHERE client_id = %s LIMIT 1", (client_id,))
-            res = cursor.fetchone()
-            if res and res[0]:
-                collect_name = res[0]
-    except Exception as e:
-        logger.warning(f"⚠️ Failed to fetch collect_name: {e}")
-
-    chroma_client = None
-    try:
-        chroma_client = get_chroma_client()
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize ChromaDB: {e}")
-
-    if chroma_client:
-        try:
-            collection_name = collect_name
-            collections = [col.name for col in chroma_client.list_collections()]
-            if collection_name in collections:
-                collection = chroma_client.get_collection(name=collection_name)
-                results = collection.query(
-                    query_texts=[query],
-                    n_results=min(top_k, collection.count())
-                )
-                
-                retrieved = []
-                documents = results.get("documents", [[]])[0]
-                metadatas = results.get("metadatas", [[]])[0]
-                distances = results.get("distances", [[]])[0] if results.get("distances") else [0.0] * len(documents)
-                ids = results.get("ids", [[]])[0]
-                
-                for i in range(len(documents)):
-                    if documents[i] is not None:
-                        # Convert distance to simple score
-                        score = round(1.0 - min(1.0, distances[i] / 2.0), 3) if results.get("distances") else 1.0
-                        retrieved.append({
-                            "id": ids[i],
-                            "title": metadatas[i].get("title", "Untitled Document"),
-                            "doc_id": metadatas[i].get("doc_id", ids[i].split("_chunk_")[0]),
-                            "content": documents[i],
-                            "score": score
-                        })
-                return retrieved
-        except Exception as e:
-            logger.error(f"❌ ChromaDB retrieval failed, falling back to JSON: {e}")
-
-    # Fallback JSON Jaccard Search
-    db = load_fallback_db()
-    docs = db.get(client_id, [])
-    if not docs:
-        return []
-        
-    ranked = []
-    for doc in docs:
-        score = jaccard_similarity(query, doc["content"])
-        ranked.append({
-            "id": doc["id"],
-            "title": doc["title"],
-            "doc_id": doc["id"],
-            "content": doc["content"],
-            "score": round(score, 3)
-        })
-        
-    ranked.sort(key=lambda x: x["score"], reverse=True)
-    return [r for r in ranked[:top_k] if r["score"] > 0.0]
-
-

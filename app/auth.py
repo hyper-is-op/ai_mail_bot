@@ -377,18 +377,13 @@ def delete_client_account(client_id: str) -> dict:
         except Exception as redis_err:
             print(f"Redis purge error: {redis_err}")
 
-        # purge ChromaDB RAG data
+        # purge Qdrant RAG data — single shared collection, filtered delete by client_id
         try:
-            from app.rag import get_chroma_client
-            chroma = get_chroma_client()
-            if chroma:
-                collection_name = f"client_{client_id.replace('-', '_').lower()}"
-                try:
-                    chroma.delete_collection(collection_name)
-                except Exception:
-                    pass
+            from app.vector_store import delete_client_data
+            if not delete_client_data(client_id):
+                print(f"Qdrant purge returned False for client_id={client_id} (Qdrant may be down — fallback JSON entries, if any, are not purged by this path)")
         except Exception as rag_err:
-            print(f"ChromaDB purge error: {rag_err}")
+            print(f"Qdrant purge error: {rag_err}")
 
         return {"success": True, "message": f"Client {client_id} deleted successfully"}
 
