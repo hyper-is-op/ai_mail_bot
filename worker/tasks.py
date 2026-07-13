@@ -11,6 +11,8 @@ from datetime import datetime
 from app.request_handler import call_create_ticket, get_order_status
 from app.keyword_filter import get_blocked_keywords, is_blocked, insert_blocked_email
 
+from app.text_cleaning import strip_quoted_reply
+
 import logging
 import re
 import json
@@ -276,7 +278,8 @@ def process_email_task(self, data):
         rag_id = get_rag_id(client_id)
         logger.info(f"🔎 RAG ID: {rag_id} Client ID: {client_id}")
 
-        email_query = f"Subject: {data['subject']}\n\n{data['body']}"
+        cleaned_body = strip_quoted_reply(data["body"])
+        email_query = f"Subject: {data['subject']}\n\n{cleaned_body}"
 
         chroma_context = ""
         if client_id:
