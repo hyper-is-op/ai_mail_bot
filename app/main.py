@@ -2184,3 +2184,42 @@ def regenerate_connector_config(data: ConnectorConfigEditRequest, user: dict = D
         raise HTTPException(status_code=409, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+
+
+class GenerateTemplatePreviewRequest(BaseModel):
+    client_id: str
+    trigger_type: str
+    crm_schema_description: str
+    sample_response: str = ""
+
+@app.post("/admin/connector-configs/generate-preview", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
+def generate_connector_template_preview(data: GenerateTemplatePreviewRequest, user: dict = Depends(get_current_user)):
+    """
+    Preview-only: calls the LLM to draft a request_template + response_mapping
+    for review. Does NOT write to the database. Client must review (and may
+    edit) the returned template, then submit it via POST /admin/connector-configs
+    to actually persist it as pending_approval.
+    """
+    require_client_access(data.client_id, user)
+
+    from app.connector_config import generate_connector_template
+
+    result = generate_connector_template(
+        trigger_type=data.trigger_type,
+        crm_schema_description=data.crm_schema_description,
+        sample_response=data.sample_response,
+    )
+
+    if not result.get("success"):
+        raise HTTPException(status_code=422, detail=result.get("error", "Template generation failed"))
+
+    return {
+        "status": "success",
+        "trigger_type": data.trigger_type,
+        "request_template": result["request_template"],
+        "response_mapping": result["response_mapping"],
+        "note": "This is a preview only — nothing has been saved. Review/edit as needed, "
+                "then POST to /admin/connector-configs to submit for approval."
+    }
