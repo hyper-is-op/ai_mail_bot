@@ -1,3 +1,7 @@
+from app.connector_config import run_order_status_lookup
+
+
+
 from worker.celery_worker import celery
 from app.rag import query_rag, get_rag_id, query_knowledge
 from app.llm import generate_reply_llm, detect_intent_llm, scan_history_for_ticket, extract_issue_description, generate_summary_llm
@@ -406,27 +410,24 @@ def process_email_task(self, data):
             logger.info("🚀 PATH A — ticket/order status from email")
             execution_steps.append("Order_Check")
 
-            api_res = get_order_status(client_id, ticket_id)
+            from app.connector_config import run_order_status_lookup
+            api_res = run_order_status_lookup(
+                client_id=client_id,
+                ticket_id=ticket_id,
+                body=data["body"],
+                history=history,
+                subject=data["subject"],
+                from_email=data["from_email"],
+                sentiment=sentiment,
+                priority=priority,
+                intent=intent,
+            )
 
             if api_res.get("success"):
-                ticket_data = api_res.get("data", {})
-                ticket_info = next(iter(ticket_data.values()), {})
-
-                context = f"""
-Ticket ID:           {ticket_info.get('docket_no', 'N/A')}
-Status:              {ticket_info.get('ticket_status', 'N/A')}
-Priority:            {ticket_info.get('priority_name', 'N/A')}
-Ticket Type:         {ticket_info.get('ticket_type', 'N/A')}
-Issue Reported:      {ticket_info.get('problem_reported', 'N/A')}
-Agent Remarks:       {ticket_info.get('agent_remarks', 'N/A')}
-Disposition:         {ticket_info.get('disposition_name', 'N/A')}
-Sub Disposition:     {ticket_info.get('sub_disposition_name', 'N/A')}
-Assigned Department: {ticket_info.get('assigned_to_dept_name', 'N/A')}
-Assigned User:       {ticket_info.get('assigned_to_user_name', 'N/A')}
-Customer Name:       {ticket_info.get('person', {}).get('person_name', 'N/A')}
-Customer Email:      {ticket_info.get('person', {}).get('person_mail', 'N/A')}
-Customer Mobile:     {ticket_info.get('person', {}).get('mobile_no', 'N/A')}
-"""
+                from app.connector_executor import format_mapped_data_for_prompt
+                ticket_info = api_res.get("data", {})
+                context = format_mapped_data_for_prompt(ticket_info)
+                
                 logger.info("📄 Ticket context ready from API")
 
                 reply = generate_reply_llm(
@@ -649,21 +650,24 @@ Customer Mobile:     {ticket_info.get('person', {}).get('mobile_no', 'N/A')}
                 logger.info(f"🔄 PATH C / pending_verification — re-trying API for {stored_ticket_id}")
                 execution_steps.append("Order_Check")
 
-                api_res = get_order_status(client_id, stored_ticket_id)
+                from app.connector_config import run_order_status_lookup
+                api_res = run_order_status_lookup(
+                    client_id=client_id,
+                    ticket_id=stored_ticket_id,
+                    body=data["body"],
+                    history=history,
+                    subject=data["subject"],
+                    from_email=data["from_email"],
+                    sentiment=sentiment,
+                    priority=priority,
+                    intent=intent,
+                )
 
                 if api_res.get("success"):
-                    ticket_data = api_res.get("data", {})
-                    ticket_info = next(iter(ticket_data.values()), {})
+                    from app.connector_executor import format_mapped_data_for_prompt
+                    ticket_info = api_res.get("data", {})
+                    context = format_mapped_data_for_prompt(ticket_info)
 
-                    context = f"""
-Ticket ID:           {ticket_info.get('docket_no', 'N/A')}
-Status:              {ticket_info.get('ticket_status', 'N/A')}
-Priority:            {ticket_info.get('priority_name', 'N/A')}
-Issue Reported:      {ticket_info.get('problem_reported', 'N/A')}
-Agent Remarks:       {ticket_info.get('agent_remarks', 'N/A')}
-Assigned Department: {ticket_info.get('assigned_to_dept_name', 'N/A')}
-Customer Name:       {ticket_info.get('person', {}).get('person_name', 'N/A')}
-"""
                     reply = generate_reply_llm(
                         context, data["body"], "crm_support_agent",
                         data["from_email"], history=history
@@ -739,21 +743,24 @@ Customer Name:       {ticket_info.get('person', {}).get('person_name', 'N/A')}
                     logger.info(f"✅ Found ticket ID in history: {history_ticket_id}")
                     execution_steps.append("Order_Check")
 
-                    api_res = get_order_status(client_id, history_ticket_id)
+                    from app.connector_config import run_order_status_lookup
+                    api_res = run_order_status_lookup(
+                        client_id=client_id,
+                        ticket_id=history_ticket_id,
+                        body=data["body"],
+                        history=history,
+                        subject=data["subject"],
+                        from_email=data["from_email"],
+                        sentiment=sentiment,
+                        priority=priority,
+                        intent=intent,
+                    )
 
                     if api_res.get("success"):
-                        ticket_data = api_res.get("data", {})
-                        ticket_info = next(iter(ticket_data.values()), {})
+                        from app.connector_executor import format_mapped_data_for_prompt
+                        ticket_info = api_res.get("data", {})
+                        context = format_mapped_data_for_prompt(ticket_info)
 
-                        context = f"""
-Ticket ID:           {ticket_info.get('docket_no', 'N/A')}
-Status:              {ticket_info.get('ticket_status', 'N/A')}
-Priority:            {ticket_info.get('priority_name', 'N/A')}
-Issue Reported:      {ticket_info.get('problem_reported', 'N/A')}
-Agent Remarks:       {ticket_info.get('agent_remarks', 'N/A')}
-Assigned Department: {ticket_info.get('assigned_to_dept_name', 'N/A')}
-Customer Name:       {ticket_info.get('person', {}).get('person_name', 'N/A')}
-"""
                         reply = generate_reply_llm(
                             context, data["body"], "crm_support_agent",
                             data["from_email"], history=history
@@ -926,20 +933,23 @@ def _create_ticket_and_reply(data, client_id, context, history, cursor, sentimen
     from app.llm import extract_name_from_email
     personal_details = {"name": extract_name_from_email(data["from_email"])}
 
-    resp = call_create_ticket(
-        client_id,
-        data["from_email"],
-        data["subject"],
-        data["body"],
-        "Ticket_Generated",
-        personal_details=personal_details
+
+    from app.connector_config import run_ticket_create
+    resp = run_ticket_create(
+        client_id=client_id,
+        from_email=data["from_email"],
+        subject=data["subject"],
+        body=data["body"],
+        history=history,
+        sentiment=sentiment,
+        priority=priority,
     )
     logger.info(f"🎫 Ticket response: {resp}")
 
     outgoing_ticket_id = resp.get("ticket_id") if resp else None
 
     if not outgoing_ticket_id:
-        logger.error(f"❌ ticket_creation_failed — CRM returned no ticket_id. resp={resp}")
+        logger.error(f"❌ ticket_creation_failed — connector returned no ticket_id. resp={resp}")
         return None, None, "ticket_creation_failed"
 
     ticket_status   = resp.get("status",   "NEW")

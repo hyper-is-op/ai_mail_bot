@@ -44,6 +44,16 @@ def save_email_account(client_id: str, email: str, password: str, score_threshol
         db.close()
         logger.info("🔒 DB connection closed")
 
+def get_connector_cap(client_id: str) -> int:
+    db = get_db()
+    cursor = db.cursor()
+    try:
+        cursor.execute("SELECT connector_cap FROM email_accounts WHERE client_id = %s LIMIT 1", (client_id,))
+        row = cursor.fetchone()
+        return row[0] if row and row[0] is not None else 5
+    finally:
+        cursor.close()
+        db.close()
 
 def get_email_account(client_id: str) -> dict:
     logger.info(f"🔎 Fetching email account for client_id={client_id}")
@@ -169,6 +179,11 @@ def ensure_accounts_table_startup(cursor):
     
     try:
         cursor.execute("ALTER TABLE email_accounts ADD COLUMN company_name VARCHAR(100) DEFAULT NULL")
+    except:
+        pass
+    
+    try:
+        cursor.execute("ALTER TABLE email_accounts ADD COLUMN connector_cap INT DEFAULT 5")
     except:
         pass
 

@@ -290,6 +290,75 @@ def update_ticket_status(ticket_id: str):
         return jsonify({"error": str(e)}), 500
 
 
+
+
+
+@app.route("/v2/create-ticket", methods=["POST"])
+def create_ticket_v2():
+    """Plain JSON body version, for the new connector_configs executor."""
+    payload = request.get_json(silent=True)
+    if not payload:
+        return jsonify({"Status": "Failure", "Message": "Missing or invalid JSON body"}), 400
+
+    ticket_id = generate_ticket_id()
+    client_id = payload.get("client_id", "")
+    mail_id = payload.get("mail_id", payload.get("from_email", ""))
+    subject = payload.get("subject", "No Subject")
+    body = payload.get("body", "")
+    person_name = payload.get("person_name", "")
+    priority_name = payload.get("priority_name") or infer_priority(subject, body)
+    ticket_type = payload.get("ticket_type") or infer_ticket_type(subject, body)
+
+    try:
+        with get_db() as conn:
+            conn.execute("""
+                INSERT INTO tickets (
+                    ticket_id, client_id, mail_id, subject, body,
+                    status, priority_name, ticket_type, problem_reported, person_name
+                ) VALUES (?, ?, ?, ?, ?, 'Open', ?, ?, ?, ?)
+            """, (ticket_id, client_id, mail_id, subject, body, priority_name, ticket_type, subject, person_name))
+
+        logger.info(f"✅ [v2] Ticket created: {ticket_id} for client_id={client_id}")
+        return jsonify({
+            "status": "success",
+            "message": f"Ticket {ticket_id} created successfully",
+            "reference_no": ticket_id
+        })
+    except Exception as e:
+        logger.error(f"❌ [v2] DB insert failed: {e}")
+        return jsonify({"status": "failure", "message": str(e)}), 500
+
+
+@app.route("/v2/get-ticket", methods=["GET"])
+def get_ticket_v2():
+    """Plain query-param version, for the new connector_configs executor."""
+    ticket_id = request.args.get("docket_no")
+    if not ticket_id:
+        return jsonify({"status": "failure", "message": "Missing docket_no query param"}), 400
+
+    try:
+        with get_db() as conn:
+            row = conn.execute("SELECT * FROM tickets WHERE ticket_id = ?", (ticket_id,)).fetchone()
+
+        if not row:
+            return jsonify({"status": "failure", "message": f"Ticket {ticket_id} not found"}), 404
+
+        return jsonify({
+            "status": "success",
+            "docket_no": row["ticket_id"],
+            "ticket_status": row["status"],
+            "priority_name": row["priority_name"],
+            "problem_reported": row["problem_reported"],
+            "person_name": row["person_name"]
+        })
+    except Exception as e:
+        logger.error(f"❌ [v2] DB fetch failed: {e}")
+        return jsonify({"status": "failure", "message": str(e)}), 500
+
+
+
+
+
 # ──────────────────────────────────────────────
 # Entry point
 # ──────────────────────────────────────────────

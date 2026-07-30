@@ -1,0 +1,16 @@
+connector_configs
+  id
+  client_id
+  trigger_type        -- 'ticket_status_check','ticket_create', + client-custom values
+  method               -- GET/POST only, per earlier scoping (no PATCH/DELETE unless justified)
+  url
+  auth_type            -- 'none' | 'api_key' | 'bearer' | 'basic'  (oauth2 = separate, already scoped elsewhere)
+  auth_config           -- encrypted (cryptography dep, already in requirements, unused)
+  request_template      -- JSON with {{placeholders}}
+  response_mapping      -- JMESPath dict, e.g. {"ticket_id": "Success.ticket_1.docket_no"}
+  timeout_seconds
+  retry_count
+  is_idempotent          -- gates whether retry-on-timeout is safe
+  status                 -- 'pending_review' | 'approved' | 'rejected'  (admin gate)
+  created_by             -- 'admin' | 'client', for audit
+  created_at, updated_at

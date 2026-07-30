@@ -1,3 +1,6 @@
+from app.url_allowlist import ensure_url_allowlist_table
+from app.connector_config import ensure_connector_configs_table
+
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends, Header
 from pydantic import BaseModel, EmailStr, field_validator
 from worker.tasks import process_email_task
@@ -209,6 +212,9 @@ def _run_ensure_accounts_table():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await asyncio.to_thread(ensure_url_allowlist_table)
+    await asyncio.to_thread(ensure_connector_configs_table)
+    
     await asyncio.to_thread(_run_ensure_accounts_table)
     await asyncio.to_thread(ensure_create_payload_table)
     await asyncio.to_thread(ensure_payload_get_ticket_table)
@@ -1936,3 +1942,245 @@ def bulk_ignore_blocked_emails(
             affected = cursor.rowcount
             db.commit()
     return {"status": "success", "rows_updated": affected}
+
+
+
+class UrlAllowlistRequest(BaseModel):
+    url: str
+
+@app.post("/admin/url-allowlist", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
+def add_url_allowlist_endpoint(data: UrlAllowlistRequest, user: dict = Depends(require_admin())):
+    from app.url_allowlist import add_url_to_allowlist
+    try:
+        entry_id = add_url_to_allowlist(data.url, user.get("client_id", "admin"))
+        return {"status": "success", "id": entry_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.get("/admin/url-allowlist")
+def list_url_allowlist_endpoint(user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("SELECT id, scheme, netloc, path, added_by, created_at FROM url_allowlist ORDER BY created_at DESC")
+            rows = cursor.fetchall()
+    return [{"id": r[0], "scheme": r[1], "netloc": r[2], "path": r[3], "added_by": r[4], "created_at": str(r[5])} for r in rows]
+
+
+
+
+
+# ==============================
+# 🔌 Connector Config Endpoints
+# ==============================
+
+class ConnectorConfigCreateRequest(BaseModel):
+    client_id: str
+    trigger_type: str
+    http_method: str
+    url: str
+    headers_template: str | None = None
+    request_template: str | None = None
+    response_mapping: str | None = None
+    auth_type: str
+    auth_secret: str | None = None
+    auth_field_name: str | None = None
+    payload_encoding: str = "plain"
+    base64_query_param_name: str | None = None
+    status: str = "pending_approval"  # "draft" or "pending_approval" only — never "live" via this endpoint
+
+@app.post("/admin/connector-configs", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
+def create_connector_config(data: ConnectorConfigCreateRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    if data.status not in ("draft", "pending_approval"):
+        raise HTTPException(status_code=400, detail="status must be 'draft' or 'pending_approval'")
+
+    from app.connector_config import insert_connector_config_checked, CapExceededError, CreationRaceError
+    from app.email_credential import get_connector_cap
+    from app.secrets_crypto import encrypt_secret
+
+    cap = get_connector_cap(data.client_id)
+
+    payload = {
+        "http_method": data.http_method,
+        "url": data.url,
+        "headers_template": data.headers_template,
+        "request_template": data.request_template,
+        "response_mapping": data.response_mapping,
+        "auth_type": data.auth_type,
+        "auth_secret_encrypted": encrypt_secret(data.auth_secret) if data.auth_secret else None,
+        "auth_field_name": data.auth_field_name,
+        "payload_encoding": data.payload_encoding,
+        "base64_query_param_name": data.base64_query_param_name,
+        "created_by": user.get("client_id", user.get("email", "unknown")),
+    }
+
+    try:
+        row_id = insert_connector_config_checked(data.client_id, data.trigger_type, data.status, payload, cap)
+        return {"status": "success", "id": row_id}
+    except CapExceededError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except CreationRaceError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/admin/connector-configs/{client_id}")
+def list_connector_configs(client_id: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+    import json as _json
+
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            if client_id == "ALL":
+                cursor.execute("""
+                    SELECT id, client_id, trigger_type, http_method, url, response_mapping,
+                           auth_type, status, version, created_by, approved_by, approved_at, created_at
+                    FROM connector_configs ORDER BY created_at DESC
+                """)
+            else:
+                cursor.execute("""
+                    SELECT id, client_id, trigger_type, http_method, url, response_mapping,
+                           auth_type, status, version, created_by, approved_by, approved_at, created_at
+                    FROM connector_configs WHERE client_id=%s ORDER BY created_at DESC
+                """, (client_id,))
+            rows = cursor.fetchall()
+
+    configs = []
+    for r in rows:
+        has_regex = False
+        if r[5]:
+            try:
+                mapping = _json.loads(r[5])
+                has_regex = any(f.get("extract_regex") for f in mapping.get("fields", []))
+            except Exception:
+                pass
+        configs.append({
+            "id": r[0], "client_id": r[1], "trigger_type": r[2], "http_method": r[3],
+            "url": r[4], "response_mapping": r[5], "auth_type": r[6], "status": r[7],
+            "version": r[8], "created_by": r[9], "approved_by": r[10],
+            "approved_at": str(r[11]) if r[11] else None, "created_at": str(r[12]),
+            "requires_regex_review": has_regex,  # flagged for reviewer, per spec
+        })
+    return configs
+
+
+class ConnectorConfigApproveRequest(BaseModel):
+    client_id: str
+
+@app.post("/admin/connector-configs/{config_id}/approve")
+def approve_connector_config_endpoint(config_id: int, data: ConnectorConfigApproveRequest, user: dict = Depends(require_admin())):
+    from app.connector_config import (
+        approve_connector_config, CapExceededError, SwapRaceError,
+        AllowlistViolationError, TemplateValidationError, ResponseMappingValidationError
+    )
+    from app.email_credential import get_connector_cap
+    from app.db import get_db_ctx
+
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute(
+                "SELECT trigger_type FROM connector_configs WHERE id=%s AND client_id=%s AND status='pending_approval'",
+                (config_id, data.client_id)
+            )
+            row = cursor.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Config not found or not pending_approval")
+            trigger_type = row[0]
+
+    cap = get_connector_cap(data.client_id)
+    try:
+        approve_connector_config(data.client_id, trigger_type, config_id, user.get("client_id", "admin"), cap)
+        return {"status": "success", "id": config_id, "approved": True}
+    except CapExceededError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except SwapRaceError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except AllowlistViolationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except TemplateValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except ResponseMappingValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class ConnectorConfigRejectRequest(BaseModel):
+    client_id: str
+    reason: str = ""
+
+@app.post("/admin/connector-configs/{config_id}/reject")
+def reject_connector_config_endpoint(config_id: int, data: ConnectorConfigRejectRequest, user: dict = Depends(require_admin())):
+    from app.connector_config import reject_connector_config, SwapRaceError
+    try:
+        reject_connector_config(config_id, data.client_id, user.get("client_id", "admin"), data.reason)
+        return {"status": "success", "id": config_id, "rejected": True}
+    except SwapRaceError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+
+
+class ConnectorConfigEditRequest(BaseModel):
+    client_id: str
+    trigger_type: str
+    http_method: str
+    url: str
+    headers_template: str | None = None
+    request_template: str | None = None
+    response_mapping: str | None = None
+    auth_type: str
+    auth_secret: str | None = None
+    auth_field_name: str | None = None
+    payload_encoding: str = "plain"
+    base64_query_param_name: str | None = None
+
+@app.post("/admin/connector-configs/regenerate", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
+def regenerate_connector_config(data: ConnectorConfigEditRequest, user: dict = Depends(get_current_user)):
+    """
+    Mechanical 'edit' — no LLM involved (see step 9 discussion: full
+    LLM-assisted template generation is deferred as separate scope).
+    Creates a new pending_approval row for the same (client_id,
+    trigger_type). The existing live row, if any, keeps serving
+    unaffected until this new row is explicitly approved via
+    swap_to_live — this endpoint does NOT touch the current live row.
+    """
+    require_client_access(data.client_id, user)
+
+    from app.connector_config import insert_connector_config_checked, CapExceededError, CreationRaceError
+    from app.email_credential import get_connector_cap
+    from app.secrets_crypto import encrypt_secret
+
+    cap = get_connector_cap(data.client_id)
+
+    payload = {
+        "http_method": data.http_method,
+        "url": data.url,
+        "headers_template": data.headers_template,
+        "request_template": data.request_template,
+        "response_mapping": data.response_mapping,
+        "auth_type": data.auth_type,
+        "auth_secret_encrypted": encrypt_secret(data.auth_secret) if data.auth_secret else None,
+        "auth_field_name": data.auth_field_name,
+        "payload_encoding": data.payload_encoding,
+        "base64_query_param_name": data.base64_query_param_name,
+        "created_by": user.get("client_id", user.get("email", "unknown")),
+    }
+
+    try:
+        row_id = insert_connector_config_checked(
+            data.client_id, data.trigger_type, "pending_approval", payload, cap
+        )
+        return {
+            "status": "success",
+            "id": row_id,
+            "message": f"New pending_approval config created for trigger_type='{data.trigger_type}'. "
+                       f"Existing live config (if any) continues serving until this is approved."
+        }
+    except CapExceededError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except CreationRaceError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
