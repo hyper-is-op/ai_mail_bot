@@ -142,6 +142,17 @@ async def redis_pubsub_listener(app: FastAPI):
             logger.error(f"Redis pubsub error: {e}. Retrying in 5 seconds...")
             await asyncio.sleep(5)
 
+def _run_ensure_paused_email_history_table():
+    from app.db import get_db_ctx
+    from app.paused_email_history import ensure_paused_email_history_table
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            ensure_paused_email_history_table(cursor)
+        db.commit()
+    logger.info("✅ paused_email_history table ensured")
+
+
+
 def ensure_paused_emails_table():
     try:
         from app.db import get_db_ctx
@@ -223,6 +234,8 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(backfill_client_ids)
     await asyncio.to_thread(ensure_paused_emails_table)
     await asyncio.to_thread(ensure_llm_configs_table)
+
+    await asyncio.to_thread(_run_ensure_paused_email_history_table)
     
     listener_task = asyncio.create_task(redis_pubsub_listener(app))
     yield
@@ -1287,14 +1300,6 @@ class PauseEmailRequest(BaseModel):
     client_id: str
     email: str
 
-class ManualReplyRequest(BaseModel):
-    client_id: str
-    to_email: str
-    subject: str
-    body: str = ""
-    reply_text: str
-    blocked_record_id: int | None = None  # optional, only for keyword-blocked emails
-
 @app.post("/pause-email")
 def pause_email(data: PauseEmailRequest, user: dict = Depends(get_current_user)):
     require_client_access(data.client_id, user)
@@ -1338,6 +1343,86 @@ def get_paused_emails_endpoint(client_id: str, user: dict = Depends(get_current_
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/paused-email-history/{client_id}")
+def get_paused_email_history(
+    client_id: str,
+    status: str = None,
+    group_by_email: bool = False,
+    user: dict = Depends(get_current_user)
+):
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            if status:
+                if status not in ("pending_review", "ignored", "replied"):
+                    raise HTTPException(status_code=400, detail="status must be one of: pending_review, ignored, replied")
+                cursor.execute("""
+                    SELECT id, from_email, subject, body, status, created_at, updated_at
+                    FROM paused_email_history
+                    WHERE client_id = %s AND status = %s
+                    ORDER BY from_email, created_at DESC
+                """, (client_id, status))
+            else:
+                cursor.execute("""
+                    SELECT id, from_email, subject, body, status, created_at, updated_at
+                    FROM paused_email_history
+                    WHERE client_id = %s
+                    ORDER BY from_email, created_at DESC
+                """, (client_id,))
+            rows = cursor.fetchall()
+
+    records = [{
+        "id": r[0], "from_email": r[1], "subject": r[2], "body": r[3],
+        "status": r[4], "created_at": str(r[5]), "updated_at": str(r[6]),
+    } for r in rows]
+
+    if not group_by_email:
+        return records
+
+    grouped = {}
+    for rec in records:
+        grouped.setdefault(rec["from_email"], []).append(rec)
+    return grouped
+
+
+class PausedEmailHistoryUpdateRequest(BaseModel):
+    status: str  # 'ignored' or 'replied'
+
+@app.patch("/paused-email-history/{client_id}/{record_id}")
+def update_paused_email_history_status(
+    client_id: str,
+    record_id: int,
+    data: PausedEmailHistoryUpdateRequest,
+    user: dict = Depends(get_current_user)
+):
+    require_client_access(client_id, user)
+    if data.status not in ("ignored", "replied"):
+        raise HTTPException(status_code=400, detail="status must be 'ignored' or 'replied'")
+
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("""
+                UPDATE paused_email_history
+                SET status = %s
+                WHERE id = %s AND client_id = %s
+            """, (data.status, record_id, client_id))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Record not found")
+        db.commit()
+    return {"status": "success"}
+
+class ManualReplyRequest(BaseModel):
+    client_id: str
+    to_email: str
+    subject: str
+    body: str = ""
+    reply_text: str
+    blocked_record_id: int | None = None
+    paused_history_record_id: int | None = None  # NEW
+
 @app.post("/manual-reply")
 def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current_user)):
     require_client_access(data.client_id, user)
@@ -1349,18 +1434,34 @@ def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current
         with get_db_ctx() as db:
             with db.cursor() as cursor:
 
-                # STEP 1 — validate blocked_record_id before anything irreversible
+                # STEP 1 — validate BOTH record types before anything irreversible
                 if data.blocked_record_id is not None:
                     cursor.execute("""
                         SELECT status FROM reply_blocked_by_keyword
                         WHERE id = %s AND client_id = %s
                     """, (data.blocked_record_id, data.client_id))
                     record = cursor.fetchone()
-
                     if not record:
                         raise HTTPException(
                             status_code=404,
                             detail=f"blocked_record_id={data.blocked_record_id} not found for this client"
+                        )
+                    if record[0] != 'pending_review':
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Record already actioned — current status is '{record[0]}'"
+                        )
+
+                if data.paused_history_record_id is not None:
+                    cursor.execute("""
+                        SELECT status FROM paused_email_history
+                        WHERE id = %s AND client_id = %s
+                    """, (data.paused_history_record_id, data.client_id))
+                    record = cursor.fetchone()
+                    if not record:
+                        raise HTTPException(
+                            status_code=404,
+                            detail=f"paused_history_record_id={data.paused_history_record_id} not found for this client"
                         )
                     if record[0] != 'pending_review':
                         raise HTTPException(
@@ -1386,7 +1487,7 @@ def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current
                     json.dumps(exec_steps)
                 ))
 
-                # STEP 4 — only mark replied if SMTP confirmed success
+                # STEP 4 — only mark replied if SMTP confirmed success, for BOTH record types
                 if data.blocked_record_id is not None:
                     if send_status:
                         cursor.execute("""
@@ -1400,6 +1501,19 @@ def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current
                             f" — status stays 'pending_review'"
                         )
 
+                if data.paused_history_record_id is not None:
+                    if send_status:
+                        cursor.execute("""
+                            UPDATE paused_email_history
+                            SET status = 'replied'
+                            WHERE id = %s AND client_id = %s
+                        """, (data.paused_history_record_id, data.client_id))
+                    else:
+                        logger.warning(
+                            f"⚠️ SMTP failed for paused_history_record_id={data.paused_history_record_id}"
+                            f" — status stays 'pending_review'"
+                        )
+
                 db.commit()
 
                 if not send_status:
@@ -1408,7 +1522,7 @@ def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current
                         detail="Email failed to send — record kept as pending_review, log entry written"
                     )
 
-        # STEP 5 — chat history
+        # STEP 5 — chat history (unchanged)
         from app.chat_history import push_message
         push_message(
             client_id=data.client_id,
@@ -1419,7 +1533,7 @@ def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current
             ticket_id=""
         )
 
-        # STEP 6 — Redis broadcast
+        # STEP 6 — Redis broadcast (unchanged)
         import redis
         import os
         redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0") or "redis://localhost:6379/0"
@@ -1439,8 +1553,6 @@ def send_manual_reply(data: ManualReplyRequest, user: dict = Depends(get_current
     except Exception as e:
         logger.error(f"Manual reply error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
 
 
 class ApprovePendingReplyRequest(BaseModel):
@@ -1818,40 +1930,6 @@ def list_blocked_keywords(client_id: str, user: dict = Depends(get_current_user)
     with get_db_ctx() as db:
         with db.cursor() as cursor:
             return {"keywords": get_blocked_keywords(cursor, client_id)}
-
-
-
-class ReplyBlockedPolicyRequest(BaseModel):
-    client_id: str
-    action: str   # 'reply' (manual review) or 'ignore'
-
-@app.post("/blocked-keywords/policy")
-def set_block_policy(data: ReplyBlockedPolicyRequest, user: dict = Depends(get_current_user)):
-    require_client_access(data.client_id, user)
-    if data.action not in ("reply", "ignore"):
-        raise HTTPException(status_code=400, detail="action must be 'reply' or 'ignore'")
-
-    from app.db import get_db_ctx
-    from app.keyword_filter import _ensure_policy_table
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            _ensure_policy_table(cursor)
-            cursor.execute("""
-                INSERT INTO keyword_block_policy (client_id, action)
-                VALUES (%s, %s)
-                ON DUPLICATE KEY UPDATE action=VALUES(action)
-            """, (data.client_id, data.action))
-            db.commit()
-    return {"status": "success"}
-
-@app.get("/blocked-keywords/policy/{client_id}")
-def get_block_policy_endpoint(client_id: str, user: dict = Depends(get_current_user)):
-    require_client_access(client_id, user)
-    from app.db import get_db_ctx
-    from app.keyword_filter import get_block_policy
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            return {"action": get_block_policy(cursor, client_id)}
 
 
 

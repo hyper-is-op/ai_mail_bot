@@ -234,6 +234,14 @@ def process_email_task(self, data):
                 INSERT INTO email_logs (client_id, from_email, subject, body, status, priority, sentiment, execution_steps)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (client_id, data.get('from_email'), data.get('subject'), data.get('body'), 'paused', 'Medium', 'Neutral', json.dumps(["Start", "Paused"])))
+
+            from app.paused_email_history import ensure_paused_email_history_table
+            ensure_paused_email_history_table(cursor)
+            cursor.execute("""
+                INSERT INTO paused_email_history (client_id, from_email, subject, body, status)
+                VALUES (%s, %s, %s, %s, 'pending_review')
+            """, (client_id, data.get('from_email'), data.get('subject'), data.get('body')))
+
             db.commit()
             
             try:
@@ -254,10 +262,8 @@ def process_email_task(self, data):
         matched_kw = is_blocked(email_text, blocked_keywords) if blocked_keywords else None
 
         if matched_kw:
-            from app.keyword_filter import get_block_policy
-            policy = get_block_policy(cursor, client_id)
-            status = 'ignored' if policy == 'ignore' else 'pending_review'
-            logger.info(f"🚫 Email matched blocked keyword '{matched_kw}' — policy={policy}, routing to {status}")
+            status = 'pending_review'
+            logger.info(f"🚫 Email matched blocked keyword '{matched_kw}' — routing to {status}")
             insert_blocked_email(
                 cursor, client_id,
                 data["from_email"], data["subject"], data["body"],

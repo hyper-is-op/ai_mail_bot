@@ -62,25 +62,5 @@ def insert_blocked_email(cursor, client_id, from_email, subject, body, matched_k
     return cursor.lastrowid
 
 
-def _ensure_policy_table(cursor):
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS keyword_block_policy (
-            client_id VARCHAR(50) PRIMARY KEY,
-            action VARCHAR(50) NOT NULL DEFAULT 'reply'
-        )
-    """)
-
-
-def get_block_policy(cursor, client_id: str) -> str:
-    _ensure_policy_table(cursor)
-    cursor.execute(
-        "SELECT action FROM keyword_block_policy WHERE client_id = %s",
-        (client_id,)
-    )
-    res = cursor.fetchone()
-    if res:
-        return res[0]
-    return "reply"
-
 
 _ensure_table = _ensure_blocked_keywords_table
