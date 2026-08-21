@@ -461,7 +461,8 @@ Classify priority level into exactly one of:
                     "content": prompt
                 }
             ],  
-            temperature=0
+            temperature=0,
+            reasoning_effort="none"
         )
 
         output = res.choices[0].message.content.strip()
@@ -488,7 +489,8 @@ Classify priority level into exactly one of:
             "intent": intent, 
             "ticket_ids": ticket_ids, 
             "sentiment": sentiment, 
-            "priority": priority
+            "priority": priority,
+            "used_fallback": False
         }
 
     except Exception as e:
@@ -522,7 +524,8 @@ Classify priority level into exactly one of:
             "intent": fallback_intent, 
             "ticket_ids": ticket_ids, 
             "sentiment": fallback_sentiment, 
-            "priority": fallback_priority
+            "priority": fallback_priority,
+            "used_fallback": True
         }
 
 
@@ -677,7 +680,8 @@ Company: {company_name or 'derive from context/email'}
                     "content": prompt
                 }
             ],
-            temperature=0.7
+            temperature=0.7,
+            reasoning_effort="none"
         )
 
         reply = res.choices[0].message.content.strip()
@@ -762,7 +766,8 @@ Return ONLY valid JSON. No explanation. No markdown. No extra text.
                     "content": prompt
                 }
             ],
-            temperature=0
+            temperature=0,
+            reasoning_effort="none"
         )
 
         output = res.choices[0].message.content.strip()
@@ -846,7 +851,8 @@ If none found:
                     "content": prompt
                 }
             ],
-            temperature=0
+            temperature=0,
+            reasoning_effort="none"
         )
 
         output = res.choices[0].message.content.strip()
@@ -917,7 +923,8 @@ from the customer email below.
                     "content": prompt
                 }
             ],
-            temperature=0
+            temperature=0,
+            reasoning_effort="none"
         )
 
         description = res.choices[0].message.content.strip()
@@ -1004,7 +1011,8 @@ Return ONLY the plain summary text. Nothing else.
                     "content": prompt
                 }
             ],
-            temperature=0
+            temperature=0,
+            reasoning_effort="none"
         )
 
         summary = res.choices[0].message.content.strip()

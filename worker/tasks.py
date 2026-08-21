@@ -308,17 +308,24 @@ def process_email_task(self, data):
         ticket_ids = intent_data.get("ticket_ids", [])
         sentiment  = intent_data.get("sentiment", "Neutral")
         priority   = intent_data.get("priority", "Medium")
+        used_fallback = intent_data.get("used_fallback", False)
 
-        # Ensure priority is elevated if urgent words are detected
-        q_lower = email_query.lower()
-        if any(w in q_lower for w in ["sue", "legal", "lawyer", "court", "scam"]):
-            priority = "Critical"
-            sentiment = "Angry"
-        elif any(w in q_lower for w in ["refund", "cancel", "urgent", "wrong", "fake", "bad", "worst"]):
-            if priority not in ["Critical", "High"]:
-                priority = "High"
-            if sentiment == "Neutral":
+        # Keyword-based escalation ONLY applies when the LLM itself failed
+        # and detect_intent_llm fell back to regex/keyword classification.
+        # When the LLM succeeded, its sentiment/priority judgment is trusted
+        # as-is — this block must not override a working LLM result.
+        if used_fallback:
+            q_lower = email_query.lower()
+            if any(w in q_lower for w in ["sue", "legal", "lawyer", "court", "scam"]):
+                priority = "Critical"
                 sentiment = "Angry"
+            elif any(w in q_lower for w in ["refund", "cancel", "urgent", "wrong", "fake", "bad", "worst"]):
+                if priority not in ["Critical", "High"]:
+                    priority = "High"
+                if sentiment == "Neutral":
+                    sentiment = "Angry"
+        else:
+            logger.info(f"🎯 LLM classification trusted (no fallback) — skipping keyword escalation override")
 
         if not ticket_ids:
             fallback = extract_order_id(email_query)

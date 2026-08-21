@@ -53,7 +53,8 @@ Return ONLY a number between 0 and 100.
                 {"role": "system", "content": "You are a strict evaluator. Return ONLY a single integer between 0 and 100. No explanation. No reasoning. No text."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0
+            temperature=0,
+            reasoning_effort="none"
         )
 
         output = res.choices[0].message.content.strip()
