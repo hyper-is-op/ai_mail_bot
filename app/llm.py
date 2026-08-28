@@ -1,8 +1,12 @@
 import os
 import re
 import json
+import time
+import inspect
+import requests
 import logging
-from openai import OpenAI
+import contextvars
+from openai import OpenAI, AzureOpenAI
 from pydantic import BaseModel
 from typing import Literal
 
@@ -13,60 +17,149 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Dynamic placeholders - all actual calls resolve credentials dynamically from the database
-client = OpenAI(
-    api_key="placeholder-api-key-unused"
-)
-
-MODEL = "dynamic-resolved-model"
-
-import time
-import inspect
-import contextvars
+# Dynamic client holder
+client = OpenAI(api_key="placeholder-unused")
 
 current_client_id = contextvars.ContextVar("current_client_id", default="SYSTEM")
 
-def log_llm_metrics_db(client_id: str, model_name: str, prompt_tokens: int, completion_tokens: int, latency_ms: float, caller_function: str):
-    model_lower = model_name.lower()
-    if "70b" in model_lower:
-        input_price, output_price = 0.59 / 1_000_000, 0.79 / 1_000_000
-    elif "8x7b" in model_lower:
-        input_price, output_price = 0.27 / 1_000_000, 0.27 / 1_000_000
-    elif "8b" in model_lower:
-        input_price, output_price = 0.05 / 1_000_000, 0.08 / 1_000_000
-    else:
-        input_price, output_price = 0.15 / 1_000_000, 0.60 / 1_000_000
+def strip_reasoning_and_think_tags(text: str) -> str:
+    if not isinstance(text, str):
+        return text
+    # Strip <think>...</think> (used by DeepSeek / Qwen / Groq)
+    text = re.sub(r'<think>[\s\S]*?</think>', '', text, flags=re.IGNORECASE)
+    # Strip <thought>...</thought>
+    text = re.sub(r'<thought>[\s\S]*?</thought>', '', text, flags=re.IGNORECASE)
+    # Strip <reasoning>...</reasoning>
+    text = re.sub(r'<reasoning>[\s\S]*?</reasoning>', '', text, flags=re.IGNORECASE)
+    # Strip ```thinking ... ``` blocks
+    text = re.sub(r'```thinking[\s\S]*?```', '', text, flags=re.IGNORECASE)
+    return text.strip()
 
-    cost = (prompt_tokens * input_price) + (completion_tokens * output_price)
+# Comprehensive Multi-Provider Model Pricing Registry (USD Per 1,000,000 Tokens: input, output)
+PROVIDER_MODEL_PRICING = {
+    # Anthropic / Claude
+    "claude-3-7-sonnet": (3.00, 15.00),
+    "claude-3-5-sonnet": (3.00, 15.00),
+    "claude-3-5-haiku": (0.80, 4.00),
+    "claude-3-opus": (15.00, 75.00),
+    "claude-3-sonnet": (3.00, 15.00),
+    "claude-3-haiku": (0.25, 1.25),
 
-    # NEW: fetch multiplier and compute billed_cost
+    # OpenAI / Azure
+    "gpt-4o": (2.50, 10.00),
+    "gpt-4o-mini": (0.15, 0.60),
+    "gpt-4-turbo": (10.00, 30.00),
+    "gpt-4": (30.00, 60.00),
+    "gpt-3.5-turbo": (0.50, 1.50),
+    "o1": (15.00, 60.00),
+    "o1-mini": (1.10, 4.40),
+    "o1-preview": (15.00, 60.00),
+    "o3-mini": (1.10, 4.40),
+
+    # Google Gemini
+    "gemini-2.5-flash": (0.10, 0.40),
+    "gemini-2.0-flash": (0.10, 0.40),
+    "gemini-2.0-flash-lite": (0.075, 0.30),
+    "gemini-1.5-flash": (0.075, 0.30),
+    "gemini-1.5-pro": (1.25, 5.00),
+
+    # xAI Grok
+    "grok-2": (2.00, 10.00),
+    "grok-2-mini": (0.20, 1.00),
+    "grok-beta": (5.00, 15.00),
+
+    # DeepSeek
+    "deepseek-chat": (0.14, 0.28),
+    "deepseek-coder": (0.14, 0.28),
+    "deepseek-reasoner": (0.55, 2.19),
+    "deepseek-r1": (0.55, 2.19),
+    "deepseek-v3": (0.14, 0.28),
+
+    # Groq (Hosted open source models)
+    "llama-3.3-70b-versatile": (0.59, 0.79),
+    "llama-3.3-70b-specdec": (0.59, 0.79),
+    "llama-3.1-70b-versatile": (0.59, 0.79),
+    "llama-3.1-8b-instant": (0.05, 0.08),
+    "llama-3.2-1b-preview": (0.04, 0.04),
+    "llama-3.2-3b-preview": (0.06, 0.06),
+    "llama-3.2-11b-vision-preview": (0.18, 0.18),
+    "llama-3.2-90b-vision-preview": (0.90, 0.90),
+    "mixtral-8x7b-32768": (0.24, 0.24),
+    "gemma2-9b-it": (0.20, 0.20),
+    "qwen-2.5-32b": (0.20, 0.20),
+    "qwen-2.5-72b": (0.40, 0.40),
+    "qwen/qwen3-32b": (0.20, 0.20),
+    "qwen/qwen3.6-27b": (0.18, 0.18),
+}
+
+DEFAULT_PROVIDER_PRICING = {
+    "groq": (0.10, 0.20),
+    "openai": (0.15, 0.60),
+    "azure": (0.15, 0.60),
+    "gemini": (0.10, 0.40),
+    "anthropic": (3.00, 15.00),
+    "claude": (3.00, 15.00),
+    "grok": (2.00, 10.00),
+    "deepseek": (0.20, 0.50),
+    "ollama": (0.00, 0.00),      # Local self-hosted models = $0.00 API rate
+    "custom": (0.10, 0.30),
+}
+
+def calculate_llm_cost(provider: str, model_name: str, prompt_tokens: int, completion_tokens: int) -> float:
+    provider_clean = (provider or "groq").lower().strip()
+    model_clean = (model_name or "").lower().strip()
+
+    input_rate = None
+    output_rate = None
+
+    for pattern, (in_p, out_p) in PROVIDER_MODEL_PRICING.items():
+        if pattern in model_clean:
+            input_rate = in_p
+            output_rate = out_p
+            break
+
+    if input_rate is None or output_rate is None:
+        def_in, def_out = DEFAULT_PROVIDER_PRICING.get(provider_clean, (0.15, 0.60))
+        if "70b" in model_clean or "90b" in model_clean:
+            input_rate, output_rate = 0.59, 0.79
+        elif "8b" in model_clean or "7b" in model_clean or "1b" in model_clean or "3b" in model_clean:
+            input_rate, output_rate = 0.05, 0.08
+        elif "8x7b" in model_clean or "32b" in model_clean or "27b" in model_clean:
+            input_rate, output_rate = 0.20, 0.20
+        else:
+            input_rate, output_rate = def_in, def_out
+
+    cost = ((prompt_tokens * input_rate) + (completion_tokens * output_rate)) / 1_000_000.0
+    return max(0.0, float(cost))
+
+def log_llm_metrics_db(client_id: str, provider: str, model_name: str, prompt_tokens: int, completion_tokens: int, latency_ms: float, caller_function: str):
+    provider_clean = (provider or "groq").lower().strip()
+    cost = calculate_llm_cost(provider_clean, model_name, prompt_tokens, completion_tokens)
+
     multiplier = 1.0
     try:
         from app.db import get_db_ctx
         with get_db_ctx() as db:
             with db.cursor() as cursor:
+                # Ensure provider column exists in llm_logs
+                try:
+                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN provider VARCHAR(50) NOT NULL DEFAULT 'groq'")
+                except Exception:
+                    pass
+
                 cursor.execute("SELECT cost_multiplier FROM email_accounts WHERE client_id=%s", (client_id,))
                 row = cursor.fetchone()
                 if row and row[0] is not None:
                     multiplier = float(row[0])
-    except Exception:
-        pass
-    billed_cost = cost * multiplier
-
-    from app.db import get_db_ctx
-    try:
-        with get_db_ctx() as db:
-            with db.cursor() as cursor:
+                
+                billed_cost = cost * multiplier
                 cursor.execute("""
-                INSERT INTO llm_logs (client_id, model_name, prompt_tokens, completion_tokens, cost, billed_cost, latency_ms, caller_function)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (client_id, model_name, prompt_tokens, completion_tokens, cost, billed_cost, int(latency_ms), caller_function))
+                    INSERT INTO llm_logs (client_id, provider, model_name, prompt_tokens, completion_tokens, cost, billed_cost, latency_ms, caller_function)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (client_id, provider_clean, model_name, prompt_tokens, completion_tokens, cost, billed_cost, int(latency_ms), caller_function))
             db.commit()
     except Exception as e:
         logger.warning(f"⚠️ Failed to write LLM telemetry log to database: {e}")
-
-# Save original create method
-_original_create = client.chat.completions.create
 
 _llm_configs_cache = {}
 _LLM_CONFIGS_CACHE_TTL = 30  # seconds
@@ -84,7 +177,7 @@ def get_llm_config(config_id: int) -> dict | None:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
                 cursor.execute(
-                    "SELECT provider, api_key, base_url, model_name, api_version, name FROM llm_configs WHERE id=%s",
+                    "SELECT provider, api_key, base_url, model_name, api_version, name FROM globally_available_llm_configs WHERE id=%s",
                     (config_id,)
                 )
                 row = cursor.fetchone()
@@ -98,7 +191,7 @@ def get_llm_config(config_id: int) -> dict | None:
                         "name": row[5]
                     }
     except Exception as e:
-        logger.warning(f"Failed to fetch llm config {config_id}: {e}")
+        logger.warning(f"Failed to fetch globally available llm config {config_id}: {e}")
     
     if config:
         _llm_configs_cache[config_id] = (config, now)
@@ -107,49 +200,127 @@ def get_llm_config(config_id: int) -> dict | None:
 def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
     """
     Dynamically resolves the LLM Configuration dict to use for the given client_id and caller_function.
-    Does NOT use any environment variables. Only queries the database.
+    Queries client_llm_config -> globally_available_llm_configs -> global_default_llm -> env vars.
     """
     from app.db import get_db_ctx
 
-    # 1. Check for specific override in client_model_config table
+    # 0. Emergency Global Override Check: If is_override_active is True, ALL callers and clients MUST use global_default_llm
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, provider, api_key, base_url, model_name, api_version, is_override_active 
+                    FROM global_default_llm 
+                    WHERE id = 1
+                """)
+                g_row = cursor.fetchone()
+                if not g_row:
+                    cursor.execute("SELECT id, provider, api_key, base_url, model_name, api_version, is_override_active FROM global_default_llm LIMIT 1")
+                    g_row = cursor.fetchone()
+                if g_row and len(g_row) > 6 and g_row[6]:  # is_override_active is True
+                    logger.warning(f"🚨 EMERGENCY GLOBAL OVERRIDE ACTIVE: Enforcing Global Default LLM for client={client_id}, function={caller_function}")
+                    return {
+                        "id": g_row[0],
+                        "provider": g_row[1],
+                        "api_key": g_row[2],
+                        "base_url": g_row[3],
+                        "model_name": g_row[4],
+                        "api_version": g_row[5],
+                        "name": f"EMERGENCY GLOBAL OVERRIDE ({g_row[1].upper()})"
+                    }
+    except Exception as e:
+        logger.warning(f"Error checking emergency global override in get_llm_config_for_client: {e}")
+
+    # 1. Check for specific override / custom config in client_llm_config table
     override_model = None
     if client_id and client_id != "SYSTEM":
         try:
             with get_db_ctx() as db:
                 with db.cursor() as cursor:
-                    cursor.execute(
-                        "SELECT model_name FROM client_model_config WHERE client_id=%s AND caller_function=%s",
-                        (client_id, caller_function)
-                    )
+                    cursor.execute("""
+                        SELECT model_name, global_config_id, provider, api_key, base_url, api_version 
+                        FROM client_llm_config 
+                        WHERE client_id=%s AND caller_function=%s
+                    """, (client_id, caller_function))
                     row = cursor.fetchone()
-                    if row and row[0]:
-                        override_model = row[0]
-        except Exception as e:
-            logger.warning(f"Error checking client_model_config override: {e}")
+                    if row:
+                        c_model, c_global_id, c_provider, c_key, c_url, c_ver = row
+                        
+                        # 1a. If client specified full custom provider credentials for this function
+                        if c_provider and c_key:
+                            return {
+                                "provider": c_provider,
+                                "api_key": c_key,
+                                "base_url": c_url,
+                                "model_name": c_model,
+                                "api_version": c_ver,
+                                "name": f"Client {client_id} Custom ({c_provider})"
+                            }
 
-    # If the override model points to a config_ID, fetch that config directly
-    if override_model and override_model.startswith("config_"):
-        try:
-            config_id = int(override_model.split("_")[1])
-            config = get_llm_config(config_id)
-            if config:
-                config["id"] = config_id
-                return config
-        except Exception as e:
-            logger.warning(f"Error resolving override config {override_model}: {e}")
+                        # 1b. If referencing a specific globally available config ID
+                        if c_global_id:
+                            global_cfg = get_llm_config(c_global_id)
+                            if global_cfg:
+                                cfg_copy = dict(global_cfg)
+                                if c_model and c_model != f"config_{c_global_id}":
+                                    cfg_copy["model_name"] = c_model
+                                return cfg_copy
 
-    # 2. Check if the client has a specific configuration in llm_configs table
-    if client_id and client_id != "SYSTEM":
+                        # 1c. If model_name specifies config_<id>
+                        if c_model and c_model.startswith("config_"):
+                            try:
+                                cfg_id = int(c_model.split("_")[1])
+                                global_cfg = get_llm_config(cfg_id)
+                                if global_cfg:
+                                    return global_cfg
+                            except Exception:
+                                pass
+
+                        # 1d. If model_name is a direct model string
+                        if c_model:
+                            override_model = c_model
+        except Exception as e:
+            logger.warning(f"Error checking client_llm_config override: {e}")
+
+    resolved_config = None
+
+    # 2. Fall back to the Global Default (global_default_llm table, id=1)
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, provider, api_key, base_url, model_name, api_version 
+                    FROM global_default_llm 
+                    WHERE id = 1
+                """)
+                row = cursor.fetchone()
+                if not row:
+                    cursor.execute("SELECT id, provider, api_key, base_url, model_name, api_version FROM global_default_llm LIMIT 1")
+                    row = cursor.fetchone()
+                if row:
+                    resolved_config = {
+                        "id": row[0],
+                        "provider": row[1],
+                        "api_key": row[2],
+                        "base_url": row[3],
+                        "model_name": row[4],
+                        "api_version": row[5],
+                        "name": f"Global Default ({row[1].upper()})"
+                    }
+    except Exception as e:
+        logger.warning(f"Error fetching global_default_llm: {e}")
+
+    # 3. Fall back to ANY available configuration in globally_available_llm_configs table if no global_default_llm
+    if not resolved_config:
         try:
             with get_db_ctx() as db:
                 with db.cursor() as cursor:
                     cursor.execute(
-                        "SELECT id, provider, api_key, base_url, model_name, api_version, name FROM llm_configs WHERE client_id=%s LIMIT 1",
-                        (client_id,)
+                        "SELECT id, provider, api_key, base_url, model_name, api_version, name FROM globally_available_llm_configs ORDER BY id ASC LIMIT 1"
                     )
                     row = cursor.fetchone()
                     if row:
-                        return {
+                        resolved_config = {
                             "id": row[0],
                             "provider": row[1],
                             "api_key": row[2],
@@ -159,55 +330,119 @@ def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
                             "name": row[6]
                         }
         except Exception as e:
-            logger.warning(f"Error fetching custom llm_config for client {client_id}: {e}")
+            logger.warning(f"Error fetching fallback from globally_available_llm_configs: {e}")
 
-    # 3. Fall back to the Global (SYSTEM) default configuration in llm_configs table
-    try:
-        with get_db_ctx() as db:
-            with db.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id, provider, api_key, base_url, model_name, api_version, name FROM llm_configs WHERE client_id='SYSTEM' LIMIT 1"
-                )
-                row = cursor.fetchone()
-                if row:
-                    return {
-                        "id": row[0],
-                        "provider": row[1],
-                        "api_key": row[2],
-                        "base_url": row[3],
-                        "model_name": row[4],
-                        "api_version": row[5],
-                        "name": row[6]
-                    }
-    except Exception as e:
-        logger.warning(f"Error fetching SYSTEM llm_config: {e}")
+    # 4. If an override model was defined in client_llm_config, apply it
+    if resolved_config and override_model:
+        resolved_config = dict(resolved_config)
+        resolved_config["model_name"] = override_model
 
-    # 4. Fall back to ANY available configuration in llm_configs table if no SYSTEM default is set yet
-    try:
-        with get_db_ctx() as db:
-            with db.cursor() as cursor:
-                cursor.execute(
-                    "SELECT id, provider, api_key, base_url, model_name, api_version, name FROM llm_configs LIMIT 1"
-                )
-                row = cursor.fetchone()
-                if row:
-                    return {
-                        "id": row[0],
-                        "provider": row[1],
-                        "api_key": row[2],
-                        "base_url": row[3],
-                        "model_name": row[4],
-                        "api_version": row[5],
-                        "name": row[6]
-                    }
-    except Exception as e:
-        logger.warning(f"Error fetching fallback llm_config: {e}")
+    # 5. Ultimate fallback to environment variables
+    if not resolved_config:
+        default_groq_key = os.getenv("GROQ_API_KEY", "")
+        default_groq_model = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+        resolved_config = {
+            "provider": "groq",
+            "api_key": default_groq_key,
+            "base_url": "https://api.groq.com/openai/v1",
+            "model_name": override_model or default_groq_model,
+            "api_version": None,
+            "name": "System Env Default (Groq)"
+        }
 
-    # 5. No configurations found in database
-    raise ValueError(
-        "No LLM configurations are defined in the database. "
-        "Please add at least one LLM Provider configuration in the LLM Configuration page of the Admin UI."
-    )
+    return resolved_config
+
+class AnthropicCompletionsAdapter:
+    def __init__(self, api_key: str, base_url: str = None):
+        self.api_key = api_key
+        self.base_url = (base_url or "https://api.anthropic.com/v1").rstrip("/")
+
+    def create(self, *args, **kwargs):
+        model = kwargs.get("model", "claude-3-5-sonnet-20241022")
+        messages = kwargs.get("messages", [])
+        temperature = kwargs.get("temperature", 0.2)
+        max_tokens = kwargs.get("max_tokens", 4096)
+
+        system_prompt = ""
+        claude_messages = []
+
+        for m in messages:
+            role = m.get("role", "user")
+            content = m.get("content", "")
+            if role == "system":
+                system_prompt += (content + "\n\n")
+            elif role in ("user", "assistant"):
+                claude_messages.append({"role": role, "content": content})
+
+        if not claude_messages:
+            claude_messages = [{"role": "user", "content": "Please proceed."}]
+
+        # Ensure alternating user/assistant messages for Claude API
+        normalized_messages = []
+        for msg in claude_messages:
+            if normalized_messages and normalized_messages[-1]["role"] == msg["role"]:
+                normalized_messages[-1]["content"] += ("\n\n" + msg["content"])
+            else:
+                normalized_messages.append(dict(msg))
+
+        if normalized_messages and normalized_messages[0]["role"] != "user":
+            normalized_messages.insert(0, {"role": "user", "content": "Please proceed."})
+
+        payload = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": normalized_messages,
+            "temperature": temperature
+        }
+        if system_prompt.strip():
+            payload["system"] = system_prompt.strip()
+
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+
+        resp = requests.post(f"{self.base_url}/messages", json=payload, headers=headers, timeout=60)
+        if not resp.ok:
+            raise RuntimeError(f"Anthropic API error ({resp.status_code}): {resp.text}")
+
+        res_json = resp.json()
+        content_text = ""
+        for block in res_json.get("content", []):
+            if block.get("type") == "text":
+                content_text += block.get("text", "")
+
+        usage = res_json.get("usage", {})
+        prompt_tokens = usage.get("input_tokens", 0)
+        completion_tokens = usage.get("output_tokens", 0)
+
+        class _Msg:
+            def __init__(self, c):
+                self.content = c
+                self.role = "assistant"
+        class _Choice:
+            def __init__(self, m):
+                self.message = m
+        class _Usage:
+            def __init__(self, p, c):
+                self.prompt_tokens = p
+                self.completion_tokens = c
+                self.total_tokens = p + c
+        class _Res:
+            def __init__(self, text, pt, ct):
+                self.choices = [_Choice(_Msg(text))]
+                self.usage = _Usage(pt, ct)
+
+        return _Res(content_text, prompt_tokens, completion_tokens)
+
+class AnthropicChatAdapter:
+    def __init__(self, api_key: str, base_url: str = None):
+        self.completions = AnthropicCompletionsAdapter(api_key, base_url)
+
+class AnthropicClientAdapter:
+    def __init__(self, api_key: str, base_url: str = None):
+        self.chat = AnthropicChatAdapter(api_key, base_url)
 
 def get_dynamic_client(config_id: int, config: dict):
     cache_key = (
@@ -231,20 +466,22 @@ def get_dynamic_client(config_id: int, config: dict):
             base_url = "https://api.groq.com/openai/v1"
         elif provider == "openai":
             base_url = "https://api.openai.com/v1"
+        elif provider in ("claude", "anthropic"):
+            base_url = "https://api.anthropic.com/v1"
         elif provider == "grok":
             base_url = "https://api.x.ai/v1"
         elif provider == "gemini":
             base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
     
-    if provider == "azure":
-        from openai import AzureOpenAI
+    if provider in ("claude", "anthropic"):
+        new_client = AnthropicClientAdapter(api_key=api_key, base_url=base_url)
+    elif provider == "azure":
         new_client = AzureOpenAI(
             api_key=api_key,
             api_version=api_version or "2024-02-15-preview",
             azure_endpoint=base_url
         )
     else:
-        from openai import OpenAI
         new_client = OpenAI(
             api_key=api_key,
             base_url=base_url or None
@@ -269,6 +506,27 @@ def telemetry_create(*args, **kwargs):
         config = get_llm_config_for_client(client_id, caller)
         actual_model = config["model_name"]
         kwargs["model"] = actual_model
+        provider = config.get("provider", "groq").lower()
+
+        # Remove raw reasoning_effort passed from legacy call sites
+        kwargs.pop("reasoning_effort", None)
+
+        # REASONING SUPPRESSION / MULTI-PROVIDER TWEAKS
+        if provider == "gemini":
+            extra = kwargs.get("extra_body", {})
+            extra["thinking_config"] = {"thinking_budget": 0}
+            kwargs["extra_body"] = extra
+        elif provider == "openai":
+            if actual_model.startswith("o1") or actual_model.startswith("o3"):
+                kwargs.pop("temperature", None)
+                if "max_tokens" in kwargs:
+                    kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
+                kwargs["reasoning_effort"] = "low"
+        elif provider == "groq":
+            extra = kwargs.get("extra_body", {})
+            extra["reasoning_format"] = "parsed"
+            kwargs["extra_body"] = extra
+
         target_client = get_dynamic_client(config.get("id", 0), config)
     except Exception as exc:
         logger.error(f"❌ LLM Config Resolution Failed: {exc}")
@@ -280,11 +538,41 @@ def telemetry_create(*args, **kwargs):
     try:
         prompt_tokens = 0
         completion_tokens = 0
-        if res and hasattr(res, "usage") and res.usage:
-            prompt_tokens = res.usage.prompt_tokens
-            completion_tokens = res.usage.completion_tokens
         
-        log_llm_metrics_db(client_id, actual_model, prompt_tokens, completion_tokens, latency_ms, caller)
+        # 1. Standard OpenAI / Groq / Azure / xAI / DeepSeek object
+        if res and hasattr(res, "usage") and res.usage:
+            prompt_tokens = getattr(res.usage, "prompt_tokens", 0) or getattr(res.usage, "input_tokens", 0) or 0
+            completion_tokens = getattr(res.usage, "completion_tokens", 0) or getattr(res.usage, "output_tokens", 0) or 0
+        # 2. Dictionary format
+        elif isinstance(res, dict) and "usage" in res and res["usage"]:
+            u = res["usage"]
+            prompt_tokens = u.get("prompt_tokens") or u.get("input_tokens") or 0
+            completion_tokens = u.get("completion_tokens") or u.get("output_tokens") or 0
+        # 3. Gemini usage_metadata
+        elif res and hasattr(res, "usage_metadata") and res.usage_metadata:
+            prompt_tokens = getattr(res.usage_metadata, "prompt_token_count", 0) or 0
+            completion_tokens = getattr(res.usage_metadata, "candidates_token_count", 0) or 0
+
+        # Heuristic fallback if provider returned 0 or None
+        if prompt_tokens == 0:
+            msgs = kwargs.get("messages", [])
+            raw_text = " ".join([m.get("content", "") for m in msgs if isinstance(m, dict)])
+            if raw_text:
+                prompt_tokens = max(1, int(len(raw_text) / 4))
+        if completion_tokens == 0 and res and hasattr(res, "choices") and res.choices:
+            for choice in res.choices:
+                if hasattr(choice, "message") and hasattr(choice.message, "content") and choice.message.content:
+                    completion_tokens += max(1, int(len(choice.message.content) / 4))
+
+        # Universal reasoning and thinking tag suppression on choices
+        if res and hasattr(res, "choices") and res.choices:
+            for choice in res.choices:
+                if hasattr(choice, "message") and hasattr(choice.message, "content"):
+                    raw_c = choice.message.content
+                    if raw_c:
+                        choice.message.content = strip_reasoning_and_think_tags(raw_c)
+
+        log_llm_metrics_db(client_id, provider, actual_model, prompt_tokens, completion_tokens, latency_ms, caller)
     except Exception as telemetry_err:
         logger.warning(f"Telemetry tracking error: {telemetry_err}")
 
@@ -294,8 +582,8 @@ client.chat.completions.create = telemetry_create
 
 def resolve_langchain_model(client_id: str, caller_function: str, temperature: float = 0.2):
     """
-    Resolves the LLM config for LangChain usage, returns a ChatOpenAI or AzureChatOpenAI instance
-    configured with database credentials.
+    Resolves the LLM config for LangChain usage, returns a ChatOpenAI, AzureChatOpenAI,
+    or ChatAnthropic instance configured with database credentials.
     """
     config = get_llm_config_for_client(client_id, caller_function)
     provider = config["provider"].lower()
@@ -310,8 +598,27 @@ def resolve_langchain_model(client_id: str, caller_function: str, temperature: f
             base_url = "https://api.x.ai/v1"
         elif provider == "gemini":
             base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+        elif provider in ("claude", "anthropic"):
+            base_url = "https://api.anthropic.com/v1"
             
-    if provider == "azure":
+    if provider in ("claude", "anthropic"):
+        try:
+            from langchain_anthropic import ChatAnthropic
+            return ChatAnthropic(
+                model_name=config["model_name"],
+                anthropic_api_key=config["api_key"],
+                temperature=temperature
+            )
+        except Exception:
+            # Fallback to OpenAI-compatible interface
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                model=config["model_name"],
+                openai_api_key=config["api_key"],
+                openai_api_base=base_url or None,
+                temperature=temperature
+            )
+    elif provider == "azure":
         from langchain_openai import AzureChatOpenAI
         return AzureChatOpenAI(
             model=config["model_name"],
@@ -333,25 +640,47 @@ def resolve_langchain_model(client_id: str, caller_function: str, temperature: f
 
 
 # ==============================
-# 🔖 Agent Types
+# 🔖 Conversational Brand Personas
 # ==============================
 AgentType = Literal[
+    "customer_support",
+    "ecommerce_support",
+    "technical_support",
+    "billing_support",
+    "executive_escalation",
     "customer_support_agent",
     "ecommerce_support_agent",
     "crm_support_agent"
 ]
 
 AGENT_PROMPTS = {
-    "customer_support_agent": "You are a professional call center customer support agent.",
-    "ecommerce_support_agent": "You are an e-commerce support agent handling orders, returns, and payments.",
-    "crm_support_agent": "You are a CRM support agent managing client relationships and follow-ups."
+    # Primary Enterprise Personas
+    "customer_support": "You are a professional, empathetic Customer Support Specialist dedicated to resolving user inquiries, answering product questions, and ensuring a delightful customer experience.",
+    "ecommerce_support": "You are an E-Commerce & Logistics Support Specialist expert in order processing, parcel delivery status, returns, item exchanges, and refunds.",
+    "technical_support": "You are a Technical Support & Solutions Engineer expert in diagnosing technical glitches, software/API troubleshooting, system configurations, and providing clear step-by-step guidance.",
+    "billing_support": "You are a Billing & Invoicing Specialist handling subscription management, invoices, payment queries, renewals, and refunds with financial precision.",
+    "executive_escalation": "You are an Executive Customer Success & Escalation Manager handling high-priority VIP customer matters, critical escalations, and sensitive account inquiries with utmost tact and dedication.",
+    
+    # Backward-compatible aliases
+    "customer_support_agent": "You are a professional, empathetic Customer Support Specialist dedicated to resolving user inquiries, answering product questions, and ensuring a delightful customer experience.",
+    "ecommerce_support_agent": "You are an E-Commerce & Logistics Support Specialist expert in order processing, parcel delivery status, returns, item exchanges, and refunds.",
+    "crm_support_agent": "You are a Customer Relationship & Account Management Specialist dedicated to client communications, account follow-ups, and long-term partnership success."
+}
+
+TONE_INSTRUCTIONS = {
+    "Formal": "Write in a Formal, polite, structured, and respectful business tone.",
+    "Friendly": "Write in a Friendly, warm, conversational, and approachable tone that builds rapport.",
+    "Concise": "Write in a Concise, direct, and high-efficiency tone. Deliver the answer in the fewest clear sentences possible without pleasantries or fluff.",
+    "Empathetic": "Write in an Empathetic, reassuring, and patient tone. Acknowledge customer frustration with genuine care and provide clear reassurance.",
+    "Technical": "Write in a Technical, precise, and analytical tone. Clearly explain root causes, parameters, technical steps, and actionable technical resolutions.",
+    "Casual": "Write in a Casual, relaxed, and modern conversational tone while remaining helpful and clear."
 }
 
 class AgentRequest(BaseModel):
     agent_type: AgentType
 
 def get_agent_prompt(request: AgentRequest) -> str:
-    return AGENT_PROMPTS[request.agent_type]
+    return AGENT_PROMPTS.get(request.agent_type, AGENT_PROMPTS["customer_support"])
 
 
 # ==============================
@@ -406,12 +735,13 @@ Classify the query into exactly one intent, extract ALL ticket_ids if present, p
 
 ## Intents
 - `ticket_status`: User is asking about status of a ticket, order, complaint, delivery, or support request
-- `general_query`: Everything else
+- `marketing_promotional`: Marketing email, promotional campaign, newsletter, job alert blast, webinar invite, discount/sale offer, automated digest, or educational course advertisement (requiring no customer support action)
+- `general_query`: Genuine customer support query, product question, policy inquiry, technical issue, or feedback requiring an answer
 
 ## Sentiment Analysis
 Classify user sentiment into exactly one of:
 - `Angry`: User shows frustration, anger, impatience, or threatens escalation/cancellation.
-- `Neutral`: General query, factual, standard request.
+- `Neutral`: General query, factual, standard request, or marketing/newsletter announcement.
 - `Happy`: Expresses gratitude, happiness, satisfaction.
 
 ## Priority Tagging
@@ -419,7 +749,7 @@ Classify priority level into exactly one of:
 - `Critical`: Urgent issues like order cancellation, immediate refunds, lawsuit threats, legal actions, security/data issues, or extreme user anger.
 - `High`: General support issues with angry/impatient sentiment, or containing key words like "urgent", "broken", "cancel", "refund", "sue", "failed".
 - `Medium`: General query or ticket status checks with neutral sentiment.
-- `Low`: Positive feedback, general suggestions, or thanking support.
+- `Low`: Marketing/newsletter emails, promotional updates, positive feedback, or suggestions.
 
 ## Ticket ID Patterns
 - Support ticket: T-YYMMDD-XXXXX (e.g. T-260505-00117)
@@ -429,11 +759,11 @@ Classify priority level into exactly one of:
 - Return ONLY raw JSON. No explanation, no markdown, no extra text.
 - Extract ALL ticket IDs found in the query into a list.
 - If no ticket_id is found, set ticket_ids to empty list [].
-- If intent is `general_query` and no ticket IDs are present, ticket_ids is always [].
+- If intent is `marketing_promotional`, sentiment is typically `Neutral` and priority is `Low`.
 
 ## Output Format
 {{
-  "intent": "ticket_status" | "general_query",
+  "intent": "ticket_status" | "marketing_promotional" | "general_query",
   "ticket_ids": ["<id1>", "<id2>"] | [],
   "sentiment": "Angry" | "Neutral" | "Happy",
   "priority": "Critical" | "High" | "Medium" | "Low"
@@ -564,7 +894,12 @@ def generate_reply_llm(
         except Exception as e:
             logger.warning(f"Failed to fetch account profile: {e}")
 
-    system_prompt = AGENT_PROMPTS.get(agent_type_override, AGENT_PROMPTS["customer_support_agent"]) + f"\n\nCRITICAL: You MUST write your reply in a {response_tone} tone. Adhere strictly to this tone (e.g., if Formal, be polite and structured; if Friendly, be warm and personal; if Concise, write the shortest possible correct reply; if Technical, explain technical details clearly)."
+    tone_instruction = TONE_INSTRUCTIONS.get(
+        response_tone,
+        f"Write your reply in a {response_tone} tone."
+    )
+    base_persona = AGENT_PROMPTS.get(agent_type_override, AGENT_PROMPTS["customer_support"])
+    system_prompt = f"{base_persona}\n\nCRITICAL BRAND VOICE GUIDELINE: {tone_instruction}"
 
     customer_name = (
         extract_name_from_email(from_email)
@@ -587,6 +922,11 @@ def generate_reply_llm(
             team_name = department_name
         else:
             agent_team_map = {
+                "customer_support":     "Customer Support Team",
+                "ecommerce_support":    "E-Commerce Support Team",
+                "technical_support":    "Technical Support Team",
+                "billing_support":      "Billing & Invoicing Team",
+                "executive_escalation": "Executive Support Team",
                 "customer_support_agent":  "Customer Support Team",
                 "ecommerce_support_agent": "E-Commerce Support Team",
                 "crm_support_agent":       "CRM Support Team"
@@ -937,9 +1277,6 @@ from the customer email below.
         return body[:500].strip()
 
 
-        # This is the new function to append to app/llm.py
-# Add this at the bottom of the existing llm.py file
-
 # ==============================
 # 📝 Generate Issue Summary
 # ==============================
@@ -1029,7 +1366,6 @@ Return ONLY the plain summary text. Nothing else.
         return customer_body[:247].strip() + "..." if len(customer_body) > 247 else customer_body.strip()
 
 
-import time
 _model_cache = {}
 _MODEL_CACHE_TTL = 60  # seconds
 

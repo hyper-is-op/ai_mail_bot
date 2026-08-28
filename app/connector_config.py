@@ -231,7 +231,7 @@ def ensure_connector_configs_table():
                     headers_template      JSON,
                     request_template      JSON,
                     response_mapping      JSON,
-                    auth_type             ENUM('bearer','basic','api_key_header','api_key_query') NOT NULL,
+                    auth_type             ENUM('bearer','basic','api_key_header','api_key_query','oauth2_client_credentials') NOT NULL,
                     auth_secret_encrypted TEXT,
                     auth_field_name       VARCHAR(100) NULL,
                     payload_encoding        ENUM('plain','base64_query') NOT NULL DEFAULT 'plain',
@@ -269,6 +269,15 @@ def ensure_connector_configs_table():
                 cursor.execute(
                     "ALTER TABLE connector_configs ADD UNIQUE INDEX uq_client_pending_trigger (client_id, pending_marker)"
                 )
+            except Exception:
+                pass
+
+            # OAuth 2.0 ENUM upgrade migration for existing tables
+            try:
+                cursor.execute("""
+                    ALTER TABLE connector_configs
+                    MODIFY COLUMN auth_type ENUM('bearer','basic','api_key_header','api_key_query','oauth2_client_credentials') NOT NULL
+                """)
             except Exception:
                 pass
 

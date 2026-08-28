@@ -95,7 +95,95 @@ def _render_template(template_json: str | None, context: dict) -> dict | None:
         ) from e
 
 
-def _apply_auth(request_kwargs: dict, auth_type: str, secret: str, auth_field_name: str | None) -> None:
+import hashlib
+import redis
+import os
+
+_REDIS_URL = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0") or "redis://localhost:6379/0"
+try:
+    _redis_client = redis.from_url(_REDIS_URL, decode_responses=True, socket_connect_timeout=2)
+except Exception:
+    _redis_client = None
+
+
+def _fetch_oauth2_token(client_id: str, secret_json_str: str) -> str:
+    """
+    Fetches and caches an OAuth 2.0 client_credentials access token.
+    Uses Redis cache key: `oauth2_token:{client_id}:{hash(creds)}`.
+    """
+    try:
+        creds = json.loads(secret_json_str) if isinstance(secret_json_str, str) else secret_json_str
+    except Exception as e:
+        raise ExecutorError(f"Invalid OAuth 2.0 secret JSON: {e}")
+
+    token_url = creds.get("token_url")
+    oauth_client_id = creds.get("client_id")
+    oauth_client_secret = creds.get("client_secret")
+    scope = creds.get("scope")
+    auth_method = creds.get("token_auth_method", "client_secret_post")
+
+    if not token_url or not oauth_client_id or not oauth_client_secret:
+        raise ExecutorError("OAuth 2.0 requires token_url, client_id, and client_secret in auth_secret")
+
+    # Generate stable cache key
+    creds_hash = hashlib.sha256(f"{token_url}:{oauth_client_id}".encode()).hexdigest()[:16]
+    cache_key = f"oauth2_token:{client_id}:{creds_hash}"
+
+    # Try Redis Cache
+    if _redis_client:
+        try:
+            cached_token = _redis_client.get(cache_key)
+            if cached_token:
+                logger.info(f"⚡ OAuth 2.0 token cache hit for client_id={client_id}")
+                return cached_token
+        except Exception as err:
+            logger.warning(f"⚠️ Redis OAuth token read failed: {err}")
+
+    # Fetch new token
+    logger.info(f"🔑 Requesting fresh OAuth 2.0 token from {token_url} for client_id={client_id}")
+    data = {"grant_type": "client_credentials"}
+    if scope:
+        data["scope"] = scope
+
+    headers = {"Accept": "application/json"}
+    auth = None
+
+    if auth_method == "client_secret_basic":
+        auth = (oauth_client_id, oauth_client_secret)
+    else:
+        data["client_id"] = oauth_client_id
+        data["client_secret"] = oauth_client_secret
+
+    try:
+        res = requests.post(token_url, data=data, headers=headers, auth=auth, timeout=10)
+        res.raise_for_status()
+        token_data = res.json()
+    except Exception as e:
+        raise ExecutorError(f"OAuth 2.0 token request failed: {e}")
+
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise ExecutorError(f"OAuth 2.0 response did not contain access_token: {token_data}")
+
+    expires_in = token_data.get("expires_in", 3600)
+    try:
+        expires_in = int(expires_in)
+    except (ValueError, TypeError):
+        expires_in = 3600
+
+    # Cache with safety buffer (e.g. 60 seconds before actual expiry)
+    ttl = max(expires_in - 60, 30)
+    if _redis_client:
+        try:
+            _redis_client.setex(cache_key, ttl, access_token)
+            logger.info(f"✅ Cached OAuth 2.0 token for client_id={client_id} (TTL={ttl}s)")
+        except Exception as err:
+            logger.warning(f"⚠️ Failed to cache OAuth token in Redis: {err}")
+
+    return access_token
+
+
+def _apply_auth(request_kwargs: dict, auth_type: str, secret: str, auth_field_name: str | None, client_id: str = "system") -> None:
     if auth_type == "bearer":
         request_kwargs.setdefault("headers", {})["Authorization"] = f"Bearer {secret}"
     elif auth_type == "basic":
@@ -109,6 +197,9 @@ def _apply_auth(request_kwargs: dict, auth_type: str, secret: str, auth_field_na
         if not auth_field_name:
             raise ExecutorError("auth_type=api_key_query requires auth_field_name")
         request_kwargs.setdefault("params", {})[auth_field_name] = secret
+    elif auth_type == "oauth2_client_credentials":
+        token = _fetch_oauth2_token(client_id, secret)
+        request_kwargs.setdefault("headers", {})["Authorization"] = f"Bearer {token}"
     else:
         raise ExecutorError(f"Unknown auth_type: {auth_type}")
 
@@ -212,7 +303,7 @@ def execute_connector(
 
         request_kwargs = {"headers": rendered_headers, "timeout": REQUEST_TIMEOUT_SECONDS}
         if secret:
-            _apply_auth(request_kwargs, config["auth_type"], secret, config.get("auth_field_name"))
+            _apply_auth(request_kwargs, config["auth_type"], secret, config.get("auth_field_name"), client_id=config.get("client_id", "system"))
 
         payload_encoding = config.get("payload_encoding", "plain")
         http_method = config["http_method"].upper()

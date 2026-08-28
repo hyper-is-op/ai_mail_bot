@@ -17,7 +17,7 @@ const NODES: Node[] = [
   { id: "Intent_Detection", label: "Intent Classifier", desc: "LLM parses inquiry to extract intent category, customer sentiment, and priority level", x: 220, y: 160, icon: Brain, color: "from-purple-500 to-pink-500" },
   { id: "Clarification_Request", label: "Clarification Loop", desc: "Sent when query contains multiple ambiguous ticket reference IDs", x: 420, y: 50, icon: HelpCircle, color: "from-yellow-500 to-amber-500" },
   { id: "Order_Check", label: "CRM Lookup", desc: "Checks order database or docket status webhook using extracted ticket ID", x: 420, y: 160, icon: Database, color: "from-cyan-500 to-blue-500" },
-  { id: "RAG_Search", label: "RAG Knowledge Check", desc: "Queries vector database using text embeddings to retrieve policy docs", x: 420, y: 270, icon: Search, color: "from-emerald-500 to-teal-500" },
+  { id: "RAG_Search", label: "Knowledge Base Check", desc: "Queries vector database using text embeddings to retrieve policy docs", x: 420, y: 270, icon: Search, color: "from-emerald-500 to-teal-500" },
   { id: "Confidence_Evaluation", label: "Confidence Guard", desc: "Heuristic and LLM scoring module. Verifies draft response matches target confidence threshold", x: 630, y: 270, icon: CheckCircle, color: "from-orange-500 to-red-500" },
   { id: "SMTP_Send", label: "SMTP Dispatch", desc: "Dispatches the generated resolution reply directly to user via email client API", x: 820, y: 100, icon: Send, color: "from-green-500 to-emerald-500" },
   { id: "Ticket_Escalation", label: "CRM Escalation", desc: "Creates support ticket on MySQL DB, registers ticket history, and sends confirmation", x: 820, y: 220, icon: AlertTriangle, color: "from-rose-500 to-red-600" }

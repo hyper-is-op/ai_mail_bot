@@ -15,7 +15,9 @@ export default function OrderTracking() {
     setError('');
     setOrderData(null);
     try {
-      const res = await api.orderStatus(orderId);
+      const user = JSON.parse(localStorage.getItem('user') || '{}');
+      const cid = user?.client_id || 'default';
+      const res = await api.orderStatus(cid, orderId);
       setOrderData(res.data || res);
     } catch (err: any) {
       setError(err.message || 'Failed to fetch order tracking data.');

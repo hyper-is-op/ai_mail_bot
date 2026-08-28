@@ -102,7 +102,13 @@ def login_user(email, password):
     conn = get_db()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT id, client_id, email, role, password_hash, status FROM users WHERE email=%s", (email,))
+            cursor.execute("""
+                SELECT u.id, u.client_id, u.email, u.role, u.password_hash, u.status, u.name,
+                       ea.company_name, ea.department_name
+                FROM users u
+                LEFT JOIN email_accounts ea ON u.client_id = ea.client_id
+                WHERE u.email=%s
+            """, (email,))
             user = cursor.fetchone()
             if not user:
                 return {"success": False, "error": "Invalid email or password"}
@@ -111,7 +117,15 @@ def login_user(email, password):
             if user["password_hash"] != hash_password(password):
                 return {"success": False, "error": "Invalid email or password"}
 
-            user_payload = {"id": user["id"], "client_id": user["client_id"], "email": user["email"], "role": user["role"]}
+            user_payload = {
+                "id": user["id"], 
+                "client_id": user["client_id"], 
+                "email": user["email"], 
+                "role": user["role"],
+                "name": user.get("name") or "",
+                "company_name": user.get("company_name") or "",
+                "department_name": user.get("department_name") or ""
+            }
             token = create_session(user_payload)
             return {"success": True, "user": user_payload, "token": token}
     finally:
@@ -328,7 +342,7 @@ def delete_client_account(client_id: str) -> dict:
             # delete all MySQL data
             cursor.execute("DELETE FROM celery_task_log WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM chat_history WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM client_model_config WHERE client_id = %s", (client_id,))
+            cursor.execute("DELETE FROM client_llm_config WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM create_payload_table WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM email_accounts WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM email_customers WHERE client_id = %s", (client_id,))

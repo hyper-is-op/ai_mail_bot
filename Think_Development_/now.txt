@@ -3,7 +3,7 @@ audit_logs
 blocked_keywords
 celery_task_log
 chat_history
-client_model_config
+client_llm_config
 connector_configs
 create_payload_table
 email_accounts
@@ -11,7 +11,7 @@ email_customers
 email_logs
 emails
 keyword_block_policy
-llm_configs
+default_global_llm_config
 llm_logs
 paused_emails
 payload_get_table

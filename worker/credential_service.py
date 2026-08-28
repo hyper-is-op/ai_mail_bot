@@ -169,3 +169,39 @@ def get_email_credentials(client_id):
 def get_email_score_threshold(client_id):
     res = credential_service.get_credentials(client_id)
     return res[2] if len(res) > 2 else 80
+
+
+def get_mailbox_oauth_token(client_id: str, provider: str, refresh_token: str, oauth_client_id: str, oauth_client_secret: str) -> str | None:
+    """
+    Exchanges refresh_token for a fresh OAuth 2.0 access token for Google Workspace / Microsoft 365 IMAP/SMTP XOAUTH2.
+    """
+    if not refresh_token or not oauth_client_id or not oauth_client_secret:
+        logger.error(f"❌ Missing OAuth 2.0 refresh parameters for client {client_id}")
+        return None
+
+    prov = (provider or "google").lower()
+    if "google" in prov or "gmail" in prov:
+        token_url = "https://oauth2.googleapis.com/token"
+    elif "microsoft" in prov or "azure" in prov or "office" in prov or "outlook" in prov:
+        token_url = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+    else:
+        logger.error(f"❌ Unsupported OAuth provider '{provider}' for client {client_id}")
+        return None
+
+    data = {
+        "client_id": oauth_client_id,
+        "client_secret": oauth_client_secret,
+        "refresh_token": refresh_token,
+        "grant_type": "refresh_token"
+    }
+
+    try:
+        res = requests.post(token_url, data=data, timeout=10)
+        res.raise_for_status()
+        token_data = res.json()
+        access_token = token_data.get("access_token")
+        logger.info(f"✅ Refreshed XOAUTH2 access token for {client_id} via {provider}")
+        return access_token
+    except Exception as e:
+        logger.error(f"❌ Failed to refresh XOAUTH2 token for {client_id}: {e}")
+        return None

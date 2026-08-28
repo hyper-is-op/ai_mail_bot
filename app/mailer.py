@@ -14,7 +14,7 @@ logging.basicConfig(
 )
 
 
-def send_email(client_id, to_email, subject, body):
+def send_email(client_id, to_email, subject, body, in_reply_to=None):
     """Send an email using SMTP and credentials from the credential service."""
 
     try:
@@ -37,6 +37,9 @@ def send_email(client_id, to_email, subject, body):
         message["From"] = EMAIL_USER
         message["To"] = to_email
         message["Subject"] = subject
+        if in_reply_to:
+            message["In-Reply-To"] = in_reply_to
+            message["References"] = in_reply_to
 
         # Attach body with UTF-8 encoding
         message.attach(MIMEText(body, "plain", "utf-8"))

@@ -115,7 +115,7 @@ Per-client cap on live/pending connector configs. Read via `get_connector_cap(cl
 
 ### 3.5 Existing tables referenced (unchanged)
 
-`email_accounts`, `email_logs`, `paused_emails`, `reply_blocked_by_keyword`, `chat_history`, `ticket_record`, `users`, `llm_configs`, `llm_logs`, `client_model_config`, `email_customers`, `keyword_block_policy`, `blocked_keywords`, `celery_task_log` — see inline code comments; not modified by this work except where noted.
+`email_accounts`, `email_logs`, `paused_emails`, `reply_blocked_by_keyword`, `chat_history`, `ticket_record`, `users`, `global_default_llm`, `globally_available_llm_configs`, `client_llm_config`, `client_email_disclaimers`, `llm_logs`, `email_customers`, `keyword_block_policy`, `blocked_keywords`, `celery_task_log` — see inline code comments; not modified by this work except where noted.
 
 ---
 

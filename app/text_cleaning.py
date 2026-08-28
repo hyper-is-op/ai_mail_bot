@@ -69,3 +69,63 @@ def strip_quoted_reply(body: str) -> str:
         return body.strip()
 
     return cleaned
+
+
+def is_html_content(text: str) -> bool:
+    """Check if a string looks like raw HTML content."""
+    if not text or not isinstance(text, str):
+        return False
+    lower = text.strip().lower()
+    return (
+        lower.startswith("<!doctype html")
+        or lower.startswith("<html")
+        or ("<head" in lower and "<body" in lower)
+        or ("<table" in lower and "</table" in lower)
+        or (lower.count("<p") + lower.count("<div") + lower.count("<br") >= 3)
+    )
+
+
+def extract_clean_text_from_html(html_content: str) -> str:
+    """
+    Converts raw HTML into clean, human-readable plain text.
+    Strips scripts, styles, metadata, and comments, preserving line breaks.
+    """
+    if not html_content or not isinstance(html_content, str):
+        return ""
+
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, "html.parser")
+
+        # Strip scripts, styles, head, meta
+        for element in soup(["script", "style", "head", "meta", "noscript", "svg"]):
+            element.decompose()
+
+        # Add newlines around block tags
+        for tag in soup.find_all(["p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr"]):
+            tag.insert_before("\n")
+
+        text = soup.get_text()
+    except Exception:
+        # Fallback to regex-based HTML cleaning
+        import html
+        text = re.sub(r"<(script|style|head|meta)[^>]*>.*?</\1>", "", html_content, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"<!--.*?-->", "", text, flags=re.DOTALL)
+        text = re.sub(r"<(?:br|p|div|tr|li|h[1-6])[^>]*>", "\n", text, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = html.unescape(text)
+
+    # Normalize whitespace and multiple consecutive blank lines
+    lines = [line.strip() for line in text.splitlines()]
+    non_empty_lines = []
+    prev_blank = False
+    for line in lines:
+        if line:
+            non_empty_lines.append(line)
+            prev_blank = False
+        elif not prev_blank:
+            non_empty_lines.append("")
+            prev_blank = True
+
+    cleaned_text = "\n".join(non_empty_lines).strip()
+    return cleaned_text

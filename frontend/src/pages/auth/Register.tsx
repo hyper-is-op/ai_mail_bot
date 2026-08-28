@@ -1,10 +1,9 @@
-import { useState } from 'react';
-import { Mail, Lock, ArrowRight, Loader2, AlertCircle, UserCircle2, Eye, EyeOff } from 'lucide-react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useState, useEffect } from 'react';
+import { Mail, Lock, ArrowRight, Loader2, AlertCircle, UserCircle2, Eye, EyeOff, Sun, Moon } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { api } from '@/lib/api';
 
 export default function Register() {
-  const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [role, setRole] = useState('client');
@@ -12,6 +11,23 @@ export default function Register() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [registered, setRegistered] = useState(false);
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return (localStorage.getItem('theme') as 'dark' | 'light') || 'dark';
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    localStorage.setItem('theme', theme);
+  }, [theme]);
+
+  const toggleTheme = () => {
+    setTheme(prev => {
+      const next = prev === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('theme', next);
+      document.documentElement.classList.toggle('dark', next === 'dark');
+      return next;
+    });
+  };
 
   const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -30,17 +46,43 @@ export default function Register() {
   };
 
   return (
-    <div className="min-h-screen w-full flex bg-background">
-      {/* Left side - Visuals */}
-      <div className="hidden lg:flex flex-1 relative bg-black overflow-hidden border-r border-white/10 items-center justify-center p-12">
-        <div className="absolute inset-0 bg-gradient-to-br from-accent/20 via-black to-primary/20 z-0"></div>
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 mix-blend-overlay z-0"></div>
+    <div className="min-h-screen w-full flex bg-background text-foreground relative">
+      {/* Absolute Theme Toggle Button */}
+      <button
+        onClick={toggleTheme}
+        className="absolute top-6 right-6 z-50 p-2.5 rounded-full bg-zinc-100 dark:bg-white/10 border border-zinc-200 dark:border-white/15 text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white shadow-sm transition-all cursor-pointer"
+        title="Toggle Theme"
+      >
+        {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+      </button>
 
-        <div className="relative z-10 max-w-lg glass-panel p-8 rounded-2xl border border-white/20 shadow-2xl">
-          <h2 className="text-2xl font-bold text-white mb-4">Join the Future of Support</h2>
-          <p className="text-white/70 mb-6">
+      {/* Left side - Visuals */}
+      <div className="hidden lg:flex flex-1 relative bg-gradient-to-br from-blue-50/80 via-slate-100 to-indigo-50/50 dark:from-zinc-950 dark:via-black dark:to-zinc-900 overflow-hidden border-r border-zinc-200 dark:border-white/10 items-center justify-center p-12">
+        {/* Subtle Background Glow Elements */}
+        <div className="absolute top-1/4 -left-20 w-96 h-96 bg-accent/10 dark:bg-accent/20 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute -bottom-20 -right-20 w-96 h-96 bg-primary/10 dark:bg-primary/20 rounded-full blur-3xl pointer-events-none"></div>
+        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-10 dark:opacity-15 mix-blend-overlay pointer-events-none"></div>
+
+        <div className="relative z-10 max-w-lg bg-white/90 dark:bg-white/5 backdrop-blur-xl p-8 rounded-2xl border border-zinc-200/80 dark:border-white/15 shadow-xl dark:shadow-2xl">
+          <div className="flex items-center gap-2 mb-4">
+            <span className="w-2.5 h-2.5 rounded-full bg-accent animate-pulse"></span>
+            <span className="text-xs font-bold uppercase tracking-wider text-accent">Enterprise Support Portal</span>
+          </div>
+          <h2 className="text-2xl font-bold text-zinc-900 dark:text-white mb-3">Join the Future of Support</h2>
+          <p className="text-zinc-600 dark:text-zinc-300 text-sm leading-relaxed mb-6">
             Register as an Admin or Client to get access to automated AI responses, robust analytics, and enterprise ticket management.
           </p>
+          <div className="flex items-center gap-6 pt-4 border-t border-zinc-200 dark:border-white/10">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-2xl font-bold text-zinc-900 dark:text-white font-mono">100%</span>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400 uppercase tracking-wider font-semibold">Autonomous</span>
+            </div>
+            <div className="w-px h-8 bg-zinc-200 dark:bg-white/10"></div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-2xl font-bold text-zinc-900 dark:text-white font-mono">&lt; 2s</span>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400 uppercase tracking-wider font-semibold">Response Speed</span>
+            </div>
+          </div>
         </div>
       </div>
 

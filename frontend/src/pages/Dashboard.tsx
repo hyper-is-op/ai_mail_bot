@@ -181,8 +181,8 @@ export default function Dashboard() {
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row justify-between sm:items-end gap-4">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">Overview</h2>
-          <p className="text-muted-foreground mt-1">Real-time insights of your email automation system.</p>
+          <h2 className="text-2xl md:text-3xl font-semibold tracking-tight text-foreground">Overview</h2>
+          <p className="text-xs text-muted-foreground mt-1">Real-time insights of your email automation system.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 self-start sm:self-auto">
           {user?.role === 'admin' && clients.length > 0 && (
@@ -191,26 +191,26 @@ export default function Dashboard() {
               <select
                 value={selectedClientId}
                 onChange={(e) => setSelectedClientId(e.target.value)}
-                className="bg-white/5 border border-white/10 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer"
+                className="win11-card rounded-lg px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary cursor-pointer shadow-2xs"
               >
-                <option value="ALL" className="bg-zinc-900 text-foreground">ALL</option>
+                <option value="ALL" className="bg-card text-foreground">ALL</option>
                 {clients.map((c) => (
-                  <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
+                  <option key={c.client_id} value={c.client_id} className="bg-card text-foreground">
                     {c.client_id} ({c.email})
                   </option>
                 ))}
               </select>
             </div>
           )}
-          <button onClick={() => fetchStats(selectedClientId)} className="flex self-start sm:self-auto items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:bg-white/10 text-zinc-300 transition-all">
+          <button onClick={() => fetchStats(selectedClientId)} className="flex self-start sm:self-auto items-center gap-2 text-xs font-medium px-3.5 py-2 rounded-lg win11-card hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-foreground transition-all cursor-pointer">
             <RefreshCw className="w-3.5 h-3.5" /> Refresh metrics
           </button>
         </div>
       </div>
 
       {/* Date Filter Panel */}
-      <div className="glass-panel p-4 rounded-2xl flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-        <div className="flex flex-wrap items-center gap-2">
+      <div className="win11-card p-3.5 rounded-lg flex flex-col lg:flex-row lg:items-center justify-between gap-3 shadow-2xs">
+        <div className="flex flex-wrap items-center gap-1.5">
           {[
             { id: 'all', label: 'All Time' },
             { id: 'today', label: 'Today' },
@@ -223,10 +223,10 @@ export default function Dashboard() {
               key={r.id}
               onClick={() => setRangeType(r.id)}
               className={cn(
-                "px-4 py-2 rounded-xl text-xs font-semibold transition-all border",
+                "px-3.5 py-1.5 rounded-md text-xs font-semibold transition-all border",
                 rangeType === r.id
-                  ? "bg-primary text-primary-foreground border-primary shadow-lg shadow-primary/25"
-                  : "bg-white/5 dark:bg-black/20 border-zinc-200/50 dark:border-zinc-800/40 text-muted-foreground hover:text-foreground"
+                  ? "bg-primary text-primary-foreground border-primary shadow-xs"
+                  : "bg-black/[0.03] dark:bg-white/[0.04] border-black/[0.06] dark:border-white/[0.08] text-muted-foreground hover:text-foreground hover:bg-black/[0.06] dark:hover:bg-white/[0.08]"
               )}
             >
               {r.label}
@@ -245,7 +245,7 @@ export default function Dashboard() {
                   e.currentTarget.showPicker();
                 } catch (err) {}
               }}
-              className="bg-white/5 dark:bg-black/20 border border-zinc-200/50 dark:border-zinc-800/40 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer [color-scheme:light] dark:[color-scheme:dark]"
+              className="bg-white dark:bg-white/[0.05] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-2.5 py-1 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary cursor-pointer [color-scheme:light] dark:[color-scheme:dark]"
             />
             <span className="text-xs text-muted-foreground">to</span>
             <input
@@ -257,11 +257,11 @@ export default function Dashboard() {
                   e.currentTarget.showPicker();
                 } catch (err) {}
               }}
-              className="bg-white/5 dark:bg-black/20 border border-zinc-200/50 dark:border-zinc-800/40 rounded-xl px-3 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary cursor-pointer [color-scheme:light] dark:[color-scheme:dark]"
+              className="bg-white dark:bg-white/[0.05] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-2.5 py-1 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary cursor-pointer [color-scheme:light] dark:[color-scheme:dark]"
             />
             <button
               onClick={handleApplyCustomRange}
-              className="px-3 py-1.5 bg-primary text-primary-foreground rounded-xl text-xs font-semibold shadow-lg shadow-primary/25 hover:bg-primary/95 transition-all"
+              className="px-3 py-1 bg-primary text-primary-foreground rounded-md text-xs font-semibold shadow-xs hover:opacity-90 transition-all cursor-pointer"
             >
               Apply
             </button>
@@ -270,56 +270,56 @@ export default function Dashboard() {
       </div>
 
       {errorMsg && (
-        <div className="p-4 rounded-xl border bg-rose-500/10 border-rose-500/20 text-rose-500 flex items-center gap-3">
-          <AlertCircle className="w-5 h-5 shrink-0" />
-          <span className="font-medium text-sm">{errorMsg}</span>
+        <div className="p-3.5 rounded-lg border bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center gap-2.5 text-xs font-medium">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{errorMsg}</span>
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3.5">
         {statsList.map((stat, i) => (
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 15 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: i * 0.05 }}
+            transition={{ delay: i * 0.04 }}
             key={stat.name}
-            className="glass-panel p-5 rounded-2xl flex flex-col justify-between hover:border-primary/30 transition-colors group cursor-pointer"
+            className="win11-card p-4 rounded-lg flex flex-col justify-between hover:border-primary/40 transition-colors group cursor-pointer shadow-2xs"
           >
             <div className="flex justify-between items-start">
-              <div className={`p-3 rounded-xl ${stat.bg} ${stat.color} group-hover:scale-110 transition-transform duration-300`}>
-                <stat.icon className="w-5 h-5" />
+              <div className={`p-2.5 rounded-lg ${stat.bg} ${stat.color} group-hover:scale-105 transition-transform duration-200`}>
+                <stat.icon className="w-4 h-4" />
               </div>
               {stat.trend && (
-                <span className={`text-xs font-semibold px-2 py-1 rounded-full ${stat.trendColor}`}>
+                <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${stat.trendColor}`}>
                   {stat.trend}
                 </span>
               )}
             </div>
-            <div className="mt-4">
-              <h3 className="text-3xl font-bold text-white">{stat.value}</h3>
-              <p className="text-sm text-muted-foreground font-medium mt-1">{stat.name}</p>
+            <div className="mt-3.5">
+              <h3 className="text-2xl md:text-3xl font-bold text-foreground tracking-tight">{stat.value}</h3>
+              <p className="text-xs text-muted-foreground font-medium mt-0.5">{stat.name}</p>
             </div>
           </motion.div>
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
+          initial={{ opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.5 }}
-          className="lg:col-span-2 glass-panel p-6 rounded-2xl"
+          transition={{ delay: 0.3 }}
+          className="lg:col-span-2 win11-card p-5 rounded-lg shadow-2xs"
         >
-          <div className="flex justify-between items-center mb-6">
-            <h3 className="text-lg font-semibold text-white">Email Volume & AI Automation</h3>
-            <span className="text-xs bg-white/5 border border-white/10 px-2.5 py-1 rounded-lg text-zinc-400 font-medium capitalize">
+          <div className="flex justify-between items-center mb-5">
+            <h3 className="text-base font-semibold text-foreground">Email Volume &amp; AI Automation</h3>
+            <span className="text-[11px] bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08] px-2.5 py-0.5 rounded-md text-muted-foreground font-medium capitalize">
               {rangeType.replace('_', ' ')}
             </span>
           </div>
-          <div className="h-[300px] w-full">
+          <div className="h-[280px] w-full">
             {chartData && chartData.length > 0 ? (
               <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={chartData} margin={{ top: 10, right: 30, left: 0, bottom: 0 }}>
+                <AreaChart data={chartData} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
                   <defs>
                     <linearGradient id="colorEmails" x1="0" y1="0" x2="0" y2="1">
                       <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3}/>
@@ -330,10 +330,10 @@ export default function Dashboard() {
                       <stop offset="95%" stopColor="hsl(var(--accent))" stopOpacity={0}/>
                     </linearGradient>
                   </defs>
-                  <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
-                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={12} tickLine={false} axisLine={false} />
+                  <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} axisLine={false} />
+                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} axisLine={false} />
                   <Tooltip 
-                    contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '8px' }}
+                    contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))', borderRadius: '6px', color: 'hsl(var(--foreground))' }}
                     itemStyle={{ color: 'hsl(var(--foreground))' }}
                   />
                   <Area type="monotone" dataKey="emails" stroke="hsl(var(--primary))" strokeWidth={2} fillOpacity={1} fill="url(#colorEmails)" name="Total Emails" />
@@ -349,47 +349,47 @@ export default function Dashboard() {
         </motion.div>
 
         <motion.div 
-          initial={{ opacity: 0, scale: 0.95 }}
+          initial={{ opacity: 0, scale: 0.98 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.6 }}
-          className="glass-panel p-6 rounded-2xl flex flex-col"
+          transition={{ delay: 0.4 }}
+          className="win11-card p-5 rounded-lg flex flex-col shadow-2xs"
         >
-          <h3 className="text-lg font-semibold mb-6 text-white">Processing Insights</h3>
-          <div className="space-y-6 flex-1">
+          <h3 className="text-base font-semibold mb-5 text-foreground">Processing Insights</h3>
+          <div className="space-y-4 flex-1">
             <div>
-              <div className="flex justify-between text-sm mb-2">
+              <div className="flex justify-between text-xs mb-1.5">
                 <span className="text-muted-foreground">Auto Reply Success</span>
-                <span className={`font-medium ${successRate > 0 ? 'text-green-500' : 'text-zinc-500'}`}>{successRate > 0 ? `${successRate}%` : 'N/A'}</span>
+                <span className={`font-semibold ${successRate > 0 ? 'text-green-600 dark:text-green-400' : 'text-muted-foreground'}`}>{successRate > 0 ? `${successRate}%` : 'N/A'}</span>
               </div>
-              <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
-                <div className="h-full bg-green-500 rounded-full transition-all duration-500" style={{ width: `${successRate || 0}%` }}></div>
+              <div className="h-1.5 w-full bg-black/[0.06] dark:bg-white/[0.08] rounded-full overflow-hidden">
+                <div className="h-full bg-emerald-500 rounded-full transition-all duration-500" style={{ width: `${successRate || 0}%` }}></div>
               </div>
             </div>
             <div>
-              <div className="flex justify-between text-sm mb-2">
+              <div className="flex justify-between text-xs mb-1.5">
                 <span className="text-muted-foreground">Reference Escalation Rate</span>
-                <span className={`font-medium ${ticketRate > 0 ? 'text-purple-500' : 'text-zinc-500'}`}>{ticketRate > 0 ? `${ticketRate}%` : 'N/A'}</span>
+                <span className={`font-semibold ${ticketRate > 0 ? 'text-purple-600 dark:text-purple-400' : 'text-muted-foreground'}`}>{ticketRate > 0 ? `${ticketRate}%` : 'N/A'}</span>
               </div>
-              <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
+              <div className="h-1.5 w-full bg-black/[0.06] dark:bg-white/[0.08] rounded-full overflow-hidden">
                 <div className="h-full bg-purple-500 rounded-full transition-all duration-500" style={{ width: `${ticketRate || 0}%` }}></div>
               </div>
             </div>
             <div>
-              <div className="flex justify-between text-sm mb-2">
+              <div className="flex justify-between text-xs mb-1.5">
                 <span className="text-muted-foreground">Avg AI Confidence</span>
-                <span className="font-medium text-primary">{metrics.avg_confidence > 0 ? `${metrics.avg_confidence}%` : 'N/A'}</span>
+                <span className="font-semibold text-primary">{metrics.avg_confidence > 0 ? `${metrics.avg_confidence}%` : 'N/A'}</span>
               </div>
-              <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
+              <div className="h-1.5 w-full bg-black/[0.06] dark:bg-white/[0.08] rounded-full overflow-hidden">
                 <div className="h-full bg-primary rounded-full transition-all duration-500" style={{ width: `${metrics.avg_confidence || 0}%` }}></div>
               </div>
             </div>
             
-            <div className="pt-4 mt-auto border-t border-white/10">
-              <h4 className="text-sm font-medium mb-3 text-white">System Categories</h4>
-              <div className="flex flex-wrap gap-2">
-                <span className="px-2.5 py-1 rounded-md bg-blue-500/10 text-blue-400 text-xs font-medium">Reference Status Check</span>
-                <span className="px-2.5 py-1 rounded-md bg-rose-500/10 text-rose-400 text-xs font-medium">Refund/Returns</span>
-                <span className="px-2.5 py-1 rounded-md bg-amber-500/10 text-amber-400 text-xs font-medium">Technical Support</span>
+            <div className="pt-3.5 mt-auto border-t border-black/[0.06] dark:border-white/[0.08]">
+              <h4 className="text-xs font-semibold mb-2.5 text-foreground">System Categories</h4>
+              <div className="flex flex-wrap gap-1.5">
+                <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20">Reference Status Check</span>
+                <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20">Refund/Returns</span>
+                <span className="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">Technical Support</span>
               </div>
             </div>
           </div>

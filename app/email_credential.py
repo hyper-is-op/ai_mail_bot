@@ -10,8 +10,8 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
-def save_email_account(client_id: str, email: str, password: str, score_threshold: int = 80, response_tone: str = "Formal"):
-    logger.info(f"💾 Saving email account for client_id={client_id} email={email} score_threshold={score_threshold} response_tone={response_tone}")
+def save_email_account(client_id: str, email: str, password: str, score_threshold: int = 80, response_tone: str = "Formal", agent_type: str = "customer_support"):
+    logger.info(f"💾 Saving email account for client_id={client_id} email={email} score_threshold={score_threshold} response_tone={response_tone} agent_type={agent_type}")
     db = get_db()
     cursor = db.cursor()
     try:
@@ -24,15 +24,15 @@ def save_email_account(client_id: str, email: str, password: str, score_threshol
             logger.info(f"📝 Updating existing credentials for client_id={client_id}")
             cursor.execute("""
                 UPDATE email_accounts 
-                SET email = %s, password = %s, score_threshold = %s, response_tone = %s
+                SET email = %s, password = %s, score_threshold = %s, response_tone = %s, agent_type = %s
                 WHERE client_id = %s
-            """, (email, password, score_threshold, response_tone, client_id))
+            """, (email, password, score_threshold, response_tone, agent_type, client_id))
         else:
             logger.info(f"📝 Inserting new record for client_id={client_id}")
             cursor.execute("""
-                INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (client_id, email, password, score_threshold, response_tone))
+                INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (client_id, email, password, score_threshold, response_tone, agent_type))
             
         db.commit()
         logger.info(f"✅ Email account saved successfully for client_id={client_id}")
@@ -61,6 +61,19 @@ def get_email_account(client_id: str) -> dict:
     cursor = db.cursor()
     try:
         _ensure_accounts_table(cursor)
+        if client_id == "ALL":
+            cursor.execute("""
+                SELECT score_threshold FROM email_accounts ORDER BY id ASC LIMIT 1
+            """)
+            row = cursor.fetchone()
+            thresh = row[0] if row and row[0] is not None else 80
+            return {
+                "client_id": "ALL",
+                "score_threshold": thresh,
+                "response_tone": "Formal",
+                "agent_type": "customer_support_agent"
+            }
+
         cursor.execute("""
             SELECT client_id, email, password, score_threshold, response_tone,
                    agent_type, department_name, company_name
@@ -186,6 +199,34 @@ def ensure_accounts_table_startup(cursor):
         cursor.execute("ALTER TABLE email_accounts ADD COLUMN connector_cap INT DEFAULT 5")
     except:
         pass
+
+    for col in ["feature_ticket_creation", "feature_auto_send", "feature_rag", "feature_order_tracking", "feature_manual_reply"]:
+        try:
+            cursor.execute(f"ALTER TABLE email_accounts ADD COLUMN {col} BOOLEAN DEFAULT TRUE")
+        except:
+            pass
+
+    try:
+        cursor.execute("ALTER TABLE email_accounts ADD COLUMN cost_multiplier FLOAT DEFAULT 1.0")
+    except:
+        pass
+
+    try:
+        cursor.execute("ALTER TABLE email_accounts ADD COLUMN monthly_budget_usd FLOAT DEFAULT NULL")
+    except:
+        pass
+
+    for oauth_col, col_def in [
+        ("auth_type", "VARCHAR(20) DEFAULT 'password'"),
+        ("refresh_token", "TEXT DEFAULT NULL"),
+        ("oauth_provider", "VARCHAR(30) DEFAULT NULL"),
+        ("oauth_client_id", "VARCHAR(255) DEFAULT NULL"),
+        ("oauth_client_secret", "TEXT DEFAULT NULL"),
+    ]:
+        try:
+            cursor.execute(f"ALTER TABLE email_accounts ADD COLUMN {oauth_col} {col_def}")
+        except:
+            pass
 
 def _ensure_table(cursor):
     """

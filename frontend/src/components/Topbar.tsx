@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Search as SearchIcon, Bell as BellIcon, Moon as MoonIcon, Sun as SunIcon, ChevronDown, UserCircle2, LogOut, Menu, Mail, Send, Ticket, AlertCircle, Check } from 'lucide-react';
+import { 
+  Bell as BellIcon, Moon as MoonIcon, Sun as SunIcon, ChevronDown, 
+  LogOut, Menu, Mail, Send, Ticket, AlertCircle, Check,
+  Sliders, Cpu, Users, Code2, ChevronRight, FileText
+} from 'lucide-react';
 import { api } from '@/lib/api';
 
 interface TopbarProps {
@@ -14,6 +18,40 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
   const [showDropdown, setShowDropdown] = useState(false);
   const navigate = useNavigate();
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const [profileData, setProfileData] = useState<any>(null);
+  const [pendingDraftCount, setPendingDraftCount] = useState<number>(0);
+
+  // Helper for user initials
+  const getInitials = (str: string) => {
+    if (!str) return 'AD';
+    const clean = str.split('@')[0];
+    const parts = clean.split(/[._-]/);
+    if (parts.length >= 2 && parts[0] && parts[1]) {
+      return (parts[0][0] + parts[1][0]).toUpperCase();
+    }
+    return clean.slice(0, 2).toUpperCase();
+  };
+
+  // Helper to resolve human-readable client name
+  const getDisplayName = () => {
+    if (profileData?.name && profileData.name.trim()) return profileData.name.trim();
+    if (profileData?.company_name && profileData.company_name.trim()) return profileData.company_name.trim();
+    if (user?.name && user.name.trim()) return user.name.trim();
+    if (user?.company_name && user.company_name.trim()) return user.company_name.trim();
+    if (user?.username && user.username.trim()) return user.username.trim();
+    if (user?.role === 'admin') return 'Administrator';
+    if (user?.email) {
+      const emailPrefix = user.email.split('@')[0];
+      const formatted = emailPrefix
+        .split(/[._-]+/)
+        .filter(Boolean)
+        .map((s: string) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase())
+        .join(' ');
+      if (formatted) return formatted;
+    }
+    return user?.client_id || 'Client';
+  };
 
   // Notifications state
   interface Notification {
@@ -36,6 +74,35 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     localStorage.setItem('theme', theme);
   }, [theme]);
+
+  // Load client profile for name/company resolution
+  useEffect(() => {
+    if (user?.client_id && user?.role !== 'admin') {
+      api.getEmailAccount(user.client_id)
+        .then((res) => {
+          if (res) setProfileData(res);
+        })
+        .catch(() => {});
+    }
+  }, [user?.client_id, user?.role]);
+
+  // Poll pending drafts count
+  useEffect(() => {
+    if (!user) return;
+    const fetchDraftCount = async () => {
+      try {
+        const res = await api.getPendingDraftsCount(user?.role === 'admin' ? undefined : user.client_id);
+        if (res && typeof res.pending_count === 'number') {
+          setPendingDraftCount(res.pending_count);
+        }
+      } catch (err) {
+        // silent fallback
+      }
+    };
+    fetchDraftCount();
+    const interval = setInterval(fetchDraftCount, 15000);
+    return () => clearInterval(interval);
+  }, [user?.client_id, user?.role]);
 
   // Load notifications from API
   useEffect(() => {
@@ -130,46 +197,54 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
   };
 
   return (
-    <header className="glass-panel h-[80px] px-4 md:px-6 flex items-center justify-between border-b border-white/10 sticky top-0 z-10">
-      {/* Search and Menu trigger */}
-      <div className="flex items-center gap-3 flex-1 max-w-md">
+    <header className="win11-topbar h-[64px] px-4 md:px-6 flex items-center justify-between sticky top-0 z-20 shadow-xs">
+      {/* Title / Menu trigger */}
+      <div className="flex items-center gap-3 flex-1 min-w-0">
         <button
           onClick={onMenuClick}
-          className="p-2 -ml-2 rounded-xl hover:bg-white/10 text-muted-foreground hover:text-foreground md:hidden transition-all duration-200"
+          className="p-2 -ml-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-muted-foreground hover:text-foreground md:hidden transition-all duration-150"
         >
-          <Menu className="w-6 h-6" />
+          <Menu className="w-5 h-5" />
         </button>
 
-        <div className="relative group flex-1">
-          <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground group-focus-within:text-primary transition-colors" />
-          <input
-            type="text"
-            placeholder="Search emails, reference IDs..."
-            className="w-full bg-black/10 dark:bg-white/5 border border-white/10 rounded-full pl-10 pr-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50 transition-all placeholder:text-muted-foreground"
-          />
+        <div className="flex items-center gap-2.5 truncate">
+          <span className="text-sm md:text-base font-bold tracking-tight text-foreground truncate">
+            Advance Mail Automation & AI Mail Agent
+          </span>
         </div>
       </div>
 
       {/* Right actions */}
-      <div className="flex items-center gap-4 pl-6">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-green-500/10 border border-green-500/20 hidden sm:flex">
+      <div className="flex items-center gap-2.5 md:gap-3 pl-4">
+        {pendingDraftCount > 0 && (
+          <button
+            onClick={() => navigate('/drafts')}
+            className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 text-amber-700 dark:text-amber-300 text-xs font-semibold shadow-xs transition-all duration-150 animate-in fade-in cursor-pointer"
+            title={`${pendingDraftCount} draft(s) awaiting review`}
+          >
+            <FileText className="w-3.5 h-3.5 text-amber-500" />
+            <span>{pendingDraftCount} Pending Drafts</span>
+          </button>
+        )}
+
+        <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 hidden sm:flex">
           <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
           </span>
-          <span className="text-xs font-medium text-green-600 dark:text-green-400">Live Data</span>
+          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">Live</span>
         </div>
 
-        <button onClick={toggleTheme} className="p-2 rounded-full hover:bg-white/10 text-muted-foreground hover:text-foreground transition-colors">
-          {theme === 'dark' ? <SunIcon className="w-5 h-5" /> : <MoonIcon className="w-5 h-5" />}
+        <button onClick={toggleTheme} className="p-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-muted-foreground hover:text-foreground transition-colors">
+          {theme === 'dark' ? <SunIcon className="w-4.5 h-4.5" /> : <MoonIcon className="w-4.5 h-4.5" />}
         </button>
 
         <div className="relative" ref={notifRef}>
           <button
             onClick={handleOpenNotifDropdown}
-            className="relative p-2 rounded-full hover:bg-white/10 text-muted-foreground hover:text-foreground transition-colors"
+            className="relative p-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-muted-foreground hover:text-foreground transition-colors"
           >
-            <BellIcon className="w-5 h-5" />
+            <BellIcon className="w-4.5 h-4.5" />
             {unreadCount > 0 && (
               <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-accent rounded-full border border-background text-[10px] font-bold text-white flex items-center justify-center animate-pulse">
                 {unreadCount}
@@ -246,35 +321,133 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
           )}
         </div>
 
-        <div className="h-6 w-px bg-white/10 mx-1"></div>
+        <div className="h-6 w-px bg-black/10 dark:bg-white/10 mx-1"></div>
 
         <div className="relative" ref={dropdownRef}>
           <button
             onClick={() => setShowDropdown(!showDropdown)}
-            className="flex items-center gap-2 hover:bg-white/5 p-1 pr-2 rounded-full transition-colors border border-transparent hover:border-white/10"
+            className={`group flex items-center gap-2.5 p-1.5 pl-2 pr-3 rounded-full transition-all duration-200 cursor-pointer border ${
+              showDropdown
+                ? 'bg-zinc-200 dark:bg-white/10 border-primary/40 shadow-sm ring-2 ring-primary/20'
+                : 'bg-zinc-100 dark:bg-white/5 border-zinc-200 dark:border-white/10 hover:bg-zinc-200/80 dark:hover:bg-white/10 hover:border-zinc-300 dark:hover:border-white/20'
+            }`}
           >
-            <div className="w-8 h-8 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center text-primary">
-              <UserCircle2 className="w-5 h-5" />
+            {/* Gradient Avatar with Initials and Online Status Indicator */}
+            <div className="relative shrink-0">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-primary to-purple-600 flex items-center justify-center text-white font-black text-xs tracking-wider shadow-sm ring-1 ring-white/20">
+                {getInitials(getDisplayName())}
+              </div>
+              <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border-2 border-white dark:border-zinc-950 rounded-full"></span>
             </div>
-            <div className="hidden md:block text-left">
-              <p className="text-sm font-medium leading-none capitalize">{user?.role || 'User'}</p>
-              <p className="text-xs text-muted-foreground mt-1 max-w-[120px] truncate">{user?.email || 'Guest'}</p>
+
+            {/* Name & Role Text */}
+            <div className="hidden md:flex flex-col text-left min-w-0">
+              <div className="flex items-center gap-1.5">
+                <span className="text-xs font-bold text-foreground truncate max-w-[130px]">
+                  {getDisplayName()}
+                </span>
+                {user?.role === 'admin' && (
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 uppercase tracking-wider">
+                    Admin
+                  </span>
+                )}
+              </div>
+              <span className="text-[11px] text-muted-foreground truncate max-w-[140px] font-mono leading-tight">
+                {user?.email || 'System Account'}
+              </span>
             </div>
-            <ChevronDown className="w-4 h-4 text-muted-foreground ml-1" />
+
+            <ChevronDown className={`w-3.5 h-3.5 text-muted-foreground group-hover:text-foreground transition-transform duration-200 ml-0.5 ${showDropdown ? 'rotate-180 text-primary' : ''}`} />
           </button>
 
           {showDropdown && (
-            <div className="absolute right-0 mt-2 w-48 bg-background border border-white/10 rounded-xl shadow-xl py-1 z-50 animate-in fade-in slide-in-from-top-2">
-              <div className="px-4 py-2 border-b border-white/10 md:hidden">
-                <p className="text-sm font-medium capitalize">{user?.role || 'User'}</p>
-                <p className="text-xs text-muted-foreground truncate">{user?.email || 'Guest'}</p>
+            <div className="absolute right-0 mt-2.5 w-72 bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-2xl shadow-2xl overflow-hidden z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+              {/* User Profile Header Card */}
+              <div className="p-4 bg-gradient-to-b from-primary/5 dark:from-white/5 to-transparent border-b border-zinc-100 dark:border-zinc-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-primary to-purple-600 flex items-center justify-center text-white font-black text-sm shadow-md ring-2 ring-primary/30 shrink-0">
+                    {getInitials(getDisplayName())}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-bold text-zinc-900 dark:text-white truncate">
+                        {getDisplayName()}
+                      </p>
+                    </div>
+                    <p className="text-xs text-zinc-500 dark:text-zinc-400 truncate font-mono mt-0.5">
+                      {user?.email || 'admin@centrix.ai'}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1.5">
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 flex items-center gap-1 font-mono">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                        Active · {user?.role === 'admin' ? 'Administrator' : (user?.client_id || 'Account')}
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </div>
-              <button
-                onClick={handleLogout}
-                className="w-full text-left px-4 py-2 text-sm text-rose-500 hover:bg-white/5 flex items-center gap-2 transition-colors"
-              >
-                <LogOut className="w-4 h-4" /> Logout
-              </button>
+
+              {/* Quick Navigation Links */}
+              <div className="p-2 space-y-1">
+                <button
+                  onClick={() => { setShowDropdown(false); navigate('/settings'); }}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5 rounded-xl transition-colors cursor-pointer group"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Sliders className="w-4 h-4 text-zinc-400 group-hover:text-primary transition-colors" />
+                    <span>Settings & Policies</span>
+                  </div>
+                  <ChevronRight className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors" />
+                </button>
+
+                {user?.role === 'admin' && (
+                  <>
+                    <button
+                      onClick={() => { setShowDropdown(false); navigate('/admin/llm-configs'); }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5 rounded-xl transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Cpu className="w-4 h-4 text-zinc-400 group-hover:text-purple-500 dark:group-hover:text-purple-400 transition-colors" />
+                        <span>AI & LLM Configuration</span>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors" />
+                    </button>
+
+                    <button
+                      onClick={() => { setShowDropdown(false); navigate('/admin/clients'); }}
+                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5 rounded-xl transition-colors cursor-pointer group"
+                    >
+                      <div className="flex items-center gap-2.5">
+                        <Users className="w-4 h-4 text-zinc-400 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors" />
+                        <span>Clients Management</span>
+                      </div>
+                      <ChevronRight className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors" />
+                    </button>
+                  </>
+                )}
+
+                <button
+                  onClick={() => { setShowDropdown(false); navigate('/payloads'); }}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5 rounded-xl transition-colors cursor-pointer group"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <Code2 className="w-4 h-4 text-zinc-400 group-hover:text-emerald-500 dark:group-hover:text-emerald-400 transition-colors" />
+                    <span>System Connector</span>
+                  </div>
+                  <ChevronRight className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors" />
+                </button>
+              </div>
+
+              {/* Sign Out Footer */}
+              <div className="p-2 border-t border-zinc-100 dark:border-zinc-800 bg-zinc-50 dark:bg-black/20">
+                <button
+                  onClick={handleLogout}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 text-xs font-bold text-rose-600 dark:text-rose-400 hover:text-rose-700 dark:hover:text-rose-300 hover:bg-rose-500/10 rounded-xl transition-colors cursor-pointer"
+                >
+                  <LogOut className="w-4 h-4" />
+                  <span>Sign Out</span>
+                </button>
+              </div>
             </div>
           )}
         </div>

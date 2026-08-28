@@ -1,5 +1,12 @@
 from app.url_allowlist import ensure_url_allowlist_table
 from app.connector_config import ensure_connector_configs_table
+from app.email_disclaimers import (
+    ensure_email_disclaimers_table,
+    get_client_disclaimers,
+    add_client_disclaimer,
+    delete_client_disclaimer,
+    toggle_client_disclaimer
+)
 
 from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Depends, Header
 from pydantic import BaseModel, EmailStr, field_validator
@@ -10,7 +17,7 @@ from app.auth import ensure_users_table, login_user #,register_user
 from app.rate_limiter import RedisRateLimiter
 from enum import Enum
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional, List, Dict, Union
 import asyncio
 import logging
 
@@ -172,28 +179,202 @@ def ensure_paused_emails_table():
     except Exception as e:
         logger.warning(f"⚠️ Failed to ensure paused_emails table: {e}")
 
-def ensure_llm_configs_table():
+def ensure_global_llm_tables():
     try:
         from app.db import get_db_ctx
         with get_db_ctx() as db:
             with db.cursor() as cursor:
+                # 1. Create global_default_llm (single-row platform fallback default)
                 cursor.execute("""
-                CREATE TABLE IF NOT EXISTS llm_configs (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    client_id VARCHAR(50) NOT NULL,
-                    name VARCHAR(100) NOT NULL,
-                    provider VARCHAR(50) NOT NULL,
-                    api_key VARCHAR(255) NOT NULL,
+                CREATE TABLE IF NOT EXISTS global_default_llm (
+                    id INT PRIMARY KEY DEFAULT 1,
+                    provider VARCHAR(50) NOT NULL DEFAULT 'groq',
+                    api_key TEXT NOT NULL,
                     base_url VARCHAR(255) NULL,
-                    model_name VARCHAR(100) NOT NULL,
+                    model_name VARCHAR(255) NOT NULL DEFAULT '',
                     api_version VARCHAR(50) NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    refreshed TIMESTAMP NULL,
+                    is_override_active TINYINT(1) NOT NULL DEFAULT 0
                 )
                 """)
+
+                # Ensure is_override_active column exists if table was already created
+                cursor.execute("""
+                    SELECT COUNT(*) FROM information_schema.columns 
+                    WHERE table_schema = DATABASE() AND table_name = 'global_default_llm' AND column_name = 'is_override_active'
+                """)
+                if cursor.fetchone()[0] == 0:
+                    cursor.execute("ALTER TABLE global_default_llm ADD COLUMN is_override_active TINYINT(1) NOT NULL DEFAULT 0")
+                    logger.info("✅ Added is_override_active column to global_default_llm")
+
+                # 2. Create globally_available_llm_configs (multi-row pool of reusable provider templates)
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS globally_available_llm_configs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    name VARCHAR(100) NOT NULL,
+                    provider VARCHAR(50) NOT NULL,
+                    api_key TEXT NOT NULL,
+                    base_url VARCHAR(255) NULL,
+                    model_name VARCHAR(255) NOT NULL DEFAULT '',
+                    api_version VARCHAR(50) NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    refreshed TIMESTAMP NULL
+                )
+                """)
+
+                # Check if legacy table default_global_llm_config or llm_configs exists to migrate data
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM information_schema.tables 
+                    WHERE table_schema = DATABASE() AND table_name IN ('default_global_llm_config', 'llm_configs')
+                """)
+                legacy_exists = cursor.fetchone()[0] > 0
+
+                # 3. Seed global_default_llm if empty
+                cursor.execute("SELECT COUNT(*) FROM global_default_llm WHERE id=1")
+                if cursor.fetchone()[0] == 0:
+                    migrated_default = False
+                    if legacy_exists:
+                        try:
+                            cursor.execute("""
+                                SELECT provider, api_key, base_url, model_name, api_version, refreshed 
+                                FROM default_global_llm_config 
+                                WHERE client_id='SYSTEM' 
+                                ORDER BY id ASC LIMIT 1
+                            """)
+                            row = cursor.fetchone()
+                            if not row:
+                                cursor.execute("SELECT provider, api_key, base_url, model_name, api_version, refreshed FROM default_global_llm_config ORDER BY id ASC LIMIT 1")
+                                row = cursor.fetchone()
+                            if row:
+                                cursor.execute("""
+                                    INSERT INTO global_default_llm (id, provider, api_key, base_url, model_name, api_version, refreshed)
+                                    VALUES (1, %s, %s, %s, %s, %s, %s)
+                                """, row)
+                                migrated_default = True
+                                logger.info("✅ Migrated system default into global_default_llm (id=1)")
+                        except Exception as e:
+                            logger.warning(f"Failed to migrate default from legacy table: {e}")
+
+                    if not migrated_default:
+                        default_groq_key = os.getenv("GROQ_API_KEY", "")
+                        default_groq_model = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+                        cursor.execute("""
+                            INSERT INTO global_default_llm (id, provider, api_key, base_url, model_name)
+                            VALUES (1, 'groq', %s, 'https://api.groq.com/openai/v1', %s)
+                            ON DUPLICATE KEY UPDATE provider=VALUES(provider)
+                        """, (default_groq_key, default_groq_model))
+                        logger.info("✅ Seeded global_default_llm from environment variables")
+
+                # 4. Seed globally_available_llm_configs if empty
+                cursor.execute("SELECT COUNT(*) FROM globally_available_llm_configs")
+                if cursor.fetchone()[0] == 0 and legacy_exists:
+                    try:
+                        cursor.execute("""
+                            SELECT id, name, provider, api_key, base_url, model_name, api_version, created_at, updated_at, refreshed 
+                            FROM default_global_llm_config
+                        """)
+                        legacy_rows = cursor.fetchall()
+                        for r in legacy_rows:
+                            cursor.execute("""
+                                INSERT INTO globally_available_llm_configs (id, name, provider, api_key, base_url, model_name, api_version, created_at, updated_at, refreshed)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """, r)
+                        logger.info(f"✅ Migrated {len(legacy_rows)} configs into globally_available_llm_configs")
+                    except Exception as e:
+                        logger.warning(f"Failed to migrate legacy rows to globally_available_llm_configs: {e}")
+
+                # 5. Safely drop legacy table default_global_llm_config if present
+                if legacy_exists:
+                    try:
+                        cursor.execute("DROP TABLE IF EXISTS default_global_llm_config")
+                        logger.info("🗑️ Safely dropped legacy table default_global_llm_config")
+                    except Exception as e:
+                        logger.warning(f"Failed to drop legacy table default_global_llm_config: {e}")
+
                 db.commit()
-                logger.info("✅ Ensured llm_configs table exists")
+                logger.info("✅ Ensured global_default_llm and globally_available_llm_configs tables exist")
     except Exception as e:
-        logger.warning(f"⚠️ Failed to ensure llm_configs table: {e}")
+        logger.warning(f"⚠️ Failed to ensure global LLM tables: {e}")
+
+def ensure_client_llm_config_table():
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                # 1. Rename existing legacy table if present
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM information_schema.tables 
+                    WHERE table_schema = DATABASE() AND table_name = 'client_model_config'
+                """)
+                legacy_exists = cursor.fetchone()[0] > 0
+
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM information_schema.tables 
+                    WHERE table_schema = DATABASE() AND table_name = 'client_llm_config'
+                """)
+                new_exists = cursor.fetchone()[0] > 0
+
+                if legacy_exists and not new_exists:
+                    logger.info("🔄 Migrating table client_model_config -> client_llm_config...")
+                    cursor.execute("RENAME TABLE client_model_config TO client_llm_config")
+                    db.commit()
+
+                # 2. Ensure table exists with all required columns
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS client_llm_config (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    client_id VARCHAR(100) NOT NULL,
+                    caller_function VARCHAR(100) NOT NULL,
+                    global_config_id INT NULL,
+                    provider VARCHAR(50) NULL,
+                    api_key TEXT NULL,
+                    base_url VARCHAR(255) NULL,
+                    model_name VARCHAR(255) NOT NULL DEFAULT '',
+                    api_version VARCHAR(50) NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    refreshed TIMESTAMP NULL,
+                    UNIQUE KEY uk_client_caller (client_id, caller_function)
+                )
+                """)
+
+                # Ensure extra columns exist on migrated tables
+                for col_name, col_type in [
+                    ("global_config_id", "INT NULL"),
+                    ("provider", "VARCHAR(50) NULL"),
+                    ("api_key", "TEXT NULL"),
+                    ("base_url", "VARCHAR(255) NULL"),
+                    ("api_version", "VARCHAR(50) NULL"),
+                    ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                    ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+                    ("refreshed", "TIMESTAMP NULL")
+                ]:
+                    cursor.execute(f"""
+                        SELECT COUNT(*) 
+                        FROM information_schema.columns 
+                        WHERE table_schema = DATABASE() 
+                          AND table_name = 'client_llm_config' 
+                          AND column_name = '{col_name}'
+                    """)
+                    if cursor.fetchone()[0] == 0:
+                        cursor.execute(f"ALTER TABLE client_llm_config ADD COLUMN {col_name} {col_type}")
+
+                # Ensure model_name has a default value on migrated tables
+                try:
+                    cursor.execute("ALTER TABLE client_llm_config MODIFY COLUMN model_name VARCHAR(255) NOT NULL DEFAULT ''")
+                except Exception:
+                    pass
+
+                db.commit()
+                logger.info("✅ Ensured client_llm_config table exists with refreshed column")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure client_llm_config table: {e}")
 
 # @asynccontextmanager
 # async def lifespan(app: FastAPI):
@@ -221,10 +402,16 @@ def _run_ensure_accounts_table():
         db.commit()
     logger.info("✅ email_accounts table ensured at startup")
 
+def _run_ensure_draft_emails_table():
+    from app.draft_service import ensure_draft_emails_table
+    ensure_draft_emails_table()
+    logger.info("✅ draft_emails table ensured at startup")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await asyncio.to_thread(ensure_url_allowlist_table)
     await asyncio.to_thread(ensure_connector_configs_table)
+    await asyncio.to_thread(_run_ensure_draft_emails_table)
     
     await asyncio.to_thread(_run_ensure_accounts_table)
     await asyncio.to_thread(ensure_create_payload_table)
@@ -233,7 +420,9 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(preload_qdrant_collection)
     await asyncio.to_thread(backfill_client_ids)
     await asyncio.to_thread(ensure_paused_emails_table)
-    await asyncio.to_thread(ensure_llm_configs_table)
+    await asyncio.to_thread(ensure_global_llm_tables)
+    await asyncio.to_thread(ensure_client_llm_config_table)
+    await asyncio.to_thread(ensure_email_disclaimers_table)
 
     await asyncio.to_thread(_run_ensure_paused_email_history_table)
     
@@ -314,6 +503,7 @@ class AcceptEmailRequest(BaseModel):
     password: str
     score_threshold: int = 80
     response_tone: str = "Formal"
+    agent_type: str = "customer_support"
 
 
     @field_validator("password")
@@ -393,8 +583,15 @@ class EmailRecordRequest(BaseModel):
 def accept_email(data: AcceptEmailRequest, user: dict = Depends(get_current_user)):
     require_client_access(data.client_id, user)
     try:
-        save_email_account(data.client_id, data.email, data.password, data.score_threshold, data.response_tone)
-        return {"status": "saved", "client_id": data.client_id, "email": data.email, "score_threshold": data.score_threshold, "response_tone": data.response_tone}
+        save_email_account(data.client_id, data.email, data.password, data.score_threshold, data.response_tone, data.agent_type)
+        return {
+            "status": "saved",
+            "client_id": data.client_id,
+            "email": data.email,
+            "score_threshold": data.score_threshold,
+            "response_tone": data.response_tone,
+            "agent_type": data.agent_type
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal server error")
         
@@ -430,11 +627,25 @@ def get_all_email_accounts_endpoint(user: dict = Depends(require_admin())):
                     u.phone_number,
                     ea.agent_type,
                     ea.department_name,
-                    ea.company_name
+                    ea.company_name,
+                    COALESCE(ea.feature_ticket_creation, 1) AS feature_ticket_creation,
+                    COALESCE(ea.feature_auto_send, 1) AS feature_auto_send,
+                    COALESCE(ea.feature_rag, 1) AS feature_rag,
+                    COALESCE(ea.feature_order_tracking, 1) AS feature_order_tracking,
+                    COALESCE(ea.feature_manual_reply, 1) AS feature_manual_reply,
+                    COALESCE(ea.cost_multiplier, 1.0) AS cost_multiplier,
+                    ea.monthly_budget_usd
                 FROM email_accounts ea 
                 LEFT JOIN users u ON ea.client_id = u.client_id
             """)
             rows = cursor.fetchall()
+            # Ensure boolean conversion for features
+            for r in rows:
+                r["feature_ticket_creation"] = bool(r.get("feature_ticket_creation", 1))
+                r["feature_auto_send"] = bool(r.get("feature_auto_send", 1))
+                r["feature_rag"] = bool(r.get("feature_rag", 1))
+                r["feature_order_tracking"] = bool(r.get("feature_order_tracking", 1))
+                r["feature_manual_reply"] = bool(r.get("feature_manual_reply", 1))
             return rows
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -728,16 +939,21 @@ def get_emails_logs_endpoint(client_id: str, user: dict = Depends(get_current_us
                     db.commit()
                 except Exception:
                     pass
+                try:
+                    cursor.execute("ALTER TABLE email_logs ADD COLUMN body_html LONGTEXT NULL")
+                    db.commit()
+                except Exception:
+                    pass
                 
                 if client_id == "ALL":
                     cursor.execute(f"""
-                        SELECT id, from_email, subject, body, reply, score, status, created_at, rag_id, sentiment, priority, execution_steps, summary, {col} as client_id 
+                        SELECT id, from_email, subject, body, reply, score, status, created_at, rag_id, sentiment, priority, execution_steps, summary, body_html, {col} as client_id 
                         FROM email_logs 
                         ORDER BY created_at DESC
                     """)
                 else:
                     cursor.execute(f"""
-                        SELECT id, from_email, subject, body, reply, score, status, created_at, rag_id, sentiment, priority, execution_steps, summary, {col} as client_id 
+                        SELECT id, from_email, subject, body, reply, score, status, created_at, rag_id, sentiment, priority, execution_steps, summary, body_html, {col} as client_id 
                         FROM email_logs 
                         WHERE {col} = %s 
                         ORDER BY created_at DESC
@@ -756,6 +972,12 @@ def get_emails_logs_endpoint(client_id: str, user: dict = Depends(get_current_us
                         ui_status = "Processing"
                     elif r[6] == "pending_manual_review":
                         ui_status = "Pending Review"
+                    elif r[6] in ["no_action_needed", "handled"]:
+                        ui_status = "No Action Needed"
+                    elif r[6] == "paused":
+                        ui_status = "Paused"
+                    elif r[6] == "blocked_keyword":
+                        ui_status = "Blocked"
                         
                     steps = ["Start"]
                     if len(r) > 11 and r[11]:
@@ -773,7 +995,7 @@ def get_emails_logs_endpoint(client_id: str, user: dict = Depends(get_current_us
                         "reply": r[4],
                         "confidence": f"{r[5]}%" if r[5] else "90%",
                         "status": ui_status,
-                        "category": "Customer Query",
+                        "category": "Marketing / Promo" if r[6] in ["no_action_needed", "handled"] else "Customer Query",
                         "time": r[7].strftime("%I:%M %p") if r[7] else "Just Now",
                         "date_str": r[7].strftime("%b %d, %Y") if r[7] else "",
                         "raw_status": r[6],
@@ -783,7 +1005,8 @@ def get_emails_logs_endpoint(client_id: str, user: dict = Depends(get_current_us
                         "priority": r[10] if len(r) > 10 and r[10] else "Medium",
                         "execution_steps": steps,
                         "summary": r[12] if len(r) > 12 and r[12] else "",
-                        "client_id": r[13] if len(r) > 13 else None
+                        "body_html": r[13] if len(r) > 13 and r[13] else None,
+                        "client_id": r[14] if len(r) > 14 else None
                     })
                 return emails_list
     except Exception as e:
@@ -1053,15 +1276,26 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                 CREATE TABLE IF NOT EXISTS llm_logs (
                     id INT AUTO_INCREMENT PRIMARY KEY,
                     client_id VARCHAR(50) NOT NULL,
+                    provider VARCHAR(50) NOT NULL DEFAULT 'groq',
                     model_name VARCHAR(100) NOT NULL,
                     prompt_tokens INT NOT NULL,
                     completion_tokens INT NOT NULL,
                     cost DECIMAL(10, 6) NOT NULL,
+                    billed_cost DECIMAL(10, 6) DEFAULT NULL,
                     latency_ms INT NOT NULL,
                     caller_function VARCHAR(100) NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
                 """)
+                # Auto-migrate table if needed
+                try:
+                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN provider VARCHAR(50) NOT NULL DEFAULT 'groq'")
+                except Exception:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN billed_cost DECIMAL(10, 6) DEFAULT NULL")
+                except Exception:
+                    pass
                 db.commit()
                 
                 # 1. Total statistics
@@ -1095,8 +1329,48 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                     "total_cost": float(total_row[3] or 0.0),
                     "avg_latency": float(total_row[4] or 0.0)
                 }
+
+                # 2. Breakdown by Provider
+                if client_id == "ALL":
+                    cursor.execute("""
+                        SELECT 
+                            COALESCE(NULLIF(provider, ''), 'groq') as provider_name,
+                            COUNT(id) as requests,
+                            SUM(prompt_tokens) as prompt_tokens,
+                            SUM(completion_tokens) as completion_tokens,
+                            SUM(cost) as cost,
+                            AVG(latency_ms) as avg_latency
+                        FROM llm_logs
+                        GROUP BY COALESCE(NULLIF(provider, ''), 'groq')
+                        ORDER BY cost DESC, requests DESC
+                    """)
+                else:
+                    cursor.execute("""
+                        SELECT 
+                            COALESCE(NULLIF(provider, ''), 'groq') as provider_name,
+                            COUNT(id) as requests,
+                            SUM(prompt_tokens) as prompt_tokens,
+                            SUM(completion_tokens) as completion_tokens,
+                            SUM(cost) as cost,
+                            AVG(latency_ms) as avg_latency
+                        FROM llm_logs
+                        WHERE client_id = %s
+                        GROUP BY COALESCE(NULLIF(provider, ''), 'groq')
+                        ORDER BY cost DESC, requests DESC
+                    """, (client_id,))
+                provider_rows = cursor.fetchall()
+                provider_breakdown = []
+                for row in provider_rows:
+                    provider_breakdown.append({
+                        "provider": str(row[0]).lower(),
+                        "requests": int(row[1] or 0),
+                        "prompt_tokens": int(row[2] or 0),
+                        "completion_tokens": int(row[3] or 0),
+                        "cost": float(row[4] or 0.0),
+                        "avg_latency": float(row[5] or 0.0)
+                    })
                 
-                # 2. Breakdown by Model
+                # 3. Breakdown by Model
                 if client_id == "ALL":
                     cursor.execute("""
                         SELECT 
@@ -1134,7 +1408,7 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                         "avg_latency": float(row[5] or 0.0)
                     })
                     
-                # 3. Breakdown by Caller Function
+                # 4. Breakdown by Caller Function
                 if client_id == "ALL":
                     cursor.execute("""
                         SELECT 
@@ -1181,11 +1455,11 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                         "avg_latency": float(row[5] or 0.0)
                     })
                     
-                # 4. Recent Logs (last 30)
+                # 5. Recent Logs (last 30)
                 if client_id == "ALL":
                     cursor.execute("""
                         SELECT 
-                            id, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function, created_at
+                            id, COALESCE(NULLIF(provider, ''), 'groq') as provider, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function, created_at
                         FROM llm_logs
                         ORDER BY created_at DESC
                         LIMIT 30
@@ -1193,7 +1467,7 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                 else:
                     cursor.execute("""
                         SELECT 
-                            id, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function, created_at
+                            id, COALESCE(NULLIF(provider, ''), 'groq') as provider, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function, created_at
                         FROM llm_logs
                         WHERE client_id = %s
                         ORDER BY created_at DESC
@@ -1202,7 +1476,7 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                 log_rows = cursor.fetchall()
                 recent_logs = []
                 for row in log_rows:
-                    func_name = row[6]
+                    func_name = row[7]
                     if func_name == "detect_intent_llm":
                         func_display = "Intent Classification"
                     elif func_name == "generate_reply_llm" or "reply" in func_name:
@@ -1212,18 +1486,19 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                         
                     recent_logs.append({
                         "id": row[0],
-                        "model_name": row[1],
-                        "prompt_tokens": int(row[2]),
-                        "completion_tokens": int(row[3]),
-                        "cost": float(row[4]),
-                        "latency_ms": int(row[5]),
-                        "caller_function": row[6],
+                        "provider": row[1],
+                        "model_name": row[2],
+                        "prompt_tokens": int(row[3]),
+                        "completion_tokens": int(row[4]),
+                        "cost": float(row[5]),
+                        "latency_ms": int(row[6]),
+                        "caller_function": row[7],
                         "caller_display": func_display,
-                        "created_at": row[7].strftime("%b %d, %H:%M:%S") if row[7] else ""
+                        "created_at": row[8].strftime("%b %d, %H:%M:%S") if row[8] else ""
                     })
                 
    
-                # 5. Budget Info
+                # 6. Budget Info
                 from app.email_credential import get_budget_status
                 budget_info = get_budget_status(client_id, cursor)
                 
@@ -1231,6 +1506,7 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
                 return {
                     "status": "success",
                     "totals": totals,
+                    "providers": provider_breakdown,
                     "models": model_breakdown,
                     "callers": caller_breakdown,
                     "logs": recent_logs,
@@ -1342,6 +1618,85 @@ def get_paused_emails_endpoint(client_id: str, user: dict = Depends(get_current_
                 return [r[0] for r in rows]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+# ==============================
+# 📢 Marketing & Promotional Senders
+# ==============================
+
+class MarketingSenderRequest(BaseModel):
+    client_id: str
+    sender_email: str
+
+@app.post("/marketing-senders")
+def mark_marketing_sender(data: MarketingSenderRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    clean_sender = data.sender_email.strip().lower()
+    if not clean_sender:
+        raise HTTPException(status_code=400, detail="sender_email cannot be empty")
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS marketing_senders (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        client_id VARCHAR(50) NOT NULL,
+                        sender_email VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY unique_client_sender (client_id, sender_email)
+                    )
+                """)
+                cursor.execute("""
+                    INSERT IGNORE INTO marketing_senders (client_id, sender_email) 
+                    VALUES (%s, %s)
+                """, (data.client_id, clean_sender))
+                db.commit()
+        return {"status": "success", "message": f"{clean_sender} marked as Marketing / Promotional."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/unmark-marketing-sender")
+def unmark_marketing_sender(data: MarketingSenderRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    clean_sender = data.sender_email.strip().lower()
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    DELETE FROM marketing_senders 
+                    WHERE client_id = %s AND (LOWER(sender_email) = %s OR sender_email = %s)
+                """, (data.client_id, clean_sender, clean_sender))
+                db.commit()
+        return {"status": "success", "message": f"{clean_sender} unmarked from Marketing / Promotional."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/marketing-senders/{client_id}")
+def get_marketing_senders_endpoint(client_id: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS marketing_senders (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        client_id VARCHAR(50) NOT NULL,
+                        sender_email VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY unique_client_sender (client_id, sender_email)
+                    )
+                """)
+                if client_id == "ALL":
+                    cursor.execute("SELECT sender_email FROM marketing_senders ORDER BY created_at DESC")
+                else:
+                    cursor.execute("SELECT sender_email FROM marketing_senders WHERE client_id = %s ORDER BY created_at DESC", (client_id,))
+                rows = cursor.fetchall()
+                return [r[0] for r in rows]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/paused-email-history/{client_id}")
 def get_paused_email_history(
@@ -1597,8 +1952,42 @@ class ClientFeaturesRequest(BaseModel):
     feature_order_tracking: bool
     feature_manual_reply: bool
 
+@app.get("/admin/client-features/{client_id}")
+def get_client_features_endpoint(client_id: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+    import pymysql
+    with get_db_ctx() as db:
+        cursor = db.cursor(pymysql.cursors.DictCursor)
+        cursor.execute("""
+            SELECT 
+                COALESCE(feature_ticket_creation, 1) AS feature_ticket_creation,
+                COALESCE(feature_auto_send, 1) AS feature_auto_send,
+                COALESCE(feature_rag, 1) AS feature_rag,
+                COALESCE(feature_order_tracking, 1) AS feature_order_tracking,
+                COALESCE(feature_manual_reply, 1) AS feature_manual_reply
+            FROM email_accounts WHERE client_id=%s LIMIT 1
+        """, (client_id,))
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "feature_ticket_creation": True,
+                "feature_auto_send": True,
+                "feature_rag": True,
+                "feature_order_tracking": True,
+                "feature_manual_reply": True
+            }
+        return {
+            "feature_ticket_creation": bool(row["feature_ticket_creation"]),
+            "feature_auto_send": bool(row["feature_auto_send"]),
+            "feature_rag": bool(row["feature_rag"]),
+            "feature_order_tracking": bool(row["feature_order_tracking"]),
+            "feature_manual_reply": bool(row["feature_manual_reply"])
+        }
+
 @app.post("/admin/client-features")
-def set_client_features(data: ClientFeaturesRequest, user: dict = Depends(require_admin())):
+def set_client_features(data: ClientFeaturesRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
     from app.db import get_db_ctx
     with get_db_ctx() as db:
         with db.cursor() as cursor:
@@ -1611,31 +2000,301 @@ def set_client_features(data: ClientFeaturesRequest, user: dict = Depends(requir
             db.commit()
     return {"status": "success"}
 
-class ClientModelConfigRequest(BaseModel):
+# ==============================
+# 🛑 Master Automation Flow Control & Admin Kill Switch
+# ==============================
+
+class AdminMasterBotToggleRequest(BaseModel):
+    client_id: str
+    admin_bot_enabled: bool
+
+class ClientMasterBotToggleRequest(BaseModel):
+    client_id: str
+    client_bot_enabled: bool
+
+@app.get("/master-bot-status/{client_id}")
+def get_master_bot_status(client_id: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            try:
+                cursor.execute("ALTER TABLE email_accounts ADD COLUMN admin_bot_enabled BOOLEAN DEFAULT TRUE")
+                db.commit()
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE email_accounts ADD COLUMN client_bot_enabled BOOLEAN DEFAULT TRUE")
+                db.commit()
+            except Exception:
+                pass
+
+            cursor.execute("""
+                SELECT 
+                    COALESCE(admin_bot_enabled, 1) AS admin_bot_enabled,
+                    COALESCE(client_bot_enabled, 1) AS client_bot_enabled
+                FROM email_accounts WHERE client_id=%s LIMIT 1
+            """, (client_id,))
+            row = cursor.fetchone()
+            if not row:
+                return {
+                    "client_id": client_id,
+                    "admin_bot_enabled": True,
+                    "client_bot_enabled": True,
+                    "is_effective_enabled": True,
+                    "is_locked_by_admin": False
+                }
+            admin_enabled = bool(row[0])
+            client_enabled = bool(row[1])
+            return {
+                "client_id": client_id,
+                "admin_bot_enabled": admin_enabled,
+                "client_bot_enabled": client_enabled,
+                "is_effective_enabled": admin_enabled and client_enabled,
+                "is_locked_by_admin": not admin_enabled
+            }
+
+@app.post("/admin/master-bot-toggle")
+def admin_master_bot_toggle(data: AdminMasterBotToggleRequest, user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            try:
+                cursor.execute("ALTER TABLE email_accounts ADD COLUMN admin_bot_enabled BOOLEAN DEFAULT TRUE")
+                db.commit()
+            except Exception:
+                pass
+            cursor.execute(
+                "UPDATE email_accounts SET admin_bot_enabled=%s WHERE client_id=%s",
+                (data.admin_bot_enabled, data.client_id)
+            )
+            db.commit()
+    return {
+        "status": "success",
+        "admin_bot_enabled": data.admin_bot_enabled,
+        "message": f"Admin Master Switch set to {data.admin_bot_enabled} for client {data.client_id}"
+    }
+
+@app.post("/client/master-bot-toggle")
+def client_master_bot_toggle(data: ClientMasterBotToggleRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    from app.db import get_db_ctx
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            try:
+                cursor.execute("ALTER TABLE email_accounts ADD COLUMN admin_bot_enabled BOOLEAN DEFAULT TRUE")
+                db.commit()
+            except Exception:
+                pass
+            try:
+                cursor.execute("ALTER TABLE email_accounts ADD COLUMN client_bot_enabled BOOLEAN DEFAULT TRUE")
+                db.commit()
+            except Exception:
+                pass
+
+            # Enforce admin lock: If admin turned it off, client CANNOT turn it back on!
+            cursor.execute("SELECT COALESCE(admin_bot_enabled, 1) FROM email_accounts WHERE client_id=%s", (data.client_id,))
+            row = cursor.fetchone()
+            admin_enabled = bool(row[0]) if row else True
+
+            if not admin_enabled and data.client_bot_enabled:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Master Bot has been disabled by the Administrator. You cannot turn it on until an administrator re-enables it for your account."
+                )
+
+            cursor.execute(
+                "UPDATE email_accounts SET client_bot_enabled=%s WHERE client_id=%s",
+                (data.client_bot_enabled, data.client_id)
+            )
+            db.commit()
+    return {
+        "status": "success",
+        "client_bot_enabled": data.client_bot_enabled,
+        "message": f"Client Master Switch set to {data.client_bot_enabled}"
+    }
+
+class ClientLlmConfigRequest(BaseModel):
     client_id: str
     caller_function: str
+    global_config_id: int | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
     model_name: str
+    api_version: str | None = None
 
-@app.post("/admin/client-model-config")
-def set_client_model_config(data: ClientModelConfigRequest, user: dict = Depends(require_admin())):
+@app.post("/admin/client-llm-config")
+def set_client_llm_config(data: ClientLlmConfigRequest, user: dict = Depends(require_admin())):
     from app.db import get_db_ctx
     with get_db_ctx() as db:
         with db.cursor() as cursor:
             cursor.execute("""
-                INSERT INTO client_model_config (client_id, caller_function, model_name)
-                VALUES (%s, %s, %s) ON DUPLICATE KEY UPDATE model_name=%s
-            """, (data.client_id, data.caller_function, data.model_name, data.model_name))
+                INSERT INTO client_llm_config (client_id, caller_function, global_config_id, provider, api_key, base_url, model_name, api_version)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE 
+                    global_config_id=%s, provider=%s, api_key=%s, base_url=%s, model_name=%s, api_version=%s
+            """, (
+                data.client_id, data.caller_function, data.global_config_id, data.provider, data.api_key, data.base_url, data.model_name, data.api_version,
+                data.global_config_id, data.provider, data.api_key, data.base_url, data.model_name, data.api_version
+            ))
             db.commit()
     return {"status": "success"}
 
-@app.get("/admin/client-model-config/{client_id}")
-def get_client_model_config(client_id: str, user: dict = Depends(require_admin())):
+@app.get("/admin/client-llm-config/{client_id}")
+def get_client_llm_config(client_id: str, user: dict = Depends(require_admin())):
     from app.db import get_db_ctx
     with get_db_ctx() as db:
         with db.cursor() as cursor:
-            cursor.execute("SELECT caller_function, model_name FROM client_model_config WHERE client_id=%s", (client_id,))
+            cursor.execute("""
+                SELECT caller_function, model_name, global_config_id, provider, api_key, base_url, api_version, created_at, updated_at, refreshed
+                FROM client_llm_config 
+                WHERE client_id=%s
+            """, (client_id,))
             rows = cursor.fetchall()
-    return [{"caller_function": r[0], "model_name": r[1]} for r in rows]
+    return [{
+        "caller_function": r[0],
+        "model_name": r[1],
+        "global_config_id": r[2],
+        "provider": r[3],
+        "api_key": r[4],
+        "base_url": r[5],
+        "api_version": r[6],
+        "created_at": str(r[7]) if r[7] else None,
+        "updated_at": str(r[8]) if r[8] else None,
+        "refreshed": str(r[9]) if r[9] else None
+    } for r in rows]
+
+class ClientLlmRefreshRequest(BaseModel):
+    client_id: str
+    caller_function: str
+    global_config_id: int | None = None
+    provider: str | None = None
+    api_key: str | None = None
+    base_url: str | None = None
+    api_version: str | None = None
+
+@app.post("/admin/client-llm-config/refresh")
+def refresh_client_llm_config(data: ClientLlmRefreshRequest, user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    
+    target_provider = data.provider
+    target_api_key = data.api_key
+    target_base_url = data.base_url
+    target_api_version = data.api_version
+    global_config_id = data.global_config_id
+
+    # If referencing a specific globally available configuration template
+    if global_config_id:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, provider, api_key, base_url, api_version, name 
+                    FROM globally_available_llm_configs 
+                    WHERE id = %s
+                """, (global_config_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Referenced globally available LLM config not found")
+                target_provider = row[1]
+                target_api_key = row[2]
+                target_base_url = row[3]
+                target_api_version = row[4]
+    elif not target_provider and not target_api_key:
+        # Fallback to single global default in global_default_llm (id=1)
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, provider, api_key, base_url, api_version, model_name 
+                    FROM global_default_llm 
+                    WHERE id = 1
+                """)
+                row = cursor.fetchone()
+                if not row:
+                    cursor.execute("SELECT id, provider, api_key, base_url, api_version, model_name FROM global_default_llm LIMIT 1")
+                    row = cursor.fetchone()
+                if row:
+                    target_provider = row[1]
+                    target_api_key = row[2]
+                    target_base_url = row[3]
+                    target_api_version = row[4]
+
+    if not target_provider or not target_api_key:
+        raise HTTPException(status_code=400, detail="No global default or custom LLM provider credentials configured in the database to perform live refresh.")
+
+    # Live query models from provider
+    try:
+        models = _query_provider_live_models(target_provider, target_api_key, target_base_url, target_api_version)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error querying live models from {target_provider}: {e}")
+        raise HTTPException(status_code=400, detail=f"Failed to fetch live models from {target_provider.upper()}: {str(e)}")
+
+    now_str = None
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                # If referencing a specific globally available config template, update its refreshed timestamp
+                if global_config_id:
+                    cursor.execute("""
+                        UPDATE globally_available_llm_configs 
+                        SET refreshed = CURRENT_TIMESTAMP 
+                        WHERE id = %s
+                    """, (global_config_id,))
+                elif not data.provider:
+                    # Update global_default_llm refreshed timestamp
+                    cursor.execute("UPDATE global_default_llm SET refreshed = CURRENT_TIMESTAMP WHERE id = 1")
+
+                # Update / insert client_llm_config refreshed timestamp for this function
+                cursor.execute("""
+                    INSERT INTO client_llm_config (client_id, caller_function, model_name, global_config_id, provider, api_key, base_url, api_version, refreshed)
+                    VALUES (%s, %s, '', %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                    ON DUPLICATE KEY UPDATE 
+                        global_config_id=VALUES(global_config_id),
+                        provider=VALUES(provider),
+                        api_key=VALUES(api_key),
+                        base_url=VALUES(base_url),
+                        api_version=VALUES(api_version),
+                        refreshed=CURRENT_TIMESTAMP
+                """, (
+                    data.client_id, data.caller_function, global_config_id,
+                    data.provider if not global_config_id else None,
+                    data.api_key if not global_config_id else None,
+                    data.base_url if not global_config_id else None,
+                    data.api_version if not global_config_id else None
+                ))
+                
+                cursor.execute("""
+                    SELECT refreshed FROM client_llm_config WHERE client_id=%s AND caller_function=%s
+                """, (data.client_id, data.caller_function))
+                r = cursor.fetchone()
+                if r and r[0]:
+                    now_str = str(r[0])
+                db.commit()
+    except Exception as e:
+        logger.error(f"Database error during client LLM refresh: {e}")
+        raise HTTPException(status_code=400, detail=f"Database update failed: {str(e)}")
+
+    return {
+        "status": "success",
+        "client_id": data.client_id,
+        "caller_function": data.caller_function,
+        "global_config_id": global_config_id,
+        "provider": target_provider,
+        "refreshed": now_str,
+        "count": len(models),
+        "models": models
+    }
+
+# Backward compatibility alias endpoints
+@app.post("/admin/client-model-config")
+def set_client_model_config_legacy(data: ClientLlmConfigRequest, user: dict = Depends(require_admin())):
+    return set_client_llm_config(data, user)
+
+@app.get("/admin/client-model-config/{client_id}")
+def get_client_model_config_legacy(client_id: str, user: dict = Depends(require_admin())):
+    return get_client_llm_config(client_id, user)
 
 class ClientCostConfigRequest(BaseModel):
     client_id: str
@@ -1655,9 +2314,146 @@ def set_client_cost_config(data: ClientCostConfigRequest, user: dict = Depends(r
     return {"status": "success"}
 
 
-class LlmConfigRequest(BaseModel):
+# =========================================================================
+# 1. Global Default LLM (Single-row platform default table: global_default_llm)
+# =========================================================================
+
+class GlobalDefaultLlmRequest(BaseModel):
+    provider: str
+    api_key: str
+    base_url: str | None = None
+    model_name: str
+    api_version: str | None = None
+    is_override_active: bool | None = None
+
+class ToggleOverrideRequest(BaseModel):
+    is_override_active: bool
+
+@app.get("/admin/global-default-llm")
+def get_global_default_llm_endpoint(user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT id, provider, api_key, base_url, model_name, api_version, created_at, updated_at, refreshed, is_override_active 
+                    FROM global_default_llm 
+                    WHERE id = 1
+                """)
+                row = cursor.fetchone()
+                if not row:
+                    cursor.execute("SELECT id, provider, api_key, base_url, model_name, api_version, created_at, updated_at, refreshed, is_override_active FROM global_default_llm LIMIT 1")
+                    row = cursor.fetchone()
+                if not row:
+                    return {
+                        "id": 1,
+                        "provider": "groq",
+                        "api_key": os.getenv("GROQ_API_KEY", ""),
+                        "base_url": "https://api.groq.com/openai/v1",
+                        "model_name": os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b"),
+                        "api_version": None,
+                        "created_at": None,
+                        "updated_at": None,
+                        "refreshed": None,
+                        "is_override_active": False
+                    }
+                return {
+                    "id": row[0],
+                    "provider": row[1],
+                    "api_key": row[2],
+                    "base_url": row[3],
+                    "model_name": row[4],
+                    "api_version": row[5],
+                    "created_at": str(row[6]) if row[6] else None,
+                    "updated_at": str(row[7]) if row[7] else None,
+                    "refreshed": str(row[8]) if row[8] else None,
+                    "is_override_active": bool(row[9]) if len(row) > 9 and row[9] is not None else False
+                }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/global-default-llm")
+def set_global_default_llm_endpoint(data: GlobalDefaultLlmRequest, user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO global_default_llm (id, provider, api_key, base_url, model_name, api_version)
+                    VALUES (1, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE 
+                        provider=VALUES(provider),
+                        api_key=VALUES(api_key),
+                        base_url=VALUES(base_url),
+                        model_name=VALUES(model_name),
+                        api_version=VALUES(api_version)
+                """, (data.provider, data.api_key, data.base_url, data.model_name, data.api_version))
+            db.commit()
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/global-default-llm/toggle-override")
+def toggle_global_override_endpoint(data: ToggleOverrideRequest, user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE global_default_llm 
+                    SET is_override_active = %s 
+                    WHERE id = 1
+                """, (1 if data.is_override_active else 0,))
+            db.commit()
+        logger.info(f"⚙️ Global Default LLM Emergency Override toggled to: {data.is_override_active}")
+        return {"status": "success", "is_override_active": data.is_override_active}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/global-default-llm/refresh")
+def refresh_global_default_llm_endpoint(user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT provider, api_key, base_url, api_version 
+                    FROM global_default_llm 
+                    WHERE id = 1
+                """)
+                row = cursor.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Global Default LLM configuration not found")
+                
+                provider, api_key, base_url, api_version = row[0], row[1], row[2], row[3]
+                models = _query_provider_live_models(provider, api_key, base_url, api_version)
+                
+                cursor.execute("UPDATE global_default_llm SET refreshed = CURRENT_TIMESTAMP WHERE id = 1")
+                db.commit()
+
+                cursor.execute("SELECT refreshed FROM global_default_llm WHERE id = 1")
+                refreshed_val = cursor.fetchone()[0]
+
+                return {
+                    "status": "success",
+                    "provider": provider,
+                    "refreshed": str(refreshed_val),
+                    "count": len(models),
+                    "models": models
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to refresh global default LLM models: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================================
+# 2. Globally Available LLM Configs (Multiple entries: globally_available_llm_configs)
+# =========================================================================
+
+class GloballyAvailableLlmConfigRequest(BaseModel):
     id: int | None = None
-    client_id: str
     name: str
     provider: str
     api_key: str
@@ -1665,15 +2461,15 @@ class LlmConfigRequest(BaseModel):
     model_name: str
     api_version: str | None = None
 
-@app.get("/admin/llm-configs")
-def get_llm_configs_endpoint(user: dict = Depends(require_admin())):
+@app.get("/admin/globally-available-llm-configs")
+def get_globally_available_llm_configs_endpoint(user: dict = Depends(require_admin())):
     from app.db import get_db_ctx
     try:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
                 cursor.execute("""
-                    SELECT id, client_id, name, provider, api_key, base_url, model_name, api_version, created_at 
-                    FROM llm_configs 
+                    SELECT id, name, provider, api_key, base_url, model_name, api_version, created_at, updated_at, refreshed 
+                    FROM globally_available_llm_configs 
                     ORDER BY id DESC
                 """)
                 rows = cursor.fetchall()
@@ -1681,52 +2477,222 @@ def get_llm_configs_endpoint(user: dict = Depends(require_admin())):
                 for r in rows:
                     configs.append({
                         "id": r[0],
-                        "client_id": r[1],
-                        "name": r[2],
-                        "provider": r[3],
-                        "api_key": r[4],
-                        "base_url": r[5],
-                        "model_name": r[6],
-                        "api_version": r[7],
-                        "created_at": str(r[8])
+                        "name": r[1],
+                        "provider": r[2],
+                        "api_key": r[3],
+                        "base_url": r[4],
+                        "model_name": r[5],
+                        "api_version": r[6],
+                        "created_at": str(r[7]) if r[7] else None,
+                        "updated_at": str(r[8]) if r[8] else None,
+                        "refreshed": str(r[9]) if r[9] else None
                     })
                 return configs
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/admin/llm-configs")
-def save_llm_config_endpoint(data: LlmConfigRequest, user: dict = Depends(require_admin())):
+@app.post("/admin/globally-available-llm-configs")
+def save_globally_available_llm_config_endpoint(data: GloballyAvailableLlmConfigRequest, user: dict = Depends(require_admin())):
     from app.db import get_db_ctx
     try:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
                 if data.id:
                     cursor.execute("""
-                        UPDATE llm_configs 
-                        SET client_id=%s, name=%s, provider=%s, api_key=%s, base_url=%s, model_name=%s, api_version=%s
+                        UPDATE globally_available_llm_configs 
+                        SET name=%s, provider=%s, api_key=%s, base_url=%s, model_name=%s, api_version=%s
                         WHERE id=%s
-                    """, (data.client_id, data.name, data.provider, data.api_key, data.base_url, data.model_name, data.api_version, data.id))
+                    """, (data.name, data.provider, data.api_key, data.base_url, data.model_name, data.api_version, data.id))
                 else:
                     cursor.execute("""
-                        INSERT INTO llm_configs (client_id, name, provider, api_key, base_url, model_name, api_version)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                    """, (data.client_id, data.name, data.provider, data.api_key, data.base_url, data.model_name, data.api_version))
+                        INSERT INTO globally_available_llm_configs (name, provider, api_key, base_url, model_name, api_version)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (data.name, data.provider, data.api_key, data.base_url, data.model_name, data.api_version))
             db.commit()
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/admin/llm-configs/{config_id}")
-def delete_llm_config_endpoint(config_id: int, user: dict = Depends(require_admin())):
+@app.delete("/admin/globally-available-llm-configs/{config_id}")
+def delete_globally_available_llm_config_endpoint(config_id: int, user: dict = Depends(require_admin())):
     from app.db import get_db_ctx
     try:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                cursor.execute("DELETE FROM llm_configs WHERE id=%s", (config_id,))
+                cursor.execute("DELETE FROM globally_available_llm_configs WHERE id=%s", (config_id,))
             db.commit()
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/admin/globally-available-llm-configs/{config_id}/refresh")
+def refresh_globally_available_llm_config_endpoint(config_id: int, user: dict = Depends(require_admin())):
+    from app.db import get_db_ctx
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT provider, api_key, base_url, api_version, name 
+                    FROM globally_available_llm_configs 
+                    WHERE id=%s
+                """, (config_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise HTTPException(status_code=404, detail="Globally available LLM configuration not found")
+                
+                provider, api_key, base_url, api_version, name = row[0], row[1], row[2], row[3], row[4]
+                models = _query_provider_live_models(provider, api_key, base_url, api_version)
+                
+                cursor.execute("""
+                    UPDATE globally_available_llm_configs 
+                    SET refreshed = CURRENT_TIMESTAMP 
+                    WHERE id = %s
+                """, (config_id,))
+                db.commit()
+
+                cursor.execute("SELECT refreshed FROM globally_available_llm_configs WHERE id=%s", (config_id,))
+                refreshed_val = cursor.fetchone()[0]
+
+                return {
+                    "status": "success",
+                    "config_id": config_id,
+                    "name": name,
+                    "provider": provider,
+                    "refreshed": str(refreshed_val),
+                    "count": len(models),
+                    "models": models
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to refresh models for globally available config {config_id}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Backward compatibility alias for legacy /admin/llm-configs
+@app.get("/admin/llm-configs")
+def get_llm_configs_endpoint_legacy(user: dict = Depends(require_admin())):
+    return get_globally_available_llm_configs_endpoint(user)
+
+@app.post("/admin/llm-configs")
+def save_llm_config_endpoint_legacy(data: GloballyAvailableLlmConfigRequest, user: dict = Depends(require_admin())):
+    return save_globally_available_llm_config_endpoint(data, user)
+
+@app.delete("/admin/llm-configs/{config_id}")
+def delete_llm_config_endpoint_legacy(config_id: int, user: dict = Depends(require_admin())):
+    return delete_globally_available_llm_config_endpoint(config_id, user)
+
+@app.post("/admin/llm-configs/{config_id}/refresh")
+def refresh_llm_config_endpoint_legacy(config_id: int, user: dict = Depends(require_admin())):
+    return refresh_globally_available_llm_config_endpoint(config_id, user)
+
+def _query_provider_live_models(provider: str, api_key: str, base_url: str | None = None, api_version: str | None = None) -> list[str]:
+    import requests
+    provider = (provider or "groq").lower().strip()
+    api_key = (api_key or "").strip()
+    base_url = (base_url or "").strip()
+
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key is required to query models from provider.")
+
+    models = []
+    if provider == "groq":
+        target_url = f"{base_url.rstrip('/') if base_url else 'https://api.groq.com/openai/v1'}/models"
+        resp = requests.get(target_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=12)
+        if not resp.ok:
+            raise Exception(f"Groq error ({resp.status_code}): {resp.text}")
+        raw_list = resp.json().get("data", [])
+        models = [m.get("id") for m in raw_list if m.get("id") and m.get("active", True)]
+
+    elif provider == "openai":
+        target_url = f"{base_url.rstrip('/') if base_url else 'https://api.openai.com/v1'}/models"
+        resp = requests.get(target_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=12)
+        if not resp.ok:
+            raise Exception(f"OpenAI error ({resp.status_code}): {resp.text}")
+        raw_list = resp.json().get("data", [])
+        excluded = ("whisper", "dall-e", "tts", "embedding", "moderation", "davinci", "babbage", "curie", "text-search")
+        models = [
+            m.get("id") for m in raw_list 
+            if m.get("id") and not any(ex in m.get("id").lower() for ex in excluded)
+        ]
+
+    elif provider in ("claude", "anthropic"):
+        target_url = f"{base_url.rstrip('/') if base_url else 'https://api.anthropic.com/v1'}/models"
+        resp = requests.get(target_url, headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01"
+        }, timeout=12)
+        if resp.ok:
+            raw_list = resp.json().get("data", [])
+            models = [m.get("id") for m in raw_list if m.get("id")]
+        else:
+            models = ["claude-3-7-sonnet-20250219", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"]
+
+    elif provider == "gemini":
+        target_url = f"{base_url.rstrip('/') if base_url else 'https://generativelanguage.googleapis.com/v1beta/openai'}/models"
+        resp = requests.get(target_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=12)
+        if resp.ok:
+            raw_list = resp.json().get("data", [])
+            models = [m.get("id") for m in raw_list if m.get("id")]
+        else:
+            native_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+            native_resp = requests.get(native_url, timeout=12)
+            if native_resp.ok:
+                raw_models = native_resp.json().get("models", [])
+                models = [
+                    m.get("name", "").replace("models/", "")
+                    for m in raw_models
+                    if "generateContent" in m.get("supportedGenerationMethods", [])
+                ]
+            else:
+                raise Exception(f"Google Gemini error ({native_resp.status_code}): {native_resp.text}")
+
+    elif provider == "grok":
+        target_url = f"{base_url.rstrip('/') if base_url else 'https://api.x.ai/v1'}/models"
+        resp = requests.get(target_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=12)
+        if not resp.ok:
+            raise Exception(f"xAI Grok error ({resp.status_code}): {resp.text}")
+        raw_list = resp.json().get("data", [])
+        models = [m.get("id") for m in raw_list if m.get("id")]
+
+    elif provider == "azure":
+        target_url = f"{base_url.rstrip('/')}/openai/models?api-version={api_version or '2024-02-15-preview'}"
+        resp = requests.get(target_url, headers={"api-key": api_key}, timeout=12)
+        if not resp.ok:
+            raise Exception(f"Azure OpenAI error ({resp.status_code}): {resp.text}")
+        raw_list = resp.json().get("data", [])
+        models = [m.get("id") for m in raw_list if m.get("id")]
+
+    else: # custom gateway
+        target_url = f"{base_url.rstrip('/')}/models"
+        resp = requests.get(target_url, headers={"Authorization": f"Bearer {api_key}"} if api_key else {}, timeout=12)
+        if not resp.ok:
+            raise Exception(f"Custom gateway error ({resp.status_code}): {resp.text}")
+        raw_list = resp.json().get("data", [])
+        models = [m.get("id") for m in raw_list if m.get("id")]
+
+    return sorted(list(set(models)))
+
+class FetchProviderModelsRequest(BaseModel):
+    provider: str
+    api_key: str
+    base_url: str | None = None
+    api_version: str | None = None
+
+@app.post("/admin/llm/fetch-models")
+def fetch_provider_models_endpoint(data: FetchProviderModelsRequest, user: dict = Depends(require_admin())):
+    try:
+        clean_models = _query_provider_live_models(data.provider, data.api_key, data.base_url, data.api_version)
+        return {
+            "status": "success", 
+            "provider": (data.provider or "groq").lower().strip(), 
+            "count": len(clean_models), 
+            "models": clean_models
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.warning(f"Failed to fetch live models for {data.provider}: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/budget-status/{client_id}")
@@ -1864,6 +2830,9 @@ class SelfProfileRequest(BaseModel):
     client_id: str
     department_name: str = None
     company_name: str = None
+    score_threshold: int = None
+    agent_type: str = None
+    response_tone: str = None
 
 @app.post("/client/profile")
 def update_self_profile(data: SelfProfileRequest, user: dict = Depends(get_current_user)):
@@ -1871,12 +2840,33 @@ def update_self_profile(data: SelfProfileRequest, user: dict = Depends(get_curre
     from app.db import get_db_ctx
     with get_db_ctx() as db:
         with db.cursor() as cursor:
-            cursor.execute("""
-                UPDATE email_accounts 
-                SET department_name=%s, company_name=%s
-                WHERE client_id=%s
-            """, (data.department_name, data.company_name, data.client_id))
-            db.commit()
+            updates = []
+            params = []
+            if data.department_name is not None:
+                updates.append("department_name = %s")
+                params.append(data.department_name)
+            if data.company_name is not None:
+                updates.append("company_name = %s")
+                params.append(data.company_name)
+            if data.score_threshold is not None:
+                updates.append("score_threshold = %s")
+                params.append(data.score_threshold)
+            if data.agent_type is not None:
+                updates.append("agent_type = %s")
+                params.append(data.agent_type)
+            if data.response_tone is not None:
+                updates.append("response_tone = %s")
+                params.append(data.response_tone)
+            
+            if updates:
+                if data.client_id == "ALL" and user.get("role") == "admin":
+                    query = f"UPDATE email_accounts SET {', '.join(updates)}"
+                    cursor.execute(query, tuple(params))
+                else:
+                    params.append(data.client_id)
+                    query = f"UPDATE email_accounts SET {', '.join(updates)} WHERE client_id = %s"
+                    cursor.execute(query, tuple(params))
+                db.commit()
     return {"success": True}
 
 
@@ -1930,6 +2920,41 @@ def list_blocked_keywords(client_id: str, user: dict = Depends(get_current_user)
     with get_db_ctx() as db:
         with db.cursor() as cursor:
             return {"keywords": get_blocked_keywords(cursor, client_id)}
+
+
+# ===== Email Disclaimers Management =====
+class EmailDisclaimerCreateRequest(BaseModel):
+    client_id: str
+    disclaimer_text: str
+
+class EmailDisclaimerToggleRequest(BaseModel):
+    is_active: bool
+
+@app.get("/email-disclaimers/{client_id}")
+def get_email_disclaimers_endpoint(client_id: str, user: dict = Depends(get_current_user)):
+    require_client_access(client_id, user)
+    return get_client_disclaimers(client_id)
+
+@app.post("/email-disclaimers")
+def create_email_disclaimer_endpoint(data: EmailDisclaimerCreateRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    new_id = add_client_disclaimer(data.client_id, data.disclaimer_text)
+    return {"status": "success", "id": new_id}
+
+@app.delete("/email-disclaimers/{disclaimer_id}")
+def delete_email_disclaimer_endpoint(disclaimer_id: int, client_id: str = None, user: dict = Depends(get_current_user)):
+    if client_id:
+        require_client_access(client_id, user)
+    deleted = delete_client_disclaimer(disclaimer_id, client_id)
+    return {"status": "success", "deleted": deleted}
+
+@app.patch("/email-disclaimers/{disclaimer_id}/toggle")
+def toggle_email_disclaimer_endpoint(disclaimer_id: int, data: EmailDisclaimerToggleRequest, client_id: str = None, user: dict = Depends(get_current_user)):
+    if client_id:
+        require_client_access(client_id, user)
+    toggled = toggle_client_disclaimer(disclaimer_id, data.is_active, client_id)
+    return {"status": "success", "toggled": toggled}
+
 
 
 
@@ -2264,6 +3289,69 @@ def regenerate_connector_config(data: ConnectorConfigEditRequest, user: dict = D
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class OAuthTestRequest(BaseModel):
+    token_url: str
+    client_id: str
+    client_secret: str
+    scope: str | None = None
+    token_auth_method: str = "client_secret_post"  # or client_secret_basic
+
+@app.post("/admin/connector-configs/test-oauth", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
+def test_oauth_endpoint(data: OAuthTestRequest, user: dict = Depends(get_current_user)):
+    import time
+    import requests
+    start_time = time.time()
+
+    post_data = {"grant_type": "client_credentials"}
+    if data.scope:
+        post_data["scope"] = data.scope
+
+    auth = None
+    if data.token_auth_method == "client_secret_basic":
+        auth = (data.client_id, data.client_secret)
+    else:
+        post_data["client_id"] = data.client_id
+        post_data["client_secret"] = data.client_secret
+
+    headers = {"Accept": "application/json"}
+
+    try:
+        res = requests.post(data.token_url, data=post_data, headers=headers, auth=auth, timeout=10)
+        duration_ms = round((time.time() - start_time) * 1000)
+        
+        if res.status_code != 200:
+            return {
+                "success": False,
+                "status_code": res.status_code,
+                "error": f"Token endpoint returned HTTP {res.status_code}: {res.text[:300]}",
+                "duration_ms": duration_ms
+            }
+
+        res_json = res.json()
+        access_token = res_json.get("access_token")
+        if not access_token:
+            return {
+                "success": False,
+                "status_code": res.status_code,
+                "error": f"No 'access_token' found in JSON response: {res_json}",
+                "duration_ms": duration_ms
+            }
+
+        return {
+            "success": True,
+            "token_type": res_json.get("token_type", "Bearer"),
+            "expires_in": res_json.get("expires_in", 3600),
+            "scope": res_json.get("scope", data.scope or ""),
+            "duration_ms": duration_ms,
+            "message": "OAuth 2.0 token handshake successful!"
+        }
+    except Exception as e:
+        duration_ms = round((time.time() - start_time) * 1000)
+        return {
+            "success": False,
+            "error": str(e),
+            "duration_ms": duration_ms
+        }
 
 
 class GenerateTemplatePreviewRequest(BaseModel):
@@ -2301,3 +3389,149 @@ def generate_connector_template_preview(data: GenerateTemplatePreviewRequest, us
         "note": "This is a preview only — nothing has been saved. Review/edit as needed, "
                 "then POST to /admin/connector-configs to submit for approval."
     }
+
+
+# ─────────────────────────────────────────────────────────────
+# DRAFTS & MANUAL REVIEW ENDPOINTS
+# ─────────────────────────────────────────────────────────────
+
+class UpdateDraftRequest(BaseModel):
+    subject: Optional[str] = None
+    draft_reply: Optional[str] = None
+    to_email: Optional[str] = None
+
+
+class DiscardDraftRequest(BaseModel):
+    rejection_reason: Optional[str] = "Manually discarded"
+
+
+class BatchSendDraftsRequest(BaseModel):
+    draft_ids: list[int]
+
+
+class BatchSendByFilterRequest(BaseModel):
+    search: Optional[str] = None
+    intent: Optional[str] = None
+    sentiment: Optional[str] = None
+    from_email: Optional[str] = None
+    min_score: Optional[int] = None
+    max_score: Optional[int] = None
+    date_from: Optional[str] = None
+    date_to: Optional[str] = None
+
+
+@app.get("/drafts")
+def get_drafts_endpoint(
+    client_id: Optional[str] = None,
+    status: Optional[str] = "pending",
+    search: Optional[str] = None,
+    intent: Optional[str] = None,
+    sentiment: Optional[str] = None,
+    from_email: Optional[str] = None,
+    min_score: Optional[int] = None,
+    max_score: Optional[int] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 20,
+    user: dict = Depends(get_current_user)
+):
+    target_client = client_id or (None if user.get("role") == "admin" else user.get("client_id"))
+    if user.get("role") != "admin" and target_client != user.get("client_id"):
+        target_client = user.get("client_id")
+
+    from app.draft_service import list_drafts
+    return list_drafts(
+        client_id=target_client,
+        status=status,
+        search=search,
+        intent=intent,
+        sentiment=sentiment,
+        from_email=from_email,
+        min_score=min_score,
+        max_score=max_score,
+        date_from=date_from,
+        date_to=date_to,
+        page=page,
+        page_size=page_size
+    )
+
+
+@app.get("/drafts/count")
+def get_pending_drafts_count_endpoint(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    target_client = client_id or (None if user.get("role") == "admin" else user.get("client_id"))
+    if user.get("role") != "admin" and target_client != user.get("client_id"):
+        target_client = user.get("client_id")
+    from app.draft_service import get_pending_drafts_count
+    count = get_pending_drafts_count(target_client)
+    return {"pending_count": count}
+
+
+@app.get("/drafts/metrics")
+def get_draft_metrics_endpoint(client_id: Optional[str] = None, user: dict = Depends(get_current_user)):
+    target_client = client_id or (None if user.get("role") == "admin" else user.get("client_id"))
+    if user.get("role") != "admin" and target_client != user.get("client_id"):
+        target_client = user.get("client_id")
+    from app.draft_service import get_draft_metrics
+    return get_draft_metrics(target_client)
+
+
+@app.get("/drafts/{draft_id}")
+def get_single_draft_endpoint(draft_id: int, user: dict = Depends(get_current_user)):
+    client_id = None if user.get("role") == "admin" else user.get("client_id")
+    from app.draft_service import get_draft
+    draft = get_draft(draft_id, client_id)
+    if not draft:
+        raise HTTPException(status_code=404, detail="Draft not found")
+    return draft
+
+
+@app.put("/drafts/{draft_id}")
+def update_draft_endpoint(draft_id: int, data: UpdateDraftRequest, user: dict = Depends(get_current_user)):
+    client_id = None if user.get("role") == "admin" else user.get("client_id")
+    from app.draft_service import update_draft
+    ok = update_draft(
+        draft_id=draft_id,
+        client_id=client_id,
+        subject=data.subject,
+        draft_reply=data.draft_reply,
+        to_email=data.to_email,
+        reviewed_by=user.get("username", "Admin")
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail="Failed to update draft or draft not pending")
+    return {"status": "success", "message": "Draft updated successfully"}
+
+
+@app.post("/drafts/{draft_id}/send")
+def send_single_draft_endpoint(draft_id: int, user: dict = Depends(get_current_user)):
+    client_id = None if user.get("role") == "admin" else user.get("client_id")
+    from app.draft_service import send_single_draft
+    res = send_single_draft(draft_id, client_id=client_id, reviewed_by=user.get("username", "Admin"))
+    if not res.get("success"):
+        raise HTTPException(status_code=400, detail=res.get("error", "Failed to dispatch draft"))
+    return res
+
+
+@app.post("/drafts/{draft_id}/discard")
+def discard_draft_endpoint(draft_id: int, data: DiscardDraftRequest, user: dict = Depends(get_current_user)):
+    client_id = None if user.get("role") == "admin" else user.get("client_id")
+    from app.draft_service import discard_draft
+    ok = discard_draft(draft_id, client_id=client_id, rejection_reason=data.rejection_reason, reviewed_by=user.get("username", "Admin"))
+    if not ok:
+        raise HTTPException(status_code=400, detail="Failed to discard draft or draft not pending")
+    return {"status": "success", "message": f"Draft #{draft_id} discarded"}
+
+
+@app.post("/drafts/batch-send")
+def batch_send_drafts_endpoint(data: BatchSendDraftsRequest, user: dict = Depends(get_current_user)):
+    client_id = None if user.get("role") == "admin" else user.get("client_id")
+    from app.draft_service import batch_send_drafts
+    return batch_send_drafts(data.draft_ids, client_id=client_id, reviewed_by=user.get("username", "Admin"))
+
+
+@app.post("/drafts/batch-send-filter")
+def batch_send_by_filter_endpoint(data: BatchSendByFilterRequest, user: dict = Depends(get_current_user)):
+    client_id = None if user.get("role") == "admin" else user.get("client_id")
+    from app.draft_service import batch_send_by_filter
+    return batch_send_by_filter(data.dict(), client_id=client_id, reviewed_by=user.get("username", "Admin"))

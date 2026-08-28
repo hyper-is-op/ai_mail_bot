@@ -13,9 +13,9 @@ import Settings from './pages/Settings';
 import Login from './pages/auth/Login';
 import Register from './pages/auth/Register';
 import Logout from './pages/auth/Logout';
-import ApproveRegistration from './pages/auth/ApproveRegistration';
 import AdminClients from './pages/AdminClients';
-import LlmConfigManager from './pages/LlmConfigManager';
+import LlmConfigs from './pages/LlmConfigs';
+import { Drafts } from './pages/Drafts';
 
 function App() {
   useEffect(() => {
@@ -36,6 +36,7 @@ function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
+          <Route path="drafts" element={<Drafts />} />
           <Route path="inbox" element={<Inbox />} />
           <Route path="ai-processing" element={<AiProcessing />} />
           <Route path="tickets" element={<Tickets />} />
@@ -45,7 +46,7 @@ function App() {
           <Route path="llm-analytics" element={<LlmAnalytics />} />
           <Route path="settings" element={<Settings />} />
           <Route path="admin/clients" element={<AdminClients />} />
-          <Route path="admin/llm-configs" element={<LlmConfigManager />} />
+          <Route path="admin/llm-configs" element={<LlmConfigs />} />
         </Route>
       </Routes>
     </Router>

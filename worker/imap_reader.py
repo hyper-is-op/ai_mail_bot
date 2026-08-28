@@ -43,6 +43,34 @@ def decode_subject(raw_subject: str) -> str:
         return raw_subject
 
 
+def is_bot_enabled_for_client(client_id: str) -> tuple[bool, str]:
+    """Check if bot automation is enabled for this client (both admin and client level)."""
+    try:
+        from app.db import get_db
+        db = get_db()
+        cursor = db.cursor()
+        cursor.execute("""
+            SELECT 
+                COALESCE(admin_bot_enabled, 1),
+                COALESCE(client_bot_enabled, 1)
+            FROM email_accounts WHERE client_id = %s LIMIT 1
+        """, (client_id,))
+        row = cursor.fetchone()
+        db.close()
+        if not row:
+            return True, "Enabled (Default)"
+        admin_en = bool(row[0])
+        client_en = bool(row[1])
+        if not admin_en:
+            return False, "Disabled by Administrator"
+        if not client_en:
+            return False, "Paused by Client"
+        return True, "Active"
+    except Exception as e:
+        logger.warning(f"⚠️ Error checking bot status for client {client_id}: {e}")
+        return True, "Active (Fallback)"
+
+
 def poll_inbox(client_id, email_user, email_pass, stop_event):
     logger.info(f"📬 Starting IMAP poll thread for Client: {client_id} ({email_user})")
     
@@ -68,6 +96,16 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
             while not stop_event.is_set():
                 try:
                     mail.noop()
+
+                    # Master Bot Switch Check — Complete Stop
+                    bot_enabled, reason = is_bot_enabled_for_client(client_id)
+                    if not bot_enabled:
+                        logger.info(f"🛑 [Client {client_id}] Master Bot Switch is OFF ({reason}) — skipping inbox check, emails remain untouched in Gmail")
+                        for _ in range(10):
+                            if stop_event.is_set():
+                                break
+                            time.sleep(1)
+                        continue
 
                     logger.info(f"🔄 [Client {client_id}] Poll cycle — checking UNSEEN")
                     
@@ -109,21 +147,50 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
                                     if match:
                                         from_email = match.group(0)
 
-                                body = ""
+                                plain_text = ""
+                                html_text = ""
+
                                 if msg.is_multipart():
                                     for part in msg.walk():
-                                        if part.get_content_type() == "text/plain":
-                                            body = part.get_payload(decode=True).decode(errors="ignore")
-                                            break
+                                        ctype = part.get_content_type()
+                                        if ctype == "text/plain" and not plain_text:
+                                            try:
+                                                plain_text = part.get_payload(decode=True).decode(errors="ignore")
+                                            except Exception:
+                                                pass
+                                        elif ctype == "text/html" and not html_text:
+                                            try:
+                                                html_text = part.get_payload(decode=True).decode(errors="ignore")
+                                            except Exception:
+                                                pass
                                 else:
-                                    body = msg.get_payload(decode=True).decode(errors="ignore")
+                                    try:
+                                        payload = msg.get_payload(decode=True).decode(errors="ignore")
+                                    except Exception:
+                                        payload = ""
+                                    if msg.get_content_type() == "text/html":
+                                        html_text = payload
+                                    else:
+                                        plain_text = payload
 
-                                logger.info(f"📧 [Client {client_id}] NEW EMAIL: From={from_email} Subject={subject}")
+                                from app.text_cleaning import extract_clean_text_from_html, is_html_content
+
+                                # If no plain text was provided or plain text contains raw HTML document, clean it
+                                if not plain_text and html_text:
+                                    plain_text = extract_clean_text_from_html(html_text)
+                                elif plain_text and is_html_content(plain_text):
+                                    if not html_text:
+                                        html_text = plain_text
+                                    plain_text = extract_clean_text_from_html(plain_text)
+
+                                logger.info(f"📧 [Client {client_id}] NEW EMAIL: From={from_email} Subject={subject} (HTML={bool(html_text)})")
                                 task_result = process_email_task.delay({
                                     "client_id": client_id,
                                     "from_email": from_email,
                                     "subject": subject,
-                                    "body": body
+                                    "body": plain_text or "",
+                                    "body_html": html_text or "",
+                                    "message_id": msg.get("Message-ID", "")
                                 })
                                 logger.info(f"✅ [Client {client_id}] Task queued: {task_result.id}")
 

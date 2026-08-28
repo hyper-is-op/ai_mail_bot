@@ -40,11 +40,13 @@ def get_client_features(cursor, client_id):
     defaults = {
         "feature_ticket_creation": True, "feature_auto_send": True,
         "feature_rag": True, "feature_order_tracking": True, "feature_manual_reply": True,
+        "admin_bot_enabled": True, "client_bot_enabled": True,
     }
     try:
         cursor.execute("""
             SELECT feature_ticket_creation, feature_auto_send, feature_rag,
-                   feature_order_tracking, feature_manual_reply
+                   feature_order_tracking, feature_manual_reply,
+                   COALESCE(admin_bot_enabled, 1), COALESCE(client_bot_enabled, 1)
             FROM email_accounts WHERE client_id = %s
         """, (client_id,))
         row = cursor.fetchone()
@@ -53,11 +55,81 @@ def get_client_features(cursor, client_id):
                 "feature_ticket_creation": bool(row[0]), "feature_auto_send": bool(row[1]),
                 "feature_rag": bool(row[2]), "feature_order_tracking": bool(row[3]),
                 "feature_manual_reply": bool(row[4]),
+                "admin_bot_enabled": bool(row[5]) if row[5] is not None else True,
+                "client_bot_enabled": bool(row[6]) if row[6] is not None else True,
             }
     except Exception as e:
-        logger.warning(f"⚠️ Failed to fetch feature flags for {client_id}, using defaults: {e}")
+        logger.warning(f"⚠️ Failed to fetch client features for {client_id}, using defaults: {e}")
     return defaults
 
+
+def _dispatch_or_draft_reply(
+    client_id: str,
+    from_email: str,
+    subject: str,
+    reply_body: str,
+    features: dict,
+    confidence_score: int = 0,
+    intent: str = None,
+    sentiment: str = None,
+    priority: str = "Normal",
+    ticket_id: str = None,
+    original_body: str = "",
+    in_reply_to: str = None,
+    message_id: str = None,
+    sender_name: str = None,
+    execution_steps: list = None,
+) -> tuple:
+    """
+    If feature_auto_send is True, dispatches reply immediately via SMTP.
+    If feature_auto_send is False (Draft Mode), creates a pending draft in draft_emails.
+    Returns (status_str, save_history_bool)
+    """
+    if features.get("feature_auto_send", True):
+        logger.info(f"📤 [Client {client_id}] Auto-send enabled — dispatching reply via SMTP")
+        send_email(client_id, from_email, "Re: " + subject, reply_body, in_reply_to=in_reply_to)
+        if execution_steps is not None:
+            execution_steps.append("SMTP_Send")
+        return "sent", True
+    else:
+        logger.info(f"📝 [Client {client_id}] Auto-send disabled (Draft Mode) — saving reply to draft_emails")
+        try:
+            from app.draft_service import create_draft
+            draft_id = create_draft(
+                client_id=client_id,
+                from_email=from_email,
+                to_email=from_email,
+                subject=subject,
+                original_body=original_body,
+                draft_reply=reply_body,
+                confidence_score=confidence_score,
+                intent=intent,
+                sentiment=sentiment,
+                priority=priority,
+                ticket_id=ticket_id,
+                in_reply_to=in_reply_to,
+                message_id=message_id,
+                sender_name=sender_name,
+            )
+            logger.info(f"✅ Draft created successfully with ID #{draft_id}")
+        except Exception as d_err:
+            logger.error(f"❌ Failed to create draft in draft_emails: {d_err}", exc_info=True)
+        if execution_steps is not None:
+            execution_steps.append("Saved_To_Drafts")
+        return "draft_created", False
+
+
+def publish_email_update(client_id: str):
+    try:
+        import os
+        import redis
+        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0") or "redis://localhost:6379/0"
+        r = redis.from_url(redis_url)
+        r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": client_id}))
+        logger.info(f"📡 Published real-time update to 'email_updates' channel for client {client_id}")
+        r.close()
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to publish real-time notification: {e}")
 
 # ==============================
 # Templated verification emails
@@ -223,6 +295,47 @@ def process_email_task(self, data):
             cursor.execute("ALTER TABLE email_logs ADD COLUMN summary VARCHAR(255) NULL")
         except Exception:
             pass
+        try:
+            cursor.execute("ALTER TABLE email_logs ADD COLUMN body_html LONGTEXT NULL")
+        except Exception:
+            pass
+
+        # Ensure body is clean text and preserve raw HTML
+        body_text = data.get("body", "") or ""
+        body_html = data.get("body_html", "") or ""
+
+        from app.text_cleaning import extract_clean_text_from_html, is_html_content
+        if is_html_content(body_text):
+            if not body_html:
+                body_html = body_text
+            body_text = extract_clean_text_from_html(body_text)
+
+        # ==============================
+        # Check Master Bot Automation Switch
+        # ==============================
+        features = get_client_features(cursor, client_id)
+        admin_bot_enabled = features.get("admin_bot_enabled", True)
+        client_bot_enabled = features.get("client_bot_enabled", True)
+
+        if not admin_bot_enabled or not client_bot_enabled:
+            reason = "Disabled by Administrator" if not admin_bot_enabled else "Paused by Client"
+            logger.info(f"🛑 [Client {client_id}] Master Bot Switch is OFF ({reason}) — halting task without processing")
+            status = 'automation_halted'
+            execution_steps = ["Start", f"Master_Switch_Halt:{reason}"]
+            cursor.execute("""
+                INSERT INTO email_logs (client_id, from_email, subject, body, body_html, reply, score, status, rag_id, sentiment, priority, execution_steps, summary)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                client_id, data.get('from_email'), data.get('subject'), body_text, body_html or None,
+                None, 0, status, None, 'Neutral', 'Low',
+                json.dumps(execution_steps),
+                f"Master automation switch is OFF ({reason}). Email flow halted."
+            ))
+            cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s", (task_id,))
+            db.commit()
+            db.close()
+            publish_email_update(client_id)
+            return
 
         # ==============================
         # Check if Email is Paused
@@ -231,34 +344,24 @@ def process_email_task(self, data):
         if cursor.fetchone():
             logger.info(f"⏸️ Email from {data.get('from_email')} is paused. Skipping auto-reply.")
             cursor.execute("""
-                INSERT INTO email_logs (client_id, from_email, subject, body, status, priority, sentiment, execution_steps)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (client_id, data.get('from_email'), data.get('subject'), data.get('body'), 'paused', 'Medium', 'Neutral', json.dumps(["Start", "Paused"])))
+                INSERT INTO email_logs (client_id, from_email, subject, body, body_html, status, priority, sentiment, execution_steps)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (client_id, data.get('from_email'), data.get('subject'), body_text, body_html or None, 'paused', 'Medium', 'Neutral', json.dumps(["Start", "Paused"])))
 
             from app.paused_email_history import ensure_paused_email_history_table
             ensure_paused_email_history_table(cursor)
             cursor.execute("""
                 INSERT INTO paused_email_history (client_id, from_email, subject, body, status)
                 VALUES (%s, %s, %s, %s, 'pending_review')
-            """, (client_id, data.get('from_email'), data.get('subject'), data.get('body')))
+            """, (client_id, data.get('from_email'), data.get('subject'), body_text))
 
             db.commit()
-            
-            try:
-                import os
-                import redis
-                redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
-                if not redis_url:
-                    redis_url = "redis://localhost:6379/0"
-                r = redis.from_url(redis_url)
-                r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": client_id}))
-            except Exception as e:
-                pass
-                
+            db.close()
+            publish_email_update(client_id)
             return
         
         blocked_keywords = get_blocked_keywords(cursor, client_id)
-        email_text = f"{data.get('subject','')} {data.get('body','')}"
+        email_text = f"{data.get('subject','')} {body_text}"
         matched_kw = is_blocked(email_text, blocked_keywords) if blocked_keywords else None
 
         if matched_kw:
@@ -266,18 +369,59 @@ def process_email_task(self, data):
             logger.info(f"🚫 Email matched blocked keyword '{matched_kw}' — routing to {status}")
             insert_blocked_email(
                 cursor, client_id,
-                data["from_email"], data["subject"], data["body"],
+                data["from_email"], data["subject"], body_text,
                 matched_kw, status=status
             )
             cursor.execute("""
-                INSERT INTO email_logs (client_id, from_email, subject, body, status, priority, sentiment, execution_steps)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (client_id, data.get('from_email'), data.get('subject'), data.get('body'),
+                INSERT INTO email_logs (client_id, from_email, subject, body, body_html, status, priority, sentiment, execution_steps)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (client_id, data.get('from_email'), data.get('subject'), body_text, body_html or None,
                 'blocked_keyword', 'High', 'Neutral',
                 json.dumps(["Start", f"Blocked_Keyword:{matched_kw}"])))
             cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s", (task_id,))
             db.commit()
             db.close()
+            publish_email_update(client_id)
+            return
+
+        # ==============================
+        # Check if Sender is Marked as Marketing / Promotional
+        # ==============================
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS marketing_senders (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id VARCHAR(50) NOT NULL,
+                sender_email VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_client_sender (client_id, sender_email)
+            )
+        """)
+        from_email_raw = data.get('from_email', '') or ''
+        from_email_clean = from_email_raw.lower().strip()
+        cursor.execute("""
+            SELECT id, sender_email FROM marketing_senders 
+            WHERE client_id = %s 
+              AND (LOWER(sender_email) = %s OR %s LIKE CONCAT('%%@', LOWER(sender_email)))
+        """, (client_id, from_email_clean, from_email_clean))
+        matched_sender = cursor.fetchone()
+
+        if matched_sender:
+            logger.info(f"📢 [Client {client_id}] Sender '{from_email_clean}' is in marketing_senders (rule: {matched_sender[1]}) — bypassing all processing")
+            status = 'no_action_needed'
+            execution_steps = ["Start", f"Rule_Match:Marketing_Sender:{matched_sender[1]}"]
+            cursor.execute("""
+                INSERT INTO email_logs (client_id, from_email, subject, body, body_html, reply, score, status, rag_id, sentiment, priority, execution_steps, summary)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                client_id, data.get('from_email'), data.get('subject'), body_text, body_html or None,
+                None, 0, status, rag_id if 'rag_id' in locals() else None, 'Neutral', 'Low',
+                json.dumps(execution_steps),
+                f"Marketing email from marked sender ({matched_sender[1]}). No automated processing needed."
+            ))
+            cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s", (task_id,))
+            db.commit()
+            db.close()
+            publish_email_update(client_id)
             return
 
         # ==============================
@@ -288,11 +432,11 @@ def process_email_task(self, data):
         rag_id = get_rag_id(client_id)
         logger.info(f"🔎 RAG ID: {rag_id} Client ID: {client_id}")
 
-        cleaned_body = strip_quoted_reply(data["body"])
+        cleaned_body = strip_quoted_reply(body_text)
         email_query = f"Subject: {data['subject']}\n\n{cleaned_body}"
 
         chroma_context = ""
-        if client_id:
+        if client_id and features.get("feature_rag", True):
             try:
                 chroma_context = query_knowledge(client_id, email_query)
             except Exception as e:
@@ -309,6 +453,43 @@ def process_email_task(self, data):
         sentiment  = intent_data.get("sentiment", "Neutral")
         priority   = intent_data.get("priority", "Medium")
         used_fallback = intent_data.get("used_fallback", False)
+
+        # ==============================
+        # MARKETING / PROMOTIONAL / NO-ACTION HANDLER
+        # ==============================
+        if intent in ("marketing_promotional", "no_action_needed"):
+            logger.info(f"📢 [Client {client_id}] Email classified as '{intent}' — auto-routing to no_action_needed")
+            execution_steps.append("Marketing_Promotional_No_Action")
+            status = "no_action_needed"
+            priority = "Low"
+            sentiment = "Neutral"
+
+            cursor.execute("""
+                INSERT INTO email_logs (client_id, from_email, subject, body, body_html, reply, score, status, rag_id, sentiment, priority, execution_steps)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            """, (
+                client_id,
+                data.get("from_email"),
+                data.get("subject"),
+                body_text,
+                body_html or None,
+                None,
+                0,
+                status,
+                rag_id,
+                sentiment,
+                priority,
+                json.dumps(execution_steps)
+            ))
+            db_log_id = cursor.lastrowid
+
+            generate_and_save_summary(db, cursor, db_log_id, {**data, "body": body_text}, chroma_context)
+            cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s", (task_id,))
+            db.commit()
+            db.close()
+            publish_email_update(client_id)
+            logger.info(f"✅ Marketing email #{db_log_id} recorded as no_action_needed, task done")
+            return
 
         # Keyword-based escalation ONLY applies when the LLM itself failed
         # and detect_intent_llm fell back to regex/keyword classification.
@@ -363,13 +544,14 @@ def process_email_task(self, data):
             )
 
             cursor.execute("""
-                INSERT INTO email_logs (client_id, from_email, subject, body, reply, score, status, rag_id, sentiment, priority, execution_steps)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                INSERT INTO email_logs (client_id, from_email, subject, body, body_html, reply, score, status, rag_id, sentiment, priority, execution_steps)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (
                 data.get("client_id"),
                 data["from_email"],
                 data["subject"],
-                data["body"],
+                body_text,
+                body_html or None,
                 clarification_reply,
                 0,
                 "clarification_sent",
@@ -379,9 +561,10 @@ def process_email_task(self, data):
                 json.dumps(execution_steps)
             ))
             db_log_id = cursor.lastrowid
-            generate_and_save_summary(db, cursor, db_log_id, data, chroma_context)
+            generate_and_save_summary(db, cursor, db_log_id, {**data, "body": body_text}, chroma_context)
             db.commit()
             db.close()
+            publish_email_update(client_id)
             logger.info("✅ Clarification sent, task done")
             return
 
@@ -449,15 +632,23 @@ def process_email_task(self, data):
                 )
                 score = llm_score(reply, data["body"])
 
-                send_email(
-                    client_id,
-                    data["from_email"],
-                    "Re: " + data["subject"],
-                    reply
+                status, sent_ok = _dispatch_or_draft_reply(
+                    client_id=client_id,
+                    from_email=data["from_email"],
+                    subject=data["subject"],
+                    reply_body=reply,
+                    features=features,
+                    confidence_score=score,
+                    intent=intent,
+                    sentiment=sentiment,
+                    priority=ticket_info.get("priority_name", "Normal"),
+                    ticket_id=ticket_id,
+                    original_body=data["body"],
+                    in_reply_to=data.get("message_id"),
+                    message_id=data.get("message_id"),
+                    execution_steps=execution_steps,
                 )
-                status = "sent"
-                execution_steps.append("SMTP_Send")
-                save_to_history = True
+                save_to_history = sent_ok
 
                 # Upsert MySQL chat_history with latest API status/priority + updated summary
                 old_row = get_ticket_history(ticket_id)
@@ -569,19 +760,23 @@ def process_email_task(self, data):
                 execution_steps.append("Confidence_Evaluation")
 
                 if score >= threshold:
-                    if features["feature_auto_send"]:
-                        logger.info("✅ RAG reply quality good — auto_send, skip history")
-                        send_email(client_id, data["from_email"], "Re: " + data["subject"], reply)
-                        status = "sent"
-                        execution_steps.append("SMTP_Send")
-                        save_to_history = False
-                    else:
-                        logger.info("⏸ auto_send disabled — holding reply for manual approval")
-                        status = "pending_manual_review"
-                        execution_steps.append("Held_For_Manual_Review")
-                        save_to_history = False
-                        # `reply` stays populated — it's saved into email_logs.reply below as normal,
-                        # so the held text is visible and ready to approve, not regenerated from scratch.
+                    status, sent_ok = _dispatch_or_draft_reply(
+                        client_id=client_id,
+                        from_email=data["from_email"],
+                        subject=data["subject"],
+                        reply_body=reply,
+                        features=features,
+                        confidence_score=score,
+                        intent=intent,
+                        sentiment=sentiment,
+                        priority=priority,
+                        ticket_id=None,
+                        original_body=data["body"],
+                        in_reply_to=data.get("message_id"),
+                        message_id=data.get("message_id"),
+                        execution_steps=execution_steps,
+                    )
+                    save_to_history = False
                 else:
                     logger.warning("⚠️ RAG score below threshold — falling to history scan")
                     execution_steps.append("Ticket_Escalation")
@@ -686,9 +881,23 @@ def process_email_task(self, data):
                         data["from_email"], history=history
                     )
                     score = llm_score(reply, data["body"])
-                    send_email(client_id, data["from_email"], "Re: " + data["subject"], reply)
-                    status = "sent"
-                    execution_steps.append("SMTP_Send")
+
+                    status, sent_ok = _dispatch_or_draft_reply(
+                        client_id=client_id,
+                        from_email=data["from_email"],
+                        subject=data["subject"],
+                        reply_body=reply,
+                        features=features,
+                        confidence_score=score,
+                        intent=intent,
+                        sentiment=sentiment,
+                        priority=ticket_info.get("priority_name", "Normal"),
+                        ticket_id=stored_ticket_id,
+                        original_body=data["body"],
+                        in_reply_to=data.get("message_id"),
+                        message_id=data.get("message_id"),
+                        execution_steps=execution_steps,
+                    )
 
                     push_message(client_id=client_id, from_email=data["from_email"], role="customer",
                                  subject=data["subject"], body=data["body"], ticket_id="")
@@ -779,10 +988,24 @@ def process_email_task(self, data):
                             data["from_email"], history=history
                         )
                         score = llm_score(reply, data["body"])
-                        send_email(client_id, data["from_email"], "Re: " + data["subject"], reply)
-                        status = "sent"
-                        execution_steps.append("SMTP_Send")
-                        save_to_history = True
+
+                        status, sent_ok = _dispatch_or_draft_reply(
+                            client_id=client_id,
+                            from_email=data["from_email"],
+                            subject=data["subject"],
+                            reply_body=reply,
+                            features=features,
+                            confidence_score=score,
+                            intent=intent,
+                            sentiment=sentiment,
+                            priority=ticket_info.get("priority_name", "Normal"),
+                            ticket_id=history_ticket_id,
+                            original_body=data["body"],
+                            in_reply_to=data.get("message_id"),
+                            message_id=data.get("message_id"),
+                            execution_steps=execution_steps,
+                        )
+                        save_to_history = sent_ok
 
                         old_row = get_ticket_history(history_ticket_id)
                         old_summary = old_row.get("summary", "") if old_row else ""
@@ -828,7 +1051,8 @@ def process_email_task(self, data):
                         execution_steps.append("Ticket_Escalation")
                         reply, outgoing_ticket_id, status = _create_ticket_and_reply(
                             data, client_id, context="", history=history,
-                            cursor=cursor, sentiment=sentiment, priority=priority
+                            cursor=cursor, sentiment=sentiment, priority=priority,
+                            features=features
                         )
 
                         if status == "ticket_creation_failed":
@@ -837,7 +1061,7 @@ def process_email_task(self, data):
                             status = "pending_manual_review"
                             save_to_history = False
                         else:
-                            save_to_history = True
+                            save_to_history = (status == "ticket_created_and_sent")
                             if outgoing_ticket_id:
                                 summary = generate_summary_llm(context="", customer_body=data["body"],
                                                                 history=history, old_summary="")
@@ -872,13 +1096,14 @@ def process_email_task(self, data):
         # Save Logs
         # ==============================
         cursor.execute("""
-            INSERT INTO email_logs (client_id, from_email, subject, body, reply, score, status, rag_id, sentiment, priority, execution_steps)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            INSERT INTO email_logs (client_id, from_email, subject, body, body_html, reply, score, status, rag_id, sentiment, priority, execution_steps)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """, (
             client_id,
             data["from_email"],
             data["subject"],
-            data["body"],
+            body_text,
+            body_html or None,
             reply,
             score,
             status,
@@ -888,7 +1113,7 @@ def process_email_task(self, data):
             json.dumps(execution_steps)
         ))
         db_log_id = cursor.lastrowid
-        generate_and_save_summary(db, cursor, db_log_id, data, chroma_context)
+        generate_and_save_summary(db, cursor, db_log_id, {**data, "body": body_text}, chroma_context)
 
         cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s",(task_id,))
         db.commit()
@@ -921,31 +1146,22 @@ def process_email_task(self, data):
                 db.close()
             except Exception:
                 pass
-    try:
-        import os
-        import redis
-        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0") or "redis://localhost:6379/0"
-        r = redis.from_url(redis_url)
-        try:
-            r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": client_id}))
-            logger.info("📡 Published real-time update to 'email_updates' channel")
-        finally:
-            r.close()
-    except Exception as pub_err:
-        logger.warning(f"⚠️ Failed to publish real-time notification: {pub_err}")
+    publish_email_update(client_id)
 
 
 # ==============================
 # Helper: create ticket + reply
 # ==============================
-def _create_ticket_and_reply(data, client_id, context, history, cursor, sentiment="Neutral", priority="Medium"):
+def _create_ticket_and_reply(data, client_id, context, history, cursor, sentiment="Neutral", priority="Medium", features=None):
     """
-    Creates a ticket via API, generates formatted reply, sends email.
+    Creates a ticket via API, generates formatted reply, dispatches email or saves to draft.
     Returns (reply, ticket_id, status)
     """
+    if features is None:
+        features = {"feature_auto_send": True}
+
     from app.llm import extract_name_from_email
     personal_details = {"name": extract_name_from_email(data["from_email"])}
-
 
     from app.connector_config import run_ticket_create
     resp = run_ticket_create(
@@ -1032,14 +1248,23 @@ def _create_ticket_and_reply(data, client_id, context, history, cursor, sentimen
         history=history
     )
 
-    send_status = send_email(
-        client_id,
-        data["from_email"],
-        f"Ticket Update: {outgoing_ticket_id}",
-        reply
+    status_code, sent_ok = _dispatch_or_draft_reply(
+        client_id=client_id,
+        from_email=data["from_email"],
+        subject=f"Ticket Update: {outgoing_ticket_id}",
+        reply_body=reply,
+        features=features,
+        confidence_score=90,
+        intent="ticket_created",
+        sentiment=sentiment,
+        priority=priority,
+        ticket_id=outgoing_ticket_id,
+        original_body=data["body"],
+        in_reply_to=data.get("message_id"),
+        message_id=data.get("message_id"),
     )
 
-    status = "ticket_created_and_sent" if send_status else "ticket_created_send_failed"
-    return reply, outgoing_ticket_id, status
+    final_status = "ticket_created_and_sent" if status_code == "sent" else "ticket_created_draft_pending"
+    return reply, outgoing_ticket_id, final_status
 
 
