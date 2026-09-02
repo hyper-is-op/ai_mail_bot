@@ -332,7 +332,7 @@ export const api = {
     const res = await fetch(`${BASE_URL}/admin/client-features/${clientId}`, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch features');
   },
-  async setClientFeatures(data: { client_id: string; feature_ticket_creation: boolean; feature_auto_send: boolean; feature_rag: boolean; feature_order_tracking: boolean; feature_manual_reply: boolean }) {
+  async setClientFeatures(data: { client_id: string; feature_ticket_creation: boolean; feature_auto_send: boolean; feature_rag: boolean; feature_order_tracking: boolean; feature_manual_reply: boolean; feature_strip_disclaimers?: boolean }) {
     const res = await fetch(`${BASE_URL}/admin/client-features`, {
       method: 'POST', headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(data),
     });
@@ -653,6 +653,55 @@ export const api = {
     });
     return safeJson(res, 'Failed to reject connector config');
   },
+  async deleteDraftConnectorConfig(configId: number | string) {
+    const res = await fetch(`${BASE_URL}/admin/connector-configs/${configId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to delete connector');
+  },
+  async deletePendingConnectorConfig(configId: number | string) {
+    const res = await fetch(`${BASE_URL}/admin/connector-configs/${configId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to delete pending connector');
+  },
+  async requestDeleteConnector(configId: number | string) {
+    const res = await fetch(`${BASE_URL}/admin/connector-configs/${configId}/request-deletion`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to request connector deletion');
+  },
+  async takedownConnector(configId: number | string) {
+    const res = await fetch(`${BASE_URL}/admin/connector-configs/${configId}/takedown`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to take down connector');
+  },
+  async approveDeleteConnector(configId: number | string) {
+    const res = await fetch(`${BASE_URL}/admin/connector-configs/${configId}/approve-deletion`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to approve connector deletion');
+  },
+  async rejectDeleteConnector(configId: number | string) {
+    const res = await fetch(`${BASE_URL}/admin/connector-configs/${configId}/reject-deletion`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to reject connector deletion');
+  },
+  async cancelDeleteRequest(configId: number | string) {
+    const res = await fetch(`${BASE_URL}/admin/connector-configs/${configId}/cancel-deletion`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to cancel deletion request');
+  },
   async regenerateConnectorConfig(data: {
     client_id: string;
     trigger_type: string;
@@ -678,8 +727,11 @@ export const api = {
     token_url: string;
     client_id: string;
     client_secret: string;
+    refresh_token?: string;
+    grant_type?: string;
     scope?: string;
     token_auth_method?: string;
+    header_prefix?: string;
   }) {
     const res = await fetch(`${BASE_URL}/admin/connector-configs/test-oauth`, {
       method: 'POST',

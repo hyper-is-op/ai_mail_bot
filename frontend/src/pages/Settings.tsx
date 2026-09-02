@@ -29,7 +29,8 @@ import {
   Megaphone,
   Power,
   Lock,
-  Unlock
+  Unlock,
+  Cpu
 } from 'lucide-react';
 import { api } from '@/lib/api';
 
@@ -116,8 +117,10 @@ export default function Settings() {
     feature_rag: true,
     feature_order_tracking: true,
     feature_manual_reply: true,
+    feature_strip_disclaimers: true,
   });
   const [featuresSaving, setFeaturesSaving] = useState(false);
+  const [stripDisclaimerToggling, setStripDisclaimerToggling] = useState(false);
   const [pendingAutoSendTarget, setPendingAutoSendTarget] = useState<boolean | null>(null);
   const [toggleAutoSendLoading, setToggleAutoSendLoading] = useState(false);
 
@@ -219,6 +222,7 @@ export default function Settings() {
         feature_rag: features.feature_rag,
         feature_order_tracking: features.feature_order_tracking,
         feature_manual_reply: features.feature_manual_reply,
+        feature_strip_disclaimers: features.feature_strip_disclaimers,
       });
       setFeatures(prev => ({ ...prev, feature_auto_send: pendingAutoSendTarget }));
       setPendingAutoSendTarget(null);
@@ -243,10 +247,32 @@ export default function Settings() {
           feature_rag: data.feature_rag !== undefined ? Boolean(data.feature_rag) : true,
           feature_order_tracking: data.feature_order_tracking !== undefined ? Boolean(data.feature_order_tracking) : true,
           feature_manual_reply: data.feature_manual_reply !== undefined ? Boolean(data.feature_manual_reply) : true,
+          feature_strip_disclaimers: data.feature_strip_disclaimers !== undefined ? Boolean(data.feature_strip_disclaimers) : true,
         });
       }
     } catch (err) {
       console.error("Failed to load features:", err);
+    }
+  };
+
+  const handleToggleStripDisclaimers = async () => {
+    if (!targetClientId || targetClientId === 'ALL') return;
+    const nextVal = !features.feature_strip_disclaimers;
+    setStripDisclaimerToggling(true);
+    setError('');
+    try {
+      await api.setClientFeatures({
+        ...features,
+        client_id: targetClientId,
+        feature_strip_disclaimers: nextVal,
+      });
+      setFeatures(prev => ({ ...prev, feature_strip_disclaimers: nextVal }));
+      setSuccess(true);
+      setTimeout(() => setSuccess(false), 3000);
+    } catch (err: any) {
+      setError(err.message || 'Failed to update disclaimer stripping toggle');
+    } finally {
+      setStripDisclaimerToggling(false);
     }
   };
 
@@ -449,6 +475,7 @@ export default function Settings() {
         feature_rag: features.feature_rag,
         feature_order_tracking: features.feature_order_tracking,
         feature_manual_reply: features.feature_manual_reply,
+        feature_strip_disclaimers: features.feature_strip_disclaimers,
       });
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
@@ -1228,6 +1255,32 @@ export default function Settings() {
                   )}
                 </button>
               </div>
+
+              {/* Feature 5: Email Disclaimer & Boilerplate Stripping */}
+              <div className="p-4 rounded-xl border border-zinc-200 dark:border-white/10 bg-zinc-50/50 dark:bg-white/[0.02] flex items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-foreground">AI Disclaimer & Boilerplate Stripping</span>
+                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                      Token Saver
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">
+                    Strip confidentiality notices, legal footers, and active disclaimer phrases from email bodies before AI processing to save prompt tokens and improve response quality.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setFeatures(prev => ({ ...prev, feature_strip_disclaimers: !prev.feature_strip_disclaimers }))}
+                  className="text-primary hover:opacity-80 transition-opacity shrink-0 cursor-pointer pt-0.5"
+                >
+                  {features.feature_strip_disclaimers ? (
+                    <ToggleRight className="w-8 h-8 text-primary" />
+                  ) : (
+                    <ToggleLeft className="w-8 h-8 text-muted-foreground" />
+                  )}
+                </button>
+              </div>
             </div>
 
             <div className="flex justify-end pt-2">
@@ -1448,10 +1501,51 @@ export default function Settings() {
                 <div>
                   <h3 className="font-bold text-zinc-900 dark:text-white">Email Disclaimer & Boilerplate Rules</h3>
                   <p className="text-xs text-zinc-400">
-                    Define custom email disclaimer phrases, legal signatures, and enterprise confidentiality notices that will be collapsed automatically across the application.
+                    Define custom email disclaimer phrases, legal signatures, and enterprise confidentiality notices that will be collapsed in UI and stripped before AI processing.
                   </p>
                 </div>
               </div>
+            </div>
+
+            {/* AI / LLM Prompt Protection Toggle Banner */}
+            <div className="p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+              <div className="flex items-start gap-3">
+                <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-500 shrink-0 mt-0.5">
+                  <Cpu className="w-5 h-5" />
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-foreground">
+                      Strip Disclaimers & Boilerplates from AI / LLM Prompts
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                      Token Saver
+                    </span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${features.feature_strip_disclaimers ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400' : 'bg-zinc-500/15 text-muted-foreground'}`}>
+                      {features.feature_strip_disclaimers ? 'Active' : 'Disabled'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed max-w-2xl">
+                    Automatically removes legal boilerplate, confidentiality footers, and active disclaimer phrases from email bodies before sending to LLM prompts, Intent Detection, and RAG search. Reduces token consumption and prevents AI hallucinations.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                disabled={stripDisclaimerToggling || !targetClientId || targetClientId === 'ALL'}
+                onClick={handleToggleStripDisclaimers}
+                className="text-primary hover:opacity-80 transition-opacity shrink-0 cursor-pointer disabled:opacity-50"
+                title={targetClientId === 'ALL' ? 'Select a specific client to change setting' : 'Toggle Disclaimer Stripping for AI'}
+              >
+                {stripDisclaimerToggling ? (
+                  <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                ) : features.feature_strip_disclaimers ? (
+                  <ToggleRight className="w-8 h-8 text-emerald-500" />
+                ) : (
+                  <ToggleLeft className="w-8 h-8 text-muted-foreground" />
+                )}
+              </button>
             </div>
 
             {/* Add New Disclaimer Form */}

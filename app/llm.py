@@ -25,15 +25,35 @@ current_client_id = contextvars.ContextVar("current_client_id", default="SYSTEM"
 def strip_reasoning_and_think_tags(text: str) -> str:
     if not isinstance(text, str):
         return text
-    # Strip <think>...</think> (used by DeepSeek / Qwen / Groq)
-    text = re.sub(r'<think>[\s\S]*?</think>', '', text, flags=re.IGNORECASE)
-    # Strip <thought>...</thought>
-    text = re.sub(r'<thought>[\s\S]*?</thought>', '', text, flags=re.IGNORECASE)
-    # Strip <reasoning>...</reasoning>
-    text = re.sub(r'<reasoning>[\s\S]*?</reasoning>', '', text, flags=re.IGNORECASE)
-    # Strip ```thinking ... ``` blocks
-    text = re.sub(r'```thinking[\s\S]*?```', '', text, flags=re.IGNORECASE)
-    return text.strip()
+    # 1. Strip closed tags first
+    cleaned = re.sub(r'<think>[\s\S]*?</think>', '', text, flags=re.IGNORECASE)
+    cleaned = re.sub(r'<thought>[\s\S]*?</thought>', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'<reasoning>[\s\S]*?</reasoning>', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'```thinking[\s\S]*?```', '', cleaned, flags=re.IGNORECASE)
+
+    # 2. If closed tag didn't match and unclosed tag exists (e.g. truncated mid-thought)
+    if '<think>' in cleaned.lower():
+        # If there's an unclosed <think> at the start, strip it
+        cleaned = re.sub(r'<think>[\s\S]*$', '', cleaned, flags=re.IGNORECASE)
+    if '<thought>' in cleaned.lower():
+        cleaned = re.sub(r'<thought>[\s\S]*$', '', cleaned, flags=re.IGNORECASE)
+    if '<reasoning>' in cleaned.lower():
+        cleaned = re.sub(r'<reasoning>[\s\S]*$', '', cleaned, flags=re.IGNORECASE)
+    if '```thinking' in cleaned.lower():
+        cleaned = re.sub(r'```thinking[\s\S]*$', '', cleaned, flags=re.IGNORECASE)
+
+    cleaned = cleaned.strip()
+    
+    # 3. If cleaning removed everything because the output was 100% truncated thinking process,
+    # recover the most recent greeting/message drafted in the thought process
+    if not cleaned and text:
+        match = re.search(r'(Hi\s+[^\n]+,\s*[\s\S]+)', text, flags=re.IGNORECASE)
+        if match:
+            cleaned = match.group(1).strip()
+            # Clean any trailing thought markers
+            cleaned = re.sub(r'</?think>.*$', '', cleaned, flags=re.IGNORECASE).strip()
+
+    return cleaned.strip()
 
 # Comprehensive Multi-Provider Model Pricing Registry (USD Per 1,000,000 Tokens: input, output)
 PROVIDER_MODEL_PRICING = {
@@ -523,9 +543,11 @@ def telemetry_create(*args, **kwargs):
                     kwargs["max_completion_tokens"] = kwargs.pop("max_tokens")
                 kwargs["reasoning_effort"] = "low"
         elif provider == "groq":
-            extra = kwargs.get("extra_body", {})
-            extra["reasoning_format"] = "parsed"
-            kwargs["extra_body"] = extra
+            actual_lower = actual_model.lower()
+            if any(r in actual_lower for r in ["r1", "qwq", "reasoning", "deepseek-r1"]):
+                extra = kwargs.get("extra_body", {})
+                extra["reasoning_format"] = "parsed"
+                kwargs["extra_body"] = extra
 
         target_client = get_dynamic_client(config.get("id", 0), config)
     except Exception as exc:
@@ -734,7 +756,8 @@ You are a query classifier. Your only job is to analyze the user query and retur
 Classify the query into exactly one intent, extract ALL ticket_ids if present, perform sentiment analysis, and assign a priority level.
 
 ## Intents
-- `ticket_status`: User is asking about status of a ticket, order, complaint, delivery, or support request
+- `ticket_create`: User is explicitly asking to create, open, raise, or log a new ticket/complaint/case, or asking support to create a ticket for their issue
+- `ticket_status`: User is asking about status of an existing ticket, order, complaint, delivery, or support request
 - `marketing_promotional`: Marketing email, promotional campaign, newsletter, job alert blast, webinar invite, discount/sale offer, automated digest, or educational course advertisement (requiring no customer support action)
 - `general_query`: Genuine customer support query, product question, policy inquiry, technical issue, or feedback requiring an answer
 
@@ -763,7 +786,7 @@ Classify priority level into exactly one of:
 
 ## Output Format
 {{
-  "intent": "ticket_status" | "marketing_promotional" | "general_query",
+  "intent": "ticket_create" | "ticket_status" | "marketing_promotional" | "general_query",
   "ticket_ids": ["<id1>", "<id2>"] | [],
   "sentiment": "Angry" | "Neutral" | "Happy",
   "priority": "Critical" | "High" | "Medium" | "Low"
@@ -933,40 +956,25 @@ def generate_reply_llm(
             }
             team_name = agent_team_map.get(agent_type_override, "Support Team")
 
-        prompt = f"""
-Generate a ticket acknowledgment email body using ONLY the information provided in the context below.
-Do NOT invent, assume, or fill in any details not present in the context.
-If a detail is missing, omit that line entirely.
+        prompt = f"""Write a professional email reply to {customer_name} acknowledging that support ticket #{ticket_id} has been logged and is currently in progress.
 
-{history_block}
+Customer Query:
+{query}
 
-## Ticket Details
-Ticket ID: {ticket_id}
-Customer Name: {customer_name}
-
-## Context
+Ticket Information:
+- Ticket ID: {ticket_id}
+- Customer Name: {customer_name}
 {context}
 
-## Output Format
-Write ONLY the email body — do NOT include a Subject line.
-Start directly with the greeting.
-
-Hi {customer_name},
-
-[2-3 sentences summarizing ticket status and remarks using only the context above.
-Do NOT repeat the customer original query as the issue reported.]
-
-Our team is actively working on your request and will keep you updated.
-
+Requirements:
+1. Start with greeting: Hi {customer_name},
+2. Acknowledge that ticket #{ticket_id} is registered and the team is reviewing their inquiry.
+3. Keep it to 2-3 sentences.
+4. Conclude with:
 Thanks & Regards,
 {team_name}
 
-## Rules
-- Return ONLY the email body. No subject line. No explanation. No preamble.
-- Do not add any information not present in context.
-- If this is a follow-up (history above), acknowledge it briefly.
-- Keep it concise and professional.
-- Do NOT add placeholder text like [Your Name] or [Company Name].
+Write ONLY the final email message text. No preamble, no quotes, no explanation, no bulleted instructions.
 """
 
     # ==========================================
@@ -990,6 +998,7 @@ Instructions:
 - Be professional
 - Be concise
 - Do NOT hallucinate
+- NEVER claim or state that a ticket has been created, and NEVER output placeholder ticket references like "[Insert Ticket ID]" or "[Ticket Number]" or "[Ticket ID]".
 - If previous conversation exists above, maintain continuity — do not repeat what was already addressed
 - If no answer available, say politely
 - End professionally
@@ -1020,11 +1029,27 @@ Company: {company_name or 'derive from context/email'}
                     "content": prompt
                 }
             ],
-            temperature=0.7,
-            reasoning_effort="none"
+            temperature=0.2,
+            reasoning_effort="none",
+            max_tokens=1500
         )
 
-        reply = res.choices[0].message.content.strip()
+        reply = strip_reasoning_and_think_tags(res.choices[0].message.content)
+        
+        # 1. Clean any trailing chain-of-thought analysis or numbered notes after the sign-off block
+        signoff_match = re.search(r'((?:Thanks\s*(?:&|and)\s*Regards|Best\s*regards|Sincerely)[\s\S]*?\n[^\n]+)', reply, flags=re.IGNORECASE)
+        if signoff_match:
+            reply = reply[:signoff_match.end()].strip()
+
+        # 2. Filter out any echoed prompt/instruction bullet lines
+        clean_lines = []
+        for line in reply.split("\n"):
+            clean_l = line.strip().strip('"').strip("'")
+            if re.match(r'^\*?\s*(?:Write\s+\d|Mention\s+team|End\s+with|Return\s+ONLY|Start\s+with|Requirements:)', clean_l, flags=re.IGNORECASE):
+                continue
+            clean_lines.append(line)
+        reply = "\n".join(clean_lines).strip().strip('"').strip("'")
+
         logger.info(f"✅ Reply generated successfully: {reply[:150]}...")
         return reply
 

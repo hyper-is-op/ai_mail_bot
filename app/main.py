@@ -1951,6 +1951,7 @@ class ClientFeaturesRequest(BaseModel):
     feature_rag: bool
     feature_order_tracking: bool
     feature_manual_reply: bool
+    feature_strip_disclaimers: bool = True
 
 @app.get("/admin/client-features/{client_id}")
 def get_client_features_endpoint(client_id: str, user: dict = Depends(get_current_user)):
@@ -1965,7 +1966,8 @@ def get_client_features_endpoint(client_id: str, user: dict = Depends(get_curren
                 COALESCE(feature_auto_send, 1) AS feature_auto_send,
                 COALESCE(feature_rag, 1) AS feature_rag,
                 COALESCE(feature_order_tracking, 1) AS feature_order_tracking,
-                COALESCE(feature_manual_reply, 1) AS feature_manual_reply
+                COALESCE(feature_manual_reply, 1) AS feature_manual_reply,
+                COALESCE(feature_strip_disclaimers, 1) AS feature_strip_disclaimers
             FROM email_accounts WHERE client_id=%s LIMIT 1
         """, (client_id,))
         row = cursor.fetchone()
@@ -1975,14 +1977,16 @@ def get_client_features_endpoint(client_id: str, user: dict = Depends(get_curren
                 "feature_auto_send": True,
                 "feature_rag": True,
                 "feature_order_tracking": True,
-                "feature_manual_reply": True
+                "feature_manual_reply": True,
+                "feature_strip_disclaimers": True
             }
         return {
             "feature_ticket_creation": bool(row["feature_ticket_creation"]),
             "feature_auto_send": bool(row["feature_auto_send"]),
             "feature_rag": bool(row["feature_rag"]),
             "feature_order_tracking": bool(row["feature_order_tracking"]),
-            "feature_manual_reply": bool(row["feature_manual_reply"])
+            "feature_manual_reply": bool(row["feature_manual_reply"]),
+            "feature_strip_disclaimers": bool(row["feature_strip_disclaimers"])
         }
 
 @app.post("/admin/client-features")
@@ -1993,10 +1997,12 @@ def set_client_features(data: ClientFeaturesRequest, user: dict = Depends(get_cu
         with db.cursor() as cursor:
             cursor.execute("""
                 UPDATE email_accounts SET feature_ticket_creation=%s, feature_auto_send=%s,
-                feature_rag=%s, feature_order_tracking=%s, feature_manual_reply=%s
+                feature_rag=%s, feature_order_tracking=%s, feature_manual_reply=%s,
+                feature_strip_disclaimers=%s
                 WHERE client_id=%s
             """, (data.feature_ticket_creation, data.feature_auto_send, data.feature_rag,
-                  data.feature_order_tracking, data.feature_manual_reply, data.client_id))
+                  data.feature_order_tracking, data.feature_manual_reply,
+                  data.feature_strip_disclaimers, data.client_id))
             db.commit()
     return {"status": "success"}
 
@@ -3134,19 +3140,25 @@ def list_connector_configs(client_id: str, user: dict = Depends(get_current_user
     require_client_access(client_id, user)
     from app.db import get_db_ctx
     import json as _json
+    import logging
+    logger = logging.getLogger(__name__)
 
     with get_db_ctx() as db:
         with db.cursor() as cursor:
             if client_id == "ALL":
                 cursor.execute("""
                     SELECT id, client_id, trigger_type, http_method, url, response_mapping,
-                           auth_type, status, version, created_by, approved_by, approved_at, created_at
+                           auth_type, status, version, created_by, approved_by, approved_at, created_at,
+                           headers_template, request_template, auth_field_name, payload_encoding, base64_query_param_name,
+                           auth_secret_encrypted
                     FROM connector_configs ORDER BY created_at DESC
                 """)
             else:
                 cursor.execute("""
                     SELECT id, client_id, trigger_type, http_method, url, response_mapping,
-                           auth_type, status, version, created_by, approved_by, approved_at, created_at
+                           auth_type, status, version, created_by, approved_by, approved_at, created_at,
+                           headers_template, request_template, auth_field_name, payload_encoding, base64_query_param_name,
+                           auth_secret_encrypted
                     FROM connector_configs WHERE client_id=%s ORDER BY created_at DESC
                 """, (client_id,))
             rows = cursor.fetchall()
@@ -3160,12 +3172,36 @@ def list_connector_configs(client_id: str, user: dict = Depends(get_current_user
                 has_regex = any(f.get("extract_regex") for f in mapping.get("fields", []))
             except Exception:
                 pass
+
+        oauth_meta = {}
+        auth_secret_enc = r[18]
+        if auth_secret_enc and r[6] == "oauth2_client_credentials":
+            try:
+                from app.secrets_crypto import decrypt_secret
+                decrypted = decrypt_secret(auth_secret_enc)
+                oauth_json = _json.loads(decrypted)
+                oauth_meta = {
+                    "oauth_token_url": oauth_json.get("token_url", ""),
+                    "oauth_client_id": oauth_json.get("client_id", ""),
+                    "oauth_grant_type": oauth_json.get("grant_type", "client_credentials"),
+                    "oauth_header_prefix": oauth_json.get("header_prefix", "Bearer"),
+                    "oauth_scope": oauth_json.get("scope", ""),
+                    "oauth_token_auth_method": oauth_json.get("token_auth_method", "client_secret_post"),
+                    "oauth_has_secret": bool(oauth_json.get("client_secret")),
+                    "oauth_has_refresh_token": bool(oauth_json.get("refresh_token")),
+                }
+            except Exception as e:
+                logger.warning(f"Failed to decrypt OAuth metadata for connector id={r[0]}: {e}")
+
         configs.append({
             "id": r[0], "client_id": r[1], "trigger_type": r[2], "http_method": r[3],
             "url": r[4], "response_mapping": r[5], "auth_type": r[6], "status": r[7],
             "version": r[8], "created_by": r[9], "approved_by": r[10],
             "approved_at": str(r[11]) if r[11] else None, "created_at": str(r[12]),
+            "headers_template": r[13], "request_template": r[14],
+            "auth_field_name": r[15], "payload_encoding": r[16], "base64_query_param_name": r[17],
             "requires_regex_review": has_regex,  # flagged for reviewer, per spec
+            **oauth_meta,
         })
     return configs
 
@@ -3175,13 +3211,8 @@ class ConnectorConfigApproveRequest(BaseModel):
 
 @app.post("/admin/connector-configs/{config_id}/approve")
 def approve_connector_config_endpoint(config_id: int, data: ConnectorConfigApproveRequest, user: dict = Depends(require_admin())):
-    from app.connector_config import (
-        approve_connector_config, CapExceededError, SwapRaceError,
-        AllowlistViolationError, TemplateValidationError, ResponseMappingValidationError
-    )
-    from app.email_credential import get_connector_cap
+    require_client_access(data.client_id, user)
     from app.db import get_db_ctx
-
     with get_db_ctx() as db:
         with db.cursor() as cursor:
             cursor.execute(
@@ -3189,29 +3220,38 @@ def approve_connector_config_endpoint(config_id: int, data: ConnectorConfigAppro
                 (config_id, data.client_id)
             )
             row = cursor.fetchone()
-            if row is None:
+            if not row:
                 raise HTTPException(status_code=404, detail="Config not found or not pending_approval")
-            trigger_type = row[0]
+            server_trigger_type = row[0]
 
+    from app.connector_config import (
+        approve_connector_config,
+        AllowlistViolationError,
+        SwapRaceError,
+        CapExceededError,
+        TemplateValidationError,
+        ResponseMappingValidationError,
+    )
+    from app.email_credential import get_connector_cap
+    admin_id = user.get("client_id", "admin")
     cap = get_connector_cap(data.client_id)
+
     try:
-        approve_connector_config(data.client_id, trigger_type, config_id, user.get("client_id", "admin"), cap)
+        approve_connector_config(data.client_id, server_trigger_type, config_id, admin_id, cap)
         return {"status": "success", "id": config_id, "approved": True}
-    except CapExceededError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except SwapRaceError as e:
-        raise HTTPException(status_code=409, detail=str(e))
     except AllowlistViolationError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except TemplateValidationError as e:
+    except (TemplateValidationError, ResponseMappingValidationError) as e:
         raise HTTPException(status_code=400, detail=str(e))
-    except ResponseMappingValidationError as e:
+    except CapExceededError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SwapRaceError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 class ConnectorConfigRejectRequest(BaseModel):
     client_id: str
-    reason: str = ""
+    reason: str | None = None
 
 @app.post("/admin/connector-configs/{config_id}/reject")
 def reject_connector_config_endpoint(config_id: int, data: ConnectorConfigRejectRequest, user: dict = Depends(require_admin())):
@@ -3221,6 +3261,166 @@ def reject_connector_config_endpoint(config_id: int, data: ConnectorConfigReject
         return {"status": "success", "id": config_id, "rejected": True}
     except SwapRaceError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.delete("/admin/connector-configs/{config_id}")
+def delete_connector_config_endpoint(config_id: int, user: dict = Depends(get_current_user)):
+    from app.db import get_db_ctx
+    from app.connector_config import (
+        delete_draft_connector_config,
+        delete_pending_connector_config,
+        request_delete_disabled_connector,
+        approve_delete_connector,
+    )
+
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("SELECT client_id, status FROM connector_configs WHERE id=%s", (config_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Connector configuration not found")
+            cfg_client_id, cfg_status = row[0], row[1]
+
+    require_client_access(cfg_client_id, user)
+    is_admin = user.get("role") == "admin" or user.get("client_id") == "admin"
+
+    if cfg_status == 'draft':
+        deleted = delete_draft_connector_config(config_id, cfg_client_id)
+        if not deleted:
+            raise HTTPException(status_code=400, detail="Failed to delete draft connector.")
+        return {"status": "success", "id": config_id, "deleted": True, "message": "Draft connector deleted."}
+
+    elif cfg_status == 'pending_approval':
+        deleted = delete_pending_connector_config(config_id, cfg_client_id)
+        if not deleted:
+            raise HTTPException(status_code=400, detail="Failed to delete pending approval connector.")
+        return {"status": "success", "id": config_id, "deleted": True, "message": "Pending approval connector permanently deleted."}
+
+    elif cfg_status in ('live', 'disabled', 'pending_deletion'):
+        if is_admin:
+            deleted = approve_delete_connector(config_id, cfg_client_id)
+            if not deleted:
+                raise HTTPException(status_code=400, detail="Failed to delete connector.")
+            return {"status": "success", "id": config_id, "deleted": True, "message": f"{cfg_status.capitalize()} connector permanently deleted by admin."}
+        else:
+            if cfg_status == 'pending_deletion':
+                return {"status": "success", "id": config_id, "deletion_requested": True, "message": "Connector takedown / deletion is already pending admin approval."}
+            requested = request_delete_disabled_connector(config_id, cfg_client_id)
+            if not requested:
+                raise HTTPException(status_code=400, detail="Failed to request takedown/deletion for connector.")
+            return {"status": "success", "id": config_id, "deletion_requested": True, "message": "Takedown and deletion requested. Awaiting administrator approval."}
+
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot delete a connector in '{cfg_status}' status."
+        )
+
+
+@app.post("/admin/connector-configs/{config_id}/takedown")
+def takedown_connector_endpoint(config_id: int, user: dict = Depends(get_current_user)):
+    """
+    Take down a live connector:
+    - If admin: immediately disables it (takes offline).
+    - If client: marks pending_deletion (requests admin to take it down).
+    """
+    from app.db import get_db_ctx
+    from app.connector_config import disable_connector_config, request_delete_disabled_connector
+
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("SELECT client_id, status FROM connector_configs WHERE id=%s", (config_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Connector configuration not found")
+            cfg_client_id, cfg_status = row[0], row[1]
+
+    require_client_access(cfg_client_id, user)
+    is_admin = user.get("role") == "admin" or user.get("client_id") == "admin"
+
+    if cfg_status != 'live':
+        raise HTTPException(status_code=400, detail=f"Connector is not live (current status: '{cfg_status}')")
+
+    if is_admin:
+        disabled = disable_connector_config(config_id, cfg_client_id)
+        if not disabled:
+            raise HTTPException(status_code=400, detail="Could not take down connector.")
+        return {"status": "success", "id": config_id, "disabled": True, "message": "Live connector taken down (disabled) by admin."}
+    else:
+        requested = request_delete_disabled_connector(config_id, cfg_client_id)
+        if not requested:
+            raise HTTPException(status_code=400, detail="Could not request takedown.")
+        return {"status": "success", "id": config_id, "deletion_requested": True, "message": "Takedown requested. Awaiting administrator review."}
+
+
+@app.post("/admin/connector-configs/{config_id}/request-deletion")
+def request_deletion_endpoint(config_id: int, user: dict = Depends(get_current_user)):
+    from app.db import get_db_ctx
+    from app.connector_config import request_delete_disabled_connector, approve_delete_connector
+
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("SELECT client_id, status FROM connector_configs WHERE id=%s", (config_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Connector configuration not found")
+            cfg_client_id, cfg_status = row[0], row[1]
+
+    require_client_access(cfg_client_id, user)
+    is_admin = user.get("role") == "admin" or user.get("client_id") == "admin"
+
+    if cfg_status not in ('live', 'disabled', 'pending_deletion'):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Only live or disabled connectors can have deletion requested. Current status: '{cfg_status}'"
+        )
+
+    if is_admin:
+        deleted = approve_delete_connector(config_id, cfg_client_id)
+        return {"status": "success", "id": config_id, "deleted": True, "message": "Connector deleted by admin."}
+
+    requested = request_delete_disabled_connector(config_id, cfg_client_id)
+    if not requested:
+        raise HTTPException(status_code=400, detail="Could not request deletion.")
+    return {"status": "success", "id": config_id, "deletion_requested": True, "message": "Deletion request submitted. Awaiting admin approval."}
+
+
+@app.post("/admin/connector-configs/{config_id}/approve-deletion")
+def approve_deletion_endpoint(config_id: int, user: dict = Depends(require_admin())):
+    from app.connector_config import approve_delete_connector
+    deleted = approve_delete_connector(config_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Connector not found or not in live/disabled/pending_deletion status")
+    return {"status": "success", "id": config_id, "deleted": True, "message": "Connector deletion approved and permanently deleted."}
+
+
+@app.post("/admin/connector-configs/{config_id}/reject-deletion")
+def reject_deletion_endpoint(config_id: int, user: dict = Depends(require_admin())):
+    from app.connector_config import reject_delete_connector
+    reverted = reject_delete_connector(config_id)
+    if not reverted:
+        raise HTTPException(status_code=404, detail="Connector not found or not in pending_deletion status")
+    return {"status": "success", "id": config_id, "rejected": True, "message": "Deletion request rejected. Connector remains disabled."}
+
+
+@app.post("/admin/connector-configs/{config_id}/cancel-deletion")
+def cancel_deletion_endpoint(config_id: int, user: dict = Depends(get_current_user)):
+    from app.db import get_db_ctx
+    from app.connector_config import cancel_delete_request
+
+    with get_db_ctx() as db:
+        with db.cursor() as cursor:
+            cursor.execute("SELECT client_id, status FROM connector_configs WHERE id=%s", (config_id,))
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Connector configuration not found")
+            cfg_client_id, cfg_status = row[0], row[1]
+
+    require_client_access(cfg_client_id, user)
+    cancelled = cancel_delete_request(config_id, cfg_client_id)
+    if not cancelled:
+        raise HTTPException(status_code=400, detail="Could not cancel deletion request (connector may not be pending deletion).")
+    return {"status": "success", "id": config_id, "cancelled": True, "message": "Deletion request cancelled."}
 
 
 
@@ -3238,24 +3438,67 @@ class ConnectorConfigEditRequest(BaseModel):
     auth_field_name: str | None = None
     payload_encoding: str = "plain"
     base64_query_param_name: str | None = None
+    status: str = "pending_approval"
 
 @app.post("/admin/connector-configs/regenerate", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
 def regenerate_connector_config(data: ConnectorConfigEditRequest, user: dict = Depends(get_current_user)):
     """
-    Mechanical 'edit' — no LLM involved (see step 9 discussion: full
-    LLM-assisted template generation is deferred as separate scope).
-    Creates a new pending_approval row for the same (client_id,
+    Mechanical 'edit' — creates a new pending_approval (or draft) row for the same (client_id,
     trigger_type). The existing live row, if any, keeps serving
     unaffected until this new row is explicitly approved via
     swap_to_live — this endpoint does NOT touch the current live row.
     """
     require_client_access(data.client_id, user)
+    if data.status not in ("draft", "pending_approval"):
+        raise HTTPException(status_code=400, detail="status must be 'draft' or 'pending_approval'")
 
     from app.connector_config import insert_connector_config_checked, CapExceededError, CreationRaceError
     from app.email_credential import get_connector_cap
-    from app.secrets_crypto import encrypt_secret
+    from app.secrets_crypto import encrypt_secret, decrypt_secret
+    from app.db import get_db_ctx
+    import json as _json
 
     cap = get_connector_cap(data.client_id)
+
+    auth_secret_enc = None
+    if data.auth_secret:
+        if data.auth_type == "oauth2_client_credentials":
+            try:
+                oauth_data = _json.loads(data.auth_secret)
+                # Check if we need to backfill existing secrets
+                if oauth_data.get("client_secret") == "__KEEP_EXISTING__" or oauth_data.get("refresh_token") == "__KEEP_EXISTING__":
+                    with get_db_ctx() as db:
+                        with db.cursor() as cursor:
+                            cursor.execute(
+                                "SELECT auth_secret_encrypted FROM connector_configs WHERE client_id=%s AND trigger_type=%s AND auth_secret_encrypted IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                                (data.client_id, data.trigger_type)
+                            )
+                            prev_row = cursor.fetchone()
+                            if prev_row and prev_row[0]:
+                                try:
+                                    prev_plain = decrypt_secret(prev_row[0])
+                                    prev_oauth = _json.loads(prev_plain)
+                                    if oauth_data.get("client_secret") == "__KEEP_EXISTING__":
+                                        oauth_data["client_secret"] = prev_oauth.get("client_secret", "")
+                                    if oauth_data.get("refresh_token") == "__KEEP_EXISTING__":
+                                        oauth_data["refresh_token"] = prev_oauth.get("refresh_token", "")
+                                except Exception:
+                                    pass
+                auth_secret_enc = encrypt_secret(_json.dumps(oauth_data))
+            except Exception:
+                auth_secret_enc = encrypt_secret(data.auth_secret)
+        else:
+            auth_secret_enc = encrypt_secret(data.auth_secret)
+    else:
+        # Fallback to existing if updating
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "SELECT auth_secret_encrypted FROM connector_configs WHERE client_id=%s AND trigger_type=%s AND auth_secret_encrypted IS NOT NULL ORDER BY created_at DESC LIMIT 1",
+                    (data.client_id, data.trigger_type)
+                )
+                prev_row = cursor.fetchone()
+                auth_secret_enc = prev_row[0] if prev_row else None
 
     payload = {
         "http_method": data.http_method,
@@ -3264,7 +3507,7 @@ def regenerate_connector_config(data: ConnectorConfigEditRequest, user: dict = D
         "request_template": data.request_template,
         "response_mapping": data.response_mapping,
         "auth_type": data.auth_type,
-        "auth_secret_encrypted": encrypt_secret(data.auth_secret) if data.auth_secret else None,
+        "auth_secret_encrypted": auth_secret_enc,
         "auth_field_name": data.auth_field_name,
         "payload_encoding": data.payload_encoding,
         "base64_query_param_name": data.base64_query_param_name,
@@ -3273,12 +3516,13 @@ def regenerate_connector_config(data: ConnectorConfigEditRequest, user: dict = D
 
     try:
         row_id = insert_connector_config_checked(
-            data.client_id, data.trigger_type, "pending_approval", payload, cap
+            data.client_id, data.trigger_type, data.status, payload, cap
         )
+        msg_suffix = "waiting for approval" if data.status == "pending_approval" else "saved as draft"
         return {
             "status": "success",
             "id": row_id,
-            "message": f"New pending_approval config created for trigger_type='{data.trigger_type}'. "
+            "message": f"New version ({msg_suffix}) created for trigger_type='{data.trigger_type}'. "
                        f"Existing live config (if any) continues serving until this is approved."
         }
     except CapExceededError as e:
@@ -3293,8 +3537,11 @@ class OAuthTestRequest(BaseModel):
     token_url: str
     client_id: str
     client_secret: str
+    refresh_token: str | None = None
+    grant_type: str | None = None
     scope: str | None = None
     token_auth_method: str = "client_secret_post"  # or client_secret_basic
+    header_prefix: str | None = "Bearer"
 
 @app.post("/admin/connector-configs/test-oauth", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
 def test_oauth_endpoint(data: OAuthTestRequest, user: dict = Depends(get_current_user)):
@@ -3302,7 +3549,17 @@ def test_oauth_endpoint(data: OAuthTestRequest, user: dict = Depends(get_current
     import requests
     start_time = time.time()
 
-    post_data = {"grant_type": "client_credentials"}
+    effective_grant = data.grant_type or ("refresh_token" if data.refresh_token else "client_credentials")
+    post_data = {"grant_type": effective_grant}
+    if effective_grant == "refresh_token":
+        if not data.refresh_token:
+            return {
+                "success": False,
+                "error": "grant_type=refresh_token requires refresh_token to be provided",
+                "duration_ms": 0
+            }
+        post_data["refresh_token"] = data.refresh_token
+
     if data.scope:
         post_data["scope"] = data.scope
 
@@ -3339,11 +3596,11 @@ def test_oauth_endpoint(data: OAuthTestRequest, user: dict = Depends(get_current
 
         return {
             "success": True,
-            "token_type": res_json.get("token_type", "Bearer"),
+            "token_type": res_json.get("token_type", data.header_prefix or "Bearer"),
             "expires_in": res_json.get("expires_in", 3600),
             "scope": res_json.get("scope", data.scope or ""),
             "duration_ms": duration_ms,
-            "message": "OAuth 2.0 token handshake successful!"
+            "message": f"OAuth 2.0 ({effective_grant}) token handshake successful!"
         }
     except Exception as e:
         duration_ms = round((time.time() - start_time) * 1000)

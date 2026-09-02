@@ -59,16 +59,16 @@ def build_context_data_base(
     """
     from app.llm import extract_name_from_email
     return {
-        "client_id": client_id,
-        "from_email": from_email,
-        "subject": subject,
-        "body": body,
-        "cleaned_body": cleaned_body,
+        "client_id": client_id or "",
+        "from_email": from_email or "",
+        "subject": subject or "",
+        "body": body if body is not None else "",
+        "cleaned_body": cleaned_body if cleaned_body is not None else (body or ""),
         "ticket_id": ticket_id,
-        "intent": intent,
-        "sentiment": sentiment,
-        "priority": priority,
-        "customer_name": extract_name_from_email(from_email),
+        "intent": intent or "general_query",
+        "sentiment": sentiment or "Neutral",
+        "priority": priority or "Medium",
+        "customer_name": extract_name_from_email(from_email) if from_email else "Customer",
     }
 
 

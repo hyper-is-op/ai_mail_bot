@@ -141,6 +141,7 @@ def get_live_config(client_id: str, trigger_type: str) -> dict | None:
             if row is None:
                 return None
             return {
+                "client_id": client_id,
                 "url": row[0], "http_method": row[1], "headers_template": row[2],
                 "request_template": row[3], "response_mapping": row[4],
                 "auth_type": row[5], "auth_secret_encrypted": row[6],
@@ -162,6 +163,15 @@ class ResponseMappingValidationError(Exception):
     pass
 
 
+def _extract_configured_fields(mapping: dict) -> set:
+    """Extracts field names whether mapping is {"fields": [{"field": ...}]} or {"ticket_id": "id", ...}"""
+    if isinstance(mapping, dict) and "fields" in mapping and isinstance(mapping["fields"], list):
+        return {f.get("field") for f in mapping["fields"] if isinstance(f, dict) and "field" in f}
+    if isinstance(mapping, dict):
+        return {k for k in mapping.keys() if k != "pagination"}
+    return set()
+
+
 def _validate_response_mapping_fields(trigger_type: str, response_mapping_json: str | None) -> None:
     required = REQUIRED_RESPONSE_FIELDS.get(trigger_type)
     if not required:
@@ -174,11 +184,14 @@ def _validate_response_mapping_fields(trigger_type: str, response_mapping_json: 
         )
 
     try:
-        mapping = json.loads(response_mapping_json)
+        mapping = json.loads(response_mapping_json) if isinstance(response_mapping_json, str) else response_mapping_json
     except json.JSONDecodeError as e:
         raise ResponseMappingValidationError(f"response_mapping is not valid JSON: {e}")
 
-    configured_fields = {f.get("field") for f in mapping.get("fields", [])}
+    if not isinstance(mapping, dict):
+        raise ResponseMappingValidationError("response_mapping must be a JSON object.")
+
+    configured_fields = _extract_configured_fields(mapping)
     missing = required - configured_fields
     if missing:
         raise ResponseMappingValidationError(
@@ -236,7 +249,7 @@ def ensure_connector_configs_table():
                     auth_field_name       VARCHAR(100) NULL,
                     payload_encoding        ENUM('plain','base64_query') NOT NULL DEFAULT 'plain',
                     base64_query_param_name VARCHAR(50) NULL,
-                    status                ENUM('draft','pending_approval','live','disabled') NOT NULL DEFAULT 'draft',
+                    status                ENUM('draft','pending_approval','live','disabled','pending_deletion') NOT NULL DEFAULT 'draft',
                     version               INT NOT NULL DEFAULT 1,
                     created_by            VARCHAR(50),
                     approved_by           VARCHAR(50) NULL,
@@ -277,6 +290,15 @@ def ensure_connector_configs_table():
                 cursor.execute("""
                     ALTER TABLE connector_configs
                     MODIFY COLUMN auth_type ENUM('bearer','basic','api_key_header','api_key_query','oauth2_client_credentials') NOT NULL
+                """)
+            except Exception:
+                pass
+
+            # Pending Deletion ENUM upgrade migration for existing tables
+            try:
+                cursor.execute("""
+                    ALTER TABLE connector_configs
+                    MODIFY COLUMN status ENUM('draft','pending_approval','live','disabled','pending_deletion') NOT NULL DEFAULT 'draft'
                 """)
             except Exception:
                 pass
@@ -827,3 +849,190 @@ def _strip_unmapped_fields(request_template: dict) -> dict:
         k: v for k, v in request_template.items()
         if isinstance(v, str) and _PLACEHOLDER_RE.search(v)
     }
+
+
+def delete_draft_connector_config(config_id: int, client_id: str | None = None) -> bool:
+    """
+    Deletes a connector configuration row if and only if it is in 'draft' status.
+    If client_id is provided, enforces client_id ownership.
+    Returns True if deleted, False if not found or not in draft status.
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            if client_id and client_id != "ALL":
+                cursor.execute(
+                    "DELETE FROM connector_configs WHERE id=%s AND client_id=%s AND status='draft'",
+                    (config_id, client_id)
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM connector_configs WHERE id=%s AND status='draft'",
+                    (config_id,)
+                )
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            if deleted:
+                logger.info(f"🗑️ Deleted draft connector config id={config_id} (client_id={client_id})")
+            return deleted
+    finally:
+        conn.close()
+
+
+def delete_pending_connector_config(config_id: int, client_id: str | None = None) -> bool:
+    """
+    Deletes a connector configuration row if and only if it is in 'pending_approval' status.
+    If client_id is provided, enforces client_id ownership.
+    Returns True if deleted, False if not found or not in pending_approval status.
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            if client_id and client_id != "ALL":
+                cursor.execute(
+                    "DELETE FROM connector_configs WHERE id=%s AND client_id=%s AND status='pending_approval'",
+                    (config_id, client_id)
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM connector_configs WHERE id=%s AND status='pending_approval'",
+                    (config_id,)
+                )
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            if deleted:
+                logger.info(f"🗑️ Deleted pending_approval connector config id={config_id} (client_id={client_id})")
+            return deleted
+    finally:
+        conn.close()
+
+
+def request_delete_disabled_connector(config_id: int, client_id: str | None = None) -> bool:
+    """
+    Transitions a live or disabled connector config to 'pending_deletion' status.
+    Requires client or admin ownership.
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            if client_id and client_id != "ALL":
+                cursor.execute(
+                    "UPDATE connector_configs SET status='pending_deletion' WHERE id=%s AND client_id=%s AND status IN ('live', 'disabled')",
+                    (config_id, client_id)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE connector_configs SET status='pending_deletion' WHERE id=%s AND status IN ('live', 'disabled')",
+                    (config_id,)
+                )
+            updated = cursor.rowcount > 0
+            conn.commit()
+            if updated:
+                logger.info(f"⏳ Requested takedown/deletion for connector config id={config_id} (client_id={client_id})")
+            return updated
+    finally:
+        conn.close()
+
+
+def disable_connector_config(config_id: int, client_id: str | None = None) -> bool:
+    """
+    Transitions a live connector config to 'disabled' status (immediately taking it offline).
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            if client_id and client_id != "ALL":
+                cursor.execute(
+                    "UPDATE connector_configs SET status='disabled' WHERE id=%s AND client_id=%s AND status='live'",
+                    (config_id, client_id)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE connector_configs SET status='disabled' WHERE id=%s AND status='live'",
+                    (config_id,)
+                )
+            updated = cursor.rowcount > 0
+            conn.commit()
+            if updated:
+                logger.info(f"⛔ Took down (disabled) live connector config id={config_id} (client_id={client_id})")
+            return updated
+    finally:
+        conn.close()
+
+
+def approve_delete_connector(config_id: int, client_id: str | None = None) -> bool:
+    """
+    Admin approval to permanently delete a connector config row in 'live', 'disabled' or 'pending_deletion' status.
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            if client_id and client_id != "ALL":
+                cursor.execute(
+                    "DELETE FROM connector_configs WHERE id=%s AND client_id=%s AND status IN ('live', 'disabled', 'pending_deletion')",
+                    (config_id, client_id)
+                )
+            else:
+                cursor.execute(
+                    "DELETE FROM connector_configs WHERE id=%s AND status IN ('live', 'disabled', 'pending_deletion')",
+                    (config_id,)
+                )
+            deleted = cursor.rowcount > 0
+            conn.commit()
+            if deleted:
+                logger.info(f"🗑️ Admin approved permanent deletion of connector config id={config_id}")
+            return deleted
+    finally:
+        conn.close()
+
+
+def reject_delete_connector(config_id: int, client_id: str | None = None) -> bool:
+    """
+    Admin rejection of a deletion request: reverts status from 'pending_deletion' back to 'disabled'.
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            if client_id and client_id != "ALL":
+                cursor.execute(
+                    "UPDATE connector_configs SET status='disabled' WHERE id=%s AND client_id=%s AND status='pending_deletion'",
+                    (config_id, client_id)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE connector_configs SET status='disabled' WHERE id=%s AND status='pending_deletion'",
+                    (config_id,)
+                )
+            reverted = cursor.rowcount > 0
+            conn.commit()
+            if reverted:
+                logger.info(f"↩️ Admin rejected deletion for connector config id={config_id}, reverted to disabled")
+            return reverted
+    finally:
+        conn.close()
+
+
+def cancel_delete_request(config_id: int, client_id: str | None = None) -> bool:
+    """
+    Client or admin cancels a pending deletion request: reverts status from 'pending_deletion' back to 'disabled'.
+    """
+    conn = get_db()
+    try:
+        with conn.cursor() as cursor:
+            if client_id and client_id != "ALL":
+                cursor.execute(
+                    "UPDATE connector_configs SET status='disabled' WHERE id=%s AND client_id=%s AND status='pending_deletion'",
+                    (config_id, client_id)
+                )
+            else:
+                cursor.execute(
+                    "UPDATE connector_configs SET status='disabled' WHERE id=%s AND status='pending_deletion'",
+                    (config_id,)
+                )
+            cancelled = cursor.rowcount > 0
+            conn.commit()
+            if cancelled:
+                logger.info(f"↩️ Deletion request cancelled for connector config id={config_id}")
+            return cancelled
+    finally:
+        conn.close()

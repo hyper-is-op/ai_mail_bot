@@ -119,3 +119,23 @@ def toggle_client_disclaimer(disclaimer_id: int, is_active: bool, client_id: str
                 cursor.execute("UPDATE client_email_disclaimers SET is_active = %s WHERE id = %s", (is_active, disclaimer_id))
             db.commit()
             return cursor.rowcount > 0
+
+
+def get_active_disclaimer_texts(client_id: str) -> list[str]:
+    """
+    Returns a list of active disclaimer strings for a specific client_id and global defaults.
+    """
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                SELECT disclaimer_text
+                FROM client_email_disclaimers
+                WHERE (client_id = %s OR client_id = 'GLOBAL') AND is_active = TRUE
+                ORDER BY (client_id = %s) DESC, id DESC
+                """, (client_id, client_id))
+                rows = cursor.fetchall()
+                return [r[0].strip() for r in rows if r[0] and r[0].strip()]
+    except Exception as e:
+        logger.error(f"Failed to fetch active disclaimer texts for {client_id}: {e}")
+        return []

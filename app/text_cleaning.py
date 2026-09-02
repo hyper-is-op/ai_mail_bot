@@ -29,8 +29,8 @@ _QUOTE_BLOCK_START_RE = re.compile(r"^\s*>.*$", re.MULTILINE)
 
 
 def strip_quoted_reply(body: str) -> str:
-    if not body:
-        return body
+    if not body or not isinstance(body, str):
+        return ""
 
     cut_index = len(body)
     matched_pattern = None
@@ -68,7 +68,68 @@ def strip_quoted_reply(body: str) -> str:
         )
         return body.strip()
 
-    return cleaned
+_BUILTIN_DISCLAIMER_PATTERNS = [
+    re.compile(
+        r"(?:(?:\r?\n|^)(?:--\s*\r?\n)?(?:\*?\s*(?:DISCLAIMER|Confidentiality Notice|IMPORTANT NOTICE|PRIVACY NOTICE):?\*?|"
+        r"This email and (?:any|its) attachments are confidential|"
+        r"This e-mail message, including any attachments, is for the sole use|"
+        r"The information contained in this (?:email|message) (?:is|may be) (?:confidential|legally privileged)|"
+        r"Towards Vision Technologies Limited is not liable|"
+        r"If you (?:have )?received this email in error|"
+        r"This message is intended solely for the addressee)[\s\S]*)",
+        re.IGNORECASE
+    ),
+]
+
+
+def strip_disclaimers(body: str, custom_disclaimers: list[str] | None = None) -> str:
+    """
+    Strips custom configured client disclaimers and standard legal/confidentiality
+    disclaimers from an email message body before passing it to AI/LLM.
+    Saves token costs and prevents LLMs from echoing or hallucinating on disclaimers.
+    """
+    if not body or not isinstance(body, str):
+        return ""
+
+    text = body
+    earliest_cut = len(text)
+    matched_reason = None
+
+    # 1. Check custom configured disclaimers
+    if custom_disclaimers:
+        text_lower = text.lower()
+        for d in custom_disclaimers:
+            if not d or not d.strip():
+                continue
+            d_clean = d.strip().lower()
+            idx = text_lower.find(d_clean)
+            if idx != -1 and idx < earliest_cut:
+                earliest_cut = idx
+                matched_reason = f"custom_disclaimer: '{d[:30]}...'"
+
+    # 2. Check built-in standard legal disclaimer regexes
+    for pattern in _BUILTIN_DISCLAIMER_PATTERNS:
+        m = pattern.search(text)
+        if m and m.start() < earliest_cut:
+            earliest_cut = m.start()
+            matched_reason = "builtin_disclaimer_pattern"
+
+    if earliest_cut < len(text):
+        cleaned = text[:earliest_cut].strip()
+        if cleaned:
+            logger.info(
+                f"🛡️ Stripped email disclaimer ({matched_reason}), "
+                f"{len(text)} -> {len(cleaned)} chars (saved ~{(len(text)-len(cleaned))//4} tokens)"
+            )
+            return cleaned
+        else:
+            logger.warning(
+                "⚠️ Disclaimer stripping would have emptied the email body — "
+                "keeping original body to prevent message loss"
+            )
+            return body
+
+    return body
 
 
 def is_html_content(text: str) -> bool:

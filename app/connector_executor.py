@@ -62,7 +62,7 @@ def _find_placeholders(template_json: str | None) -> set:
     return set(_PLACEHOLDER_RE.findall(template_json))
 
 
-def _render_template(template_json: str | None, context: dict) -> dict | None:
+def _render_template(template_json: str | dict | None, context: dict) -> dict | None:
     """
     Substitutes {{key}} placeholders in template_json with JSON-escaped
     values from context, returns the parsed dict. Fails loudly on any
@@ -70,6 +70,9 @@ def _render_template(template_json: str | None, context: dict) -> dict | None:
     """
     if not template_json:
         return None
+
+    if isinstance(template_json, dict):
+        template_json = json.dumps(template_json)
 
     def _replace(match):
         key = match.group(1)
@@ -106,9 +109,10 @@ except Exception:
     _redis_client = None
 
 
-def _fetch_oauth2_token(client_id: str, secret_json_str: str) -> str:
+def _fetch_oauth2_token(client_id: str, secret_json_str: str) -> tuple[str, str]:
     """
-    Fetches and caches an OAuth 2.0 client_credentials access token.
+    Fetches and caches an OAuth 2.0 access token (client_credentials or refresh_token).
+    Returns (access_token, header_prefix).
     Uses Redis cache key: `oauth2_token:{client_id}:{hash(creds)}`.
     """
     try:
@@ -119,14 +123,21 @@ def _fetch_oauth2_token(client_id: str, secret_json_str: str) -> str:
     token_url = creds.get("token_url")
     oauth_client_id = creds.get("client_id")
     oauth_client_secret = creds.get("client_secret")
+    refresh_token = creds.get("refresh_token")
     scope = creds.get("scope")
     auth_method = creds.get("token_auth_method", "client_secret_post")
+    header_prefix = creds.get("header_prefix", "Bearer")
+    grant_type = creds.get("grant_type") or ("refresh_token" if refresh_token else "client_credentials")
 
     if not token_url or not oauth_client_id or not oauth_client_secret:
         raise ExecutorError("OAuth 2.0 requires token_url, client_id, and client_secret in auth_secret")
 
+    if grant_type == "refresh_token" and not refresh_token:
+        raise ExecutorError("OAuth 2.0 refresh_token grant requires refresh_token in auth_secret")
+
     # Generate stable cache key
-    creds_hash = hashlib.sha256(f"{token_url}:{oauth_client_id}".encode()).hexdigest()[:16]
+    creds_seed = f"{token_url}:{oauth_client_id}:{refresh_token or 'cc'}"
+    creds_hash = hashlib.sha256(creds_seed.encode()).hexdigest()[:16]
     cache_key = f"oauth2_token:{client_id}:{creds_hash}"
 
     # Try Redis Cache
@@ -135,13 +146,15 @@ def _fetch_oauth2_token(client_id: str, secret_json_str: str) -> str:
             cached_token = _redis_client.get(cache_key)
             if cached_token:
                 logger.info(f"⚡ OAuth 2.0 token cache hit for client_id={client_id}")
-                return cached_token
+                return cached_token, header_prefix
         except Exception as err:
             logger.warning(f"⚠️ Redis OAuth token read failed: {err}")
 
     # Fetch new token
-    logger.info(f"🔑 Requesting fresh OAuth 2.0 token from {token_url} for client_id={client_id}")
-    data = {"grant_type": "client_credentials"}
+    logger.info(f"🔑 Requesting fresh OAuth 2.0 token ({grant_type}) from {token_url} for client_id={client_id}")
+    data = {"grant_type": grant_type}
+    if grant_type == "refresh_token":
+        data["refresh_token"] = refresh_token
     if scope:
         data["scope"] = scope
 
@@ -180,7 +193,7 @@ def _fetch_oauth2_token(client_id: str, secret_json_str: str) -> str:
         except Exception as err:
             logger.warning(f"⚠️ Failed to cache OAuth token in Redis: {err}")
 
-    return access_token
+    return access_token, header_prefix
 
 
 def _apply_auth(request_kwargs: dict, auth_type: str, secret: str, auth_field_name: str | None, client_id: str = "system") -> None:
@@ -197,9 +210,9 @@ def _apply_auth(request_kwargs: dict, auth_type: str, secret: str, auth_field_na
         if not auth_field_name:
             raise ExecutorError("auth_type=api_key_query requires auth_field_name")
         request_kwargs.setdefault("params", {})[auth_field_name] = secret
-    elif auth_type == "oauth2_client_credentials":
-        token = _fetch_oauth2_token(client_id, secret)
-        request_kwargs.setdefault("headers", {})["Authorization"] = f"Bearer {token}"
+    elif auth_type in ("oauth2_client_credentials", "oauth2_refresh_token", "oauth2"):
+        token, prefix = _fetch_oauth2_token(client_id, secret)
+        request_kwargs.setdefault("headers", {})["Authorization"] = f"{prefix} {token}"
     else:
         raise ExecutorError(f"Unknown auth_type: {auth_type}")
 
@@ -220,7 +233,7 @@ def _apply_response_mapping(response_json: dict, response_mapping) -> dict:
             logger.error(f"❌ response_mapping is not valid JSON: {e}")
             return response_json
 
-    if "fields" not in response_mapping:
+    if not isinstance(response_mapping, dict):
         return response_json
 
     if response_mapping.get("pagination", {}).get("enabled"):
@@ -232,9 +245,28 @@ def _apply_response_mapping(response_json: dict, response_mapping) -> dict:
             "until tested against a real integration."
         )
 
+    field_specs = []
+    if "fields" in response_mapping and isinstance(response_mapping["fields"], list):
+        field_specs = response_mapping["fields"]
+    else:
+        for k, v in response_mapping.items():
+            if k == "pagination":
+                continue
+            if isinstance(v, str):
+                field_specs.append({"field": k, "path": v, "extract_regex": None})
+            elif isinstance(v, dict):
+                field_specs.append({"field": k, "path": v.get("path"), "extract_regex": v.get("extract_regex")})
+
+    if not field_specs:
+        return response_json
+
     result = {}
-    for field_spec in response_mapping["fields"]:
-        field_name = field_spec["field"]
+    for field_spec in field_specs:
+        if not isinstance(field_spec, dict):
+            continue
+        field_name = field_spec.get("field")
+        if not field_name:
+            continue
         path = field_spec.get("path")
         extract_regex = field_spec.get("extract_regex")
 
@@ -301,12 +333,15 @@ def execute_connector(
 
         secret = decrypt_secret(config["auth_secret_encrypted"]) if config.get("auth_secret_encrypted") else None
 
-        request_kwargs = {"headers": rendered_headers, "timeout": REQUEST_TIMEOUT_SECONDS}
+        request_kwargs = {"headers": dict(rendered_headers), "timeout": REQUEST_TIMEOUT_SECONDS}
         if secret:
             _apply_auth(request_kwargs, config["auth_type"], secret, config.get("auth_field_name"), client_id=config.get("client_id", "system"))
 
         payload_encoding = config.get("payload_encoding", "plain")
-        http_method = config["http_method"].upper()
+        http_method = config.get("http_method", "POST").upper()
+
+        safe_headers = {k: ("***" if "auth" in k.lower() else v) for k, v in request_kwargs.get("headers", {}).items()}
+        logger.info(f"🚀 Outgoing Connector Request: {http_method} {url} | Headers: {safe_headers}")
 
         if payload_encoding == "base64_query":
             param_name = config.get("base64_query_param_name")
@@ -346,8 +381,14 @@ def execute_connector(
         logger.error(f"❌ Executor error: {e}")
         return {"success": False, "error": str(e)}
     except requests.exceptions.RequestException as e:
-        logger.error(f"❌ Executor HTTP call failed: {e}")
-        return {"success": False, "error": str(e)}
+        resp_text = ""
+        if hasattr(e, "response") and e.response is not None:
+            try:
+                resp_text = f" — Response Body: {e.response.text}"
+            except Exception:
+                pass
+        logger.error(f"❌ Executor HTTP call failed: {e}{resp_text}")
+        return {"success": False, "error": f"{e}{resp_text}"}
     except Exception as e:
         logger.error(f"❌ Executor unexpected failure: {e}", exc_info=True)
         return {"success": False, "error": str(e)}

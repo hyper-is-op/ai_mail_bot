@@ -14,12 +14,12 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: 'http://172.16.3.215:8024',
+        target: 'http://127.0.0.1:8024',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, '')
       },
       '/ws': {
-        target: 'ws://172.16.3.215:8024',
+        target: 'ws://127.0.0.1:8024',
         ws: true,
         changeOrigin: true
       }

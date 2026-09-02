@@ -15,7 +15,8 @@ from datetime import datetime
 from app.request_handler import call_create_ticket, get_order_status
 from app.keyword_filter import get_blocked_keywords, is_blocked, insert_blocked_email
 
-from app.text_cleaning import strip_quoted_reply
+from app.text_cleaning import strip_quoted_reply, strip_disclaimers
+from app.email_disclaimers import get_active_disclaimer_texts
 
 import logging
 import re
@@ -40,12 +41,14 @@ def get_client_features(cursor, client_id):
     defaults = {
         "feature_ticket_creation": True, "feature_auto_send": True,
         "feature_rag": True, "feature_order_tracking": True, "feature_manual_reply": True,
+        "feature_strip_disclaimers": True,
         "admin_bot_enabled": True, "client_bot_enabled": True,
     }
     try:
         cursor.execute("""
             SELECT feature_ticket_creation, feature_auto_send, feature_rag,
                    feature_order_tracking, feature_manual_reply,
+                   COALESCE(feature_strip_disclaimers, 1),
                    COALESCE(admin_bot_enabled, 1), COALESCE(client_bot_enabled, 1)
             FROM email_accounts WHERE client_id = %s
         """, (client_id,))
@@ -55,8 +58,9 @@ def get_client_features(cursor, client_id):
                 "feature_ticket_creation": bool(row[0]), "feature_auto_send": bool(row[1]),
                 "feature_rag": bool(row[2]), "feature_order_tracking": bool(row[3]),
                 "feature_manual_reply": bool(row[4]),
-                "admin_bot_enabled": bool(row[5]) if row[5] is not None else True,
-                "client_bot_enabled": bool(row[6]) if row[6] is not None else True,
+                "feature_strip_disclaimers": bool(row[5]) if row[5] is not None else True,
+                "admin_bot_enabled": bool(row[6]) if row[6] is not None else True,
+                "client_bot_enabled": bool(row[7]) if row[7] is not None else True,
             }
     except Exception as e:
         logger.warning(f"⚠️ Failed to fetch client features for {client_id}, using defaults: {e}")
@@ -433,6 +437,14 @@ def process_email_task(self, data):
         logger.info(f"🔎 RAG ID: {rag_id} Client ID: {client_id}")
 
         cleaned_body = strip_quoted_reply(body_text)
+        if features.get("feature_strip_disclaimers", True):
+            try:
+                active_disclaimers = get_active_disclaimer_texts(client_id)
+                cleaned_body = strip_disclaimers(cleaned_body, active_disclaimers)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to strip disclaimers: {e}")
+
+        data["body"] = cleaned_body
         email_query = f"Subject: {data['subject']}\n\n{cleaned_body}"
 
         chroma_context = ""
@@ -723,6 +735,38 @@ def process_email_task(self, data):
                     intent = "general_query"
 
         # ──────────────────────────────
+        # PATH DIRECT: explicit ticket_create intent
+        # ──────────────────────────────
+        if reply is None and intent == "ticket_create" and active_state_name not in _VERIFICATION_STATES:
+            if not features.get("feature_ticket_creation", True):
+                logger.info("⏸ feature_ticket_creation disabled — holding in manual queue")
+                execution_steps.append("Held_For_Manual_Review_No_Ticket")
+                status = "pending_manual_review"
+                reply = None
+                save_to_history = False
+            else:
+                logger.info("🎫 PATH TICKET CREATE — explicit ticket_create intent detected")
+                execution_steps.append("Ticket_Escalation")
+                reply, outgoing_ticket_id, status = _create_ticket_and_reply(
+                    data, client_id, context="", history=history,
+                    cursor=cursor, sentiment=sentiment, priority=priority,
+                    features=features
+                )
+                if status == "ticket_creation_failed":
+                    logger.error("❌ Ticket creation failed — holding for manual review")
+                    execution_steps.append("Ticket_Creation_Failed")
+                    status = "pending_manual_review"
+                    save_to_history = False
+                else:
+                    save_to_history = (status == "ticket_created_and_sent")
+                    if outgoing_ticket_id:
+                        summary = generate_summary_llm(context="", customer_body=data["body"],
+                                                        history=history, old_summary="")
+                        upsert_ticket_history(client_id=client_id, ticket_id=outgoing_ticket_id,
+                                               customer_email=data["from_email"], summary=summary,
+                                               priority=priority, status="NEW")
+
+        # ──────────────────────────────
         # PATH B: general_query — try RAG first.
         # Skipped when a verification flow is active — a high RAG score on the
         # customer's issue description must not bypass the verification_failed
@@ -731,7 +775,7 @@ def process_email_task(self, data):
         if reply is None and active_state_name in _VERIFICATION_STATES:
             logger.info(f"⏭ PATH B skipped — active verification state: {active_state_name}")
 
-        if reply is None and active_state_name not in _VERIFICATION_STATES and features["feature_rag"]:
+        if reply is None and intent != "ticket_create" and active_state_name not in _VERIFICATION_STATES and features["feature_rag"]:
             logger.info("📚 PATH B — trying RAG/ChromaDB")
             execution_steps.append("RAG_Search")
 

@@ -200,7 +200,7 @@ def ensure_accounts_table_startup(cursor):
     except:
         pass
 
-    for col in ["feature_ticket_creation", "feature_auto_send", "feature_rag", "feature_order_tracking", "feature_manual_reply"]:
+    for col in ["feature_ticket_creation", "feature_auto_send", "feature_rag", "feature_order_tracking", "feature_manual_reply", "feature_strip_disclaimers"]:
         try:
             cursor.execute(f"ALTER TABLE email_accounts ADD COLUMN {col} BOOLEAN DEFAULT TRUE")
         except:
