@@ -15,7 +15,6 @@ def save_email_account(client_id: str, email: str, password: str, score_threshol
     db = get_db()
     cursor = db.cursor()
     try:
-        _ensure_accounts_table(cursor)
         logger.info(f"📝 Checking duplicate records for client_id={client_id}")
         cursor.execute("SELECT id FROM email_accounts WHERE client_id = %s LIMIT 1", (client_id,))
         row = cursor.fetchone()
@@ -60,7 +59,6 @@ def get_email_account(client_id: str) -> dict:
     db = get_db()
     cursor = db.cursor()
     try:
-        _ensure_accounts_table(cursor)
         if client_id == "ALL":
             cursor.execute("""
                 SELECT score_threshold FROM email_accounts ORDER BY id ASC LIMIT 1
@@ -101,49 +99,7 @@ def get_email_account(client_id: str) -> dict:
         db.close()
 
 
-def _ensure_accounts_table(cursor):
-    pass
-    # """
-    # Creates email_accounts table if it does not exist.
-    # """
-    # cursor.execute("""
-    #     CREATE TABLE IF NOT EXISTS email_accounts (
-    #         id INT AUTO_INCREMENT PRIMARY KEY,
-    #         client_id VARCHAR(50) NOT NULL,
-    #         email VARCHAR(255) NOT NULL,
-    #         password VARCHAR(255) NOT NULL,
-    #         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    #     )
-    # """)
-    # # Deduplicate existing entries so only the latest remains
-    # try:
-    #     cursor.execute("""
-    #         DELETE t1 FROM email_accounts t1
-    #         INNER JOIN email_accounts t2 
-    #         WHERE t1.id < t2.id AND t1.client_id = t2.client_id
-    #     """)
-    # except Exception as e:
-    #     logger.warning(f"⚠️ Deduplication warning: {str(e)}")
-        
-    # try:
-    #     cursor.execute("ALTER TABLE email_accounts CHANGE user_id client_id VARCHAR(50) NOT NULL")
-    # except:
-    #     pass
 
-    # try:
-    #     cursor.execute("ALTER TABLE email_accounts ADD UNIQUE INDEX (client_id)")
-    # except:
-    #     pass
-
-    # try:
-    #     cursor.execute("ALTER TABLE email_accounts ADD COLUMN score_threshold INT DEFAULT 80")
-    # except:
-    #     pass
-
-    # try:
-    #     cursor.execute("ALTER TABLE email_accounts ADD COLUMN response_tone VARCHAR(50) DEFAULT 'Formal'")
-    # except:
-    #     pass
 
 def ensure_accounts_table_startup(cursor):
     """
@@ -156,98 +112,97 @@ def ensure_accounts_table_startup(cursor):
             client_id VARCHAR(50) NOT NULL,
             email VARCHAR(255) NOT NULL,
             password VARCHAR(255) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            score_threshold INT DEFAULT 80,
+            response_tone VARCHAR(50) DEFAULT 'Formal',
+            agent_type VARCHAR(50) DEFAULT 'customer_support_agent',
+            department_name VARCHAR(100) DEFAULT NULL,
+            company_name VARCHAR(100) DEFAULT NULL,
+            connector_cap INT DEFAULT 5,
+            feature_ticket_creation BOOLEAN DEFAULT TRUE,
+            feature_auto_send BOOLEAN DEFAULT TRUE,
+            feature_rag BOOLEAN DEFAULT TRUE,
+            feature_order_tracking BOOLEAN DEFAULT TRUE,
+            feature_manual_reply BOOLEAN DEFAULT TRUE,
+            feature_strip_disclaimers BOOLEAN DEFAULT TRUE,
+            admin_bot_enabled BOOLEAN DEFAULT TRUE,
+            client_bot_enabled BOOLEAN DEFAULT TRUE,
+            cost_multiplier FLOAT DEFAULT 1.0,
+            monthly_budget_usd FLOAT DEFAULT NULL,
+            auth_type VARCHAR(20) DEFAULT 'password',
+            refresh_token TEXT DEFAULT NULL,
+            oauth_provider VARCHAR(30) DEFAULT NULL,
+            oauth_client_id VARCHAR(255) DEFAULT NULL,
+            oauth_client_secret TEXT DEFAULT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uk_client_id (client_id)
         )
     """)
 
-    try:
+    # Ensure columns exist if table was created by older versions
+    cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'email_accounts'")
+    existing_cols = {row[0] for row in cursor.fetchall()}
+
+    if "user_id" in existing_cols and "client_id" not in existing_cols:
         cursor.execute("ALTER TABLE email_accounts CHANGE user_id client_id VARCHAR(50) NOT NULL")
-    except:
-        pass
 
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD UNIQUE INDEX (client_id)")
-    except:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD COLUMN score_threshold INT DEFAULT 80")
-    except:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD COLUMN response_tone VARCHAR(50) DEFAULT 'Formal'")
-    except:
-        pass
-    
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD COLUMN agent_type VARCHAR(50) DEFAULT 'customer_support_agent'")
-    except:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD COLUMN department_name VARCHAR(100) DEFAULT NULL")
-    except:
-        pass
-    
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD COLUMN company_name VARCHAR(100) DEFAULT NULL")
-    except:
-        pass
-    
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD COLUMN connector_cap INT DEFAULT 5")
-    except:
-        pass
-
-    for col in ["feature_ticket_creation", "feature_auto_send", "feature_rag", "feature_order_tracking", "feature_manual_reply", "feature_strip_disclaimers"]:
-        try:
-            cursor.execute(f"ALTER TABLE email_accounts ADD COLUMN {col} BOOLEAN DEFAULT TRUE")
-        except:
-            pass
-
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD COLUMN cost_multiplier FLOAT DEFAULT 1.0")
-    except:
-        pass
-
-    try:
-        cursor.execute("ALTER TABLE email_accounts ADD COLUMN monthly_budget_usd FLOAT DEFAULT NULL")
-    except:
-        pass
-
-    for oauth_col, col_def in [
+    missing_cols = [
+        ("score_threshold", "INT DEFAULT 80"),
+        ("response_tone", "VARCHAR(50) DEFAULT 'Formal'"),
+        ("agent_type", "VARCHAR(50) DEFAULT 'customer_support_agent'"),
+        ("department_name", "VARCHAR(100) DEFAULT NULL"),
+        ("company_name", "VARCHAR(100) DEFAULT NULL"),
+        ("connector_cap", "INT DEFAULT 5"),
+        ("feature_ticket_creation", "BOOLEAN DEFAULT TRUE"),
+        ("feature_auto_send", "BOOLEAN DEFAULT TRUE"),
+        ("feature_rag", "BOOLEAN DEFAULT TRUE"),
+        ("feature_order_tracking", "BOOLEAN DEFAULT TRUE"),
+        ("feature_manual_reply", "BOOLEAN DEFAULT TRUE"),
+        ("feature_strip_disclaimers", "BOOLEAN DEFAULT TRUE"),
+        ("admin_bot_enabled", "BOOLEAN DEFAULT TRUE"),
+        ("client_bot_enabled", "BOOLEAN DEFAULT TRUE"),
+        ("cost_multiplier", "FLOAT DEFAULT 1.0"),
+        ("monthly_budget_usd", "FLOAT DEFAULT NULL"),
         ("auth_type", "VARCHAR(20) DEFAULT 'password'"),
         ("refresh_token", "TEXT DEFAULT NULL"),
         ("oauth_provider", "VARCHAR(30) DEFAULT NULL"),
         ("oauth_client_id", "VARCHAR(255) DEFAULT NULL"),
         ("oauth_client_secret", "TEXT DEFAULT NULL"),
-    ]:
-        try:
-            cursor.execute(f"ALTER TABLE email_accounts ADD COLUMN {oauth_col} {col_def}")
-        except:
-            pass
+    ]
 
-def _ensure_table(cursor):
+    for col_name, col_def in missing_cols:
+        if col_name not in existing_cols:
+            cursor.execute(f"ALTER TABLE email_accounts ADD COLUMN {col_name} {col_def}")
+
+def ensure_ticket_record_table(cursor):
     """
     Creates ticket_record table if it does not exist.
-    ticket_id is a random unique UUID.
     """
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS ticket_record (
-            ticket_id  VARCHAR(36)  NOT NULL PRIMARY KEY,
+            ticket_id  VARCHAR(50)  NOT NULL PRIMARY KEY,
             client_id  VARCHAR(50)  NOT NULL,
             mail_id    VARCHAR(100) NOT NULL,
             subject    TEXT         NOT NULL,
             body       TEXT         NOT NULL,
             status     VARCHAR(50)  NOT NULL,
-            created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
+            sentiment  VARCHAR(50)  DEFAULT 'Neutral',
+            priority   VARCHAR(50)  DEFAULT 'Medium',
+            created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_ticket_record_client_created (client_id, created_at)
         )
     """)
-    try:
+
+    cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'ticket_record'")
+    existing_cols = {row[0] for row in cursor.fetchall()}
+
+    if "user_id" in existing_cols and "client_id" not in existing_cols:
         cursor.execute("ALTER TABLE ticket_record CHANGE user_id client_id VARCHAR(50) NOT NULL")
-    except:
-        pass
+    if "sentiment" not in existing_cols:
+        cursor.execute("ALTER TABLE ticket_record ADD COLUMN sentiment VARCHAR(50) DEFAULT 'Neutral'")
+    if "priority" not in existing_cols:
+        cursor.execute("ALTER TABLE ticket_record ADD COLUMN priority VARCHAR(50) DEFAULT 'Medium'")
+
+_ensure_table = ensure_ticket_record_table
 
 
 def create_email_record_db(data: dict) -> dict:
@@ -290,52 +245,6 @@ def create_email_record_db(data: dict) -> dict:
 
 
 
-#on 15 May 2025 by hyper_is_op
-
-
-# def ensure_create_payload_table():
-#     """
-#     Creates the `create_payload_table` table if it doesn't already exist.
-#     Safe to call multiple times (uses IF NOT EXISTS).
-#     """
-#     db = get_db()
-#     try:
-#         with db.cursor() as cursor:
-#             cursor.execute("""
-#                 CREATE TABLE IF NOT EXISTS create_payload_table (
-#                     id               INT AUTO_INCREMENT PRIMARY KEY,
-#                     client_id        VARCHAR(50) NOT NULL,
-#                     url       VARCHAR(255),
-#                     paylod      TEXT,
-#                     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-#                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-#             """)
-#             # Deduplicate existing entries
-#             try:
-#                 cursor.execute("""
-#                     DELETE t1 FROM create_payload_table t1
-#                     INNER JOIN create_payload_table t2 
-#                     WHERE t1.id < t2.id AND t1.client_id = t2.client_id
-#                 """)
-#             except:
-#                 pass
-            
-#             try:
-#                 cursor.execute("ALTER TABLE create_payload_table CHANGE user_id client_id VARCHAR(50) NOT NULL, DROP PRIMARY KEY, ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST")
-#             except:
-#                 pass
-            
-#             try:
-#                 cursor.execute("ALTER TABLE create_payload_table ADD UNIQUE INDEX (client_id)")
-#             except:
-#                 pass
-#         db.commit()
-#         logger.info("✅ create_payload_table table ensured")
-#     except Exception as e:
-#         logger.error(f"❌ Failed to create create_payload_table table: {e}", exc_info=True)
-#         raise
-#     finally:
-#         db.close()
 def ensure_create_payload_table():
     db = get_db()
     try:
@@ -412,52 +321,6 @@ def get_create_payload_table(client_id: str) -> dict:
     finally:
         db.close()
         
-#on 19 May 2025 by hyper_is_op
-        
-
-# def ensure_payload_get_ticket_table():
-#     """
-#     Creates the `payload_get_table` table if it doesn't already exist.
-#     Safe to call multiple times (uses IF NOT EXISTS).
-#     """
-#     db = get_db()
-#     try:
-#         with db.cursor() as cursor:
-#             cursor.execute("""
-#                 CREATE TABLE IF NOT EXISTS payload_get_table (
-#                     id               INT AUTO_INCREMENT PRIMARY KEY,
-#                     client_id        VARCHAR(50) NOT NULL,
-#                     url       VARCHAR(255),
-#                     paylod      TEXT,
-#                     created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-#                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-#             """)
-#             # Deduplicate existing entries
-#             try:
-#                 cursor.execute("""
-#                     DELETE t1 FROM payload_get_table t1
-#                     INNER JOIN payload_get_table t2 
-#                     WHERE t1.id < t2.id AND t1.client_id = t2.client_id
-#                 """)
-#             except:
-#                 pass
-                
-#             try:
-#                 cursor.execute("ALTER TABLE payload_get_table CHANGE user_id client_id VARCHAR(50) NOT NULL, DROP PRIMARY KEY, ADD COLUMN id INT AUTO_INCREMENT PRIMARY KEY FIRST")
-#             except:
-#                 pass
-                
-#             try:
-#                 cursor.execute("ALTER TABLE payload_get_table ADD UNIQUE INDEX (client_id)")
-#             except:
-#                 pass
-#         db.commit()
-#         logger.info("✅ payload_get_table table ensured")
-#     except Exception as e:
-#         logger.error(f"❌ Failed to create payload_get_table table: {e}", exc_info=True)
-#         raise
-#     finally:
-#         db.close()
 def ensure_payload_get_ticket_table():
     db = get_db()
     try:

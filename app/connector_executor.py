@@ -98,6 +98,16 @@ def _render_template(template_json: str | dict | None, context: dict) -> dict | 
         ) from e
 
 
+def _render_string(template_str: str | None, context: dict) -> str | None:
+    if not template_str:
+        return template_str
+    def _replace(match):
+        key = match.group(1)
+        val = context.get(key)
+        return str(val) if val is not None else match.group(0)
+    return _PLACEHOLDER_RE.sub(_replace, template_str)
+
+
 import hashlib
 import redis
 import os
@@ -200,8 +210,15 @@ def _apply_auth(request_kwargs: dict, auth_type: str, secret: str, auth_field_na
     if auth_type == "bearer":
         request_kwargs.setdefault("headers", {})["Authorization"] = f"Bearer {secret}"
     elif auth_type == "basic":
-        creds = json.loads(secret)
-        request_kwargs["auth"] = (creds["username"], creds["password"])
+        try:
+            creds = json.loads(secret)
+            if isinstance(creds, dict):
+                request_kwargs["auth"] = (creds.get("username", ""), creds.get("password", "X"))
+            else:
+                request_kwargs["auth"] = (str(creds), "X")
+        except (json.JSONDecodeError, TypeError):
+            # Raw API key string (e.g. Freshdesk API key with password 'X')
+            request_kwargs["auth"] = (secret, "X")
     elif auth_type == "api_key_header":
         if not auth_field_name:
             raise ExecutorError("auth_type=api_key_header requires auth_field_name")
@@ -324,8 +341,10 @@ def execute_connector(
         rendered_body = _render_template(request_template, full_context)
         rendered_headers = _render_template(headers_template, full_context) or {}
 
-        url = config["url"]
-        if not is_url_allowed(url):
+        raw_url = config["url"]
+        needed = needed | _find_placeholders(raw_url)
+        url = _render_string(raw_url, full_context)
+        if not is_url_allowed(raw_url) and not is_url_allowed(url):
             raise ExecutorAllowlistError(
                 f"URL '{url}' failed execution-time allowlist re-check — "
                 f"it may have been removed from the allowlist since this config was approved."
@@ -373,6 +392,7 @@ def execute_connector(
 
         response.raise_for_status()
         response_json = response.json()
+        logger.info(f"📥 Connector Response [{response.status_code}]: {response_json}")
 
         mapped = _apply_response_mapping(response_json, config.get("response_mapping"))
         return {"success": True, "data": mapped}

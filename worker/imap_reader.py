@@ -46,17 +46,16 @@ def decode_subject(raw_subject: str) -> str:
 def is_bot_enabled_for_client(client_id: str) -> tuple[bool, str]:
     """Check if bot automation is enabled for this client (both admin and client level)."""
     try:
-        from app.db import get_db
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("""
-            SELECT 
-                COALESCE(admin_bot_enabled, 1),
-                COALESCE(client_bot_enabled, 1)
-            FROM email_accounts WHERE client_id = %s LIMIT 1
-        """, (client_id,))
-        row = cursor.fetchone()
-        db.close()
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    SELECT 
+                        COALESCE(admin_bot_enabled, 1),
+                        COALESCE(client_bot_enabled, 1)
+                    FROM email_accounts WHERE client_id = %s LIMIT 1
+                """, (client_id,))
+                row = cursor.fetchone()
         if not row:
             return True, "Enabled (Default)"
         admin_en = bool(row[0])
@@ -224,21 +223,12 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
 def fetch_db_accounts():
     """Queries all email accounts from the database."""
     try:
-        db = get_db()
-        cursor = db.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS email_accounts (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                client_id VARCHAR(50) NOT NULL,
-                email VARCHAR(255) NOT NULL,
-                password VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        cursor.execute("SELECT client_id, email, password FROM email_accounts")
-        rows = cursor.fetchall()
-        db.close()
-        return {row[0]: {"email": row[1], "password": row[2]} for row in rows}
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("SELECT client_id, email, password FROM email_accounts")
+                rows = cursor.fetchall()
+                return {row[0]: {"email": row[1], "password": row[2]} for row in rows}
     except Exception as e:
         logger.error(f"Failed to fetch accounts from DB: {e}", exc_info=True)
         return {}
@@ -246,6 +236,16 @@ def fetch_db_accounts():
 def manage_listeners():
     logger.info("🚀 Starting Dynamic Email Listener Manager...")
     
+    try:
+        from app.email_credential import ensure_accounts_table_startup
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                ensure_accounts_table_startup(cursor)
+            db.commit()
+    except Exception as e:
+        logger.warning(f"⚠️ Initial accounts table check warning: {e}")
+
     while True:
         db_accounts = fetch_db_accounts()
         

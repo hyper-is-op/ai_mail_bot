@@ -11,6 +11,7 @@ _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 
 REQUIRED_RESPONSE_FIELDS = {
     "order_status": {"docket_no", "ticket_status"},
+    "ticket_status": {"docket_no", "ticket_status"},
     "ticket_create": {"ticket_id"},
 }
 
@@ -86,24 +87,41 @@ def run_order_status_lookup(
     priority: str = "Medium",
 ) -> dict:
     """
-    Drop-in replacement for app.request_handler.get_order_status, matching
-    its exact {"success": bool, "data": {...}} / {"success": False, "error": str}
-    RETURN contract only — the CALL SIGNATURE is different (needs body,
-    history, subject, from_email, sentiment, priority for context_data
-    assembly), so every call site must be updated to pass these, not just
-    have get_order_status renamed.
-
-    Callers in worker/tasks.py already have sentiment/priority computed
-    upstream via detect_intent_llm before any order-status call happens —
-    pass those real values in, don't rely on the defaults above except
-    for standalone testing.
+    Drop-in replacement for app.request_handler.get_order_status.
+    Seamlessly supports both ticket_status (e.g. Zoho Desk) and
+    order_status (e.g. Shopify) connectors. If both are active, it queries
+    the most relevant one first and falls back to the other.
     """
     from app.context_data import build_context_data_base
     from app.connector_executor import execute_connector
 
-    config = get_live_config(client_id, "order_status")
-    if config is None:
-        return {"success": False, "error": f"No live order_status connector config for client_id={client_id}"}
+    cfg_ticket = get_live_config(client_id, "ticket_status")
+    cfg_order = get_live_config(client_id, "order_status")
+
+    # Determine which connector applies based on inquiry content & ID format
+    text_corpus = f"{subject} {body}".lower()
+    is_order_inquiry = any(w in text_corpus for w in ("order", "ship", "shipped", "shipping", "deliver", "delivery", "track", "tracking", "package", "item", "purchase"))
+    is_ticket_inquiry = any(w in text_corpus for w in ("ticket", "case", "complaint", "issue", "billing", "escalat"))
+
+    ticket_str = str(ticket_id or "").strip()
+    looks_like_crm_ticket = len(ticket_str) > 8 or ticket_str.upper().startswith(("T-", "INC", "CAS", "SR", "REQ"))
+
+    selected_config = None
+    if cfg_ticket and cfg_order:
+        if is_order_inquiry and not is_ticket_inquiry:
+            selected_config = cfg_order
+        elif is_ticket_inquiry and not is_order_inquiry:
+            selected_config = cfg_ticket
+        elif looks_like_crm_ticket:
+            selected_config = cfg_ticket
+        else:
+            selected_config = cfg_order
+    elif cfg_ticket:
+        selected_config = cfg_ticket
+    elif cfg_order:
+        selected_config = cfg_order
+    else:
+        return {"success": False, "error": f"No live ticket_status or order_status connector config for client_id={client_id}"}
 
     context_base = build_context_data_base(
         client_id=client_id, from_email=from_email, subject=subject,
@@ -111,11 +129,27 @@ def run_order_status_lookup(
         intent=intent, sentiment=sentiment, priority=priority,
     )
 
-    result = execute_connector(config, context_base, body=body, history=history, old_summary=old_summary)
+    result = execute_connector(selected_config, context_base, body=body, history=history, old_summary=old_summary)
     if not result.get("success"):
         return {"success": False, "error": result.get("error", "Unknown executor failure")}
 
-    return {"success": True, "data": result["data"]}
+    data = result.get("data", {})
+    has_record = any(data.get(k) for k in ("docket_no", "ticket_status", "ticket_id"))
+
+    # If an e-commerce order (like Shopify) wasn't found with plain '1001', retry with '%231001' (#1001)
+    if not has_record and selected_config.get("trigger_type") == "order_status" and ticket_id and not str(ticket_id).startswith("#"):
+        context_base_hash = dict(context_base)
+        context_base_hash["ticket_id"] = f"%23{ticket_id}"
+        result_hash = execute_connector(selected_config, context_base_hash, body=body, history=history, old_summary=old_summary)
+        if result_hash.get("success"):
+            data_hash = result_hash.get("data", {})
+            if any(data_hash.get(k) for k in ("docket_no", "ticket_status", "ticket_id")):
+                return {"success": True, "data": data_hash}
+
+    if not has_record:
+        return {"success": False, "error": f"No matching record found in {selected_config.get('trigger_type')} system response"}
+
+    return {"success": True, "data": data}
     
        
 
@@ -132,7 +166,8 @@ def get_live_config(client_id: str, trigger_type: str) -> dict | None:
             cursor.execute("""
                 SELECT url, http_method, headers_template, request_template,
                        response_mapping, auth_type, auth_secret_encrypted,
-                       auth_field_name, payload_encoding, base64_query_param_name
+                       auth_field_name, payload_encoding, base64_query_param_name,
+                       trigger_type
                 FROM connector_configs
                 WHERE client_id=%s AND trigger_type=%s AND status='live'
                 LIMIT 1
@@ -147,6 +182,7 @@ def get_live_config(client_id: str, trigger_type: str) -> dict | None:
                 "auth_type": row[5], "auth_secret_encrypted": row[6],
                 "auth_field_name": row[7], "payload_encoding": row[8],
                 "base64_query_param_name": row[9],
+                "trigger_type": row[10],
             }
     finally:
         conn.close()

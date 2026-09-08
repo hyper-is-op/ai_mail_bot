@@ -216,8 +216,17 @@ export default function Inbox() {
   useEffect(() => {
     if (!selectedClientId) return;
 
-    const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${wsProto}//${window.location.host}/ws`;
+    const envWsUrl = import.meta.env.VITE_WS_URL as string | undefined;
+    const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
+    let wsUrl: string;
+    if (envWsUrl) {
+      wsUrl = envWsUrl;
+    } else if (apiUrl && apiUrl.startsWith('http')) {
+      wsUrl = apiUrl.replace(/^http/, 'ws').replace(/\/+$/, '') + '/ws';
+    } else {
+      const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${wsProto}//${window.location.host}/ws`;
+    }
     let ws: WebSocket | null = null;
     let reconnectTimeout: any = null;
 

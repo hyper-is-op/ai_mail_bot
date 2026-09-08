@@ -56,7 +56,7 @@ export default function ApiTesting() {
               { method: 'GET', path: '/' },
               { method: 'POST', path: '/process-email' },
               { method: 'POST', path: '/accept-email' },
-              { method: 'GET', path: '/email-account/{user_id}' },
+              { method: 'GET', path: '/email-account/{client_id}' },
               { method: 'POST', path: '/create-ticket' },
               { method: 'POST', path: '/order-status' },
               { method: 'POST', path: '/insert-create_payload_ticket' },

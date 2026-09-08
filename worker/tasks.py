@@ -4,7 +4,7 @@ from app.connector_config import run_order_status_lookup
 
 from worker.celery_worker import celery
 from app.rag import query_rag, get_rag_id, query_knowledge
-from app.llm import generate_reply_llm, detect_intent_llm, scan_history_for_ticket, extract_issue_description, generate_summary_llm
+from app.llm import generate_reply_llm, detect_intent_llm, scan_history_for_ticket, extract_issue_description, generate_summary_llm, extract_ticket_and_order_ids
 from app.scoring import llm_score
 from app.decision import decision_engine
 from app.mailer import send_email
@@ -12,7 +12,7 @@ from app.db import get_db
 from app.chat_history import push_message, get_history, get_pending_state, upsert_ticket_history, get_ticket_history
 import random
 from datetime import datetime
-from app.request_handler import call_create_ticket, get_order_status
+
 from app.keyword_filter import get_blocked_keywords, is_blocked, insert_blocked_email
 
 from app.text_cleaning import strip_quoted_reply, strip_disclaimers
@@ -27,8 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def extract_order_id(text):
-    matches = re.findall(r'ORD\d+', text)
-    return matches if matches else []
+    return extract_ticket_and_order_ids(text)
 
 def generate_ticket_id():
     date_part = datetime.now().strftime("%y%m%d")
@@ -255,54 +254,6 @@ def process_email_task(self, data):
     )
             db.commit()
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS email_customers (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            client_id VARCHAR(255) UNIQUE,
-            rag_id VARCHAR(255),
-            customer_name VARCHAR(255),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS email_logs (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            client_id VARCHAR(50) NULL,
-            from_email VARCHAR(255),
-            subject TEXT,
-            body TEXT,
-            reply TEXT,
-            score INT,
-            status VARCHAR(50),
-            rag_id VARCHAR(255),
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-        try:
-            cursor.execute("ALTER TABLE email_logs ADD COLUMN client_id VARCHAR(50) NULL AFTER id")
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE email_logs ADD COLUMN sentiment VARCHAR(50) DEFAULT 'Neutral'")
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE email_logs ADD COLUMN priority VARCHAR(50) DEFAULT 'Medium'")
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE email_logs ADD COLUMN execution_steps TEXT NULL")
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE email_logs ADD COLUMN summary VARCHAR(255) NULL")
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE email_logs ADD COLUMN body_html LONGTEXT NULL")
-        except Exception:
-            pass
 
         # Ensure body is clean text and preserve raw HTML
         body_text = data.get("body", "") or ""
@@ -609,6 +560,77 @@ def process_email_task(self, data):
         if not features["feature_order_tracking"] and (intent == "ticket_status" or ticket_id):
             logger.info("🚫 feature_order_tracking disabled — forcing general_query path")
             intent = "general_query"    
+
+        # ──────────────────────────────
+        # TICKET STATUS PRE-RESOLUTION:
+        # If user asks for ticket status but no ID was in the email body/subject,
+        # scan conversation history before falling back. If no ticket ID exists
+        # in history either, send a clarification requesting the ticket ID.
+        # ──────────────────────────────
+        if intent == "ticket_status" and not ticket_id and active_state_name not in _VERIFICATION_STATES:
+            logger.info("🔍 ticket_status intent detected without ticket_id in email — checking history")
+            scan_result = scan_history_for_ticket(email_query, history)
+            if scan_result.get("ambiguous"):
+                ambiguous_ids = scan_result.get("ticket_ids", [])
+                logger.warning(f"⚠️ Ambiguous history IDs for ticket_status: {ambiguous_ids}")
+                execution_steps.append("Clarification_Request")
+                id_list = "\n".join(f"  - {tid}" for tid in ambiguous_ids)
+                clarification_reply = (
+                    f"Dear Customer,\n\n"
+                    f"Thank you for reaching out. We found multiple previous tickets in your conversation history:\n\n"
+                    f"{id_list}\n\n"
+                    f"Could you please let us know which ticket number you would like an update on?\n\n"
+                    f"Thanks & Regards,\n"
+                    f"Support Team"
+                )
+                send_email(client_id, data["from_email"], "Re: " + data["subject"], clarification_reply)
+                cursor.execute("""
+                    INSERT INTO email_logs (client_id, from_email, subject, body, body_html, reply, score, status, rag_id, sentiment, priority, execution_steps)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (
+                    client_id, data["from_email"], data["subject"], body_text, body_html or None,
+                    clarification_reply, 0, "clarification_sent", rag_id, sentiment, priority, json.dumps(execution_steps)
+                ))
+                db_log_id = cursor.lastrowid
+                generate_and_save_summary(db, cursor, db_log_id, {**data, "body": body_text}, chroma_context)
+                db.commit()
+                db.close()
+                publish_email_update(client_id)
+                logger.info("✅ Ambiguous ticket clarification sent, task done")
+                return
+
+            elif scan_result.get("found") and scan_result.get("ticket_id"):
+                ticket_id = scan_result.get("ticket_id")
+                ticket_ids = [ticket_id]
+                logger.info(f"✅ Found ticket ID from history: {ticket_id}")
+            else:
+                # No ticket ID in email AND no ticket ID in history -> ask customer for ticket ID
+                logger.info("ℹ️ ticket_status inquiry with no ticket ID found in email or history — asking customer for ticket details")
+                execution_steps.append("Clarification_Request")
+                from app.llm import extract_name_from_email
+                customer_name = extract_name_from_email(data["from_email"])
+                clarification_reply = (
+                    f"Dear {customer_name},\n\n"
+                    f"Thank you for contacting us regarding your request. Could you please provide your ticket ID or order number (e.g., #275424000000399001 or T-260505-00117) so we can check the status and assist you promptly?\n\n"
+                    f"Thanks & Regards,\n"
+                    f"Customer Support"
+                )
+                send_email(client_id, data["from_email"], "Re: " + data["subject"], clarification_reply)
+                cursor.execute("""
+                    INSERT INTO email_logs (client_id, from_email, subject, body, body_html, reply, score, status, rag_id, sentiment, priority, execution_steps)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                """, (
+                    client_id, data["from_email"], data["subject"], body_text, body_html or None,
+                    clarification_reply, 0, "clarification_sent", rag_id, sentiment, priority, json.dumps(execution_steps)
+                ))
+                db_log_id = cursor.lastrowid
+                generate_and_save_summary(db, cursor, db_log_id, {**data, "body": body_text}, chroma_context)
+                db.commit()
+                db.close()
+                publish_email_update(client_id)
+                logger.info("✅ Ticket ID request clarification sent, task done")
+                return
+
         # ──────────────────────────────
         # PATH A: ticket_status intent OR ticket_id present in email.
         # Skipped when a verification flow is already active — the quoted
@@ -681,17 +703,7 @@ def process_email_task(self, data):
                 )
 
             else:
-                # ──────────────────────────────────────────────────────────────────
-                # FIX: The customer gave us a specific ticket ID and the API 404'd.
-                # The old behaviour silently fell through to RAG/PATH C and created
-                # a new ticket, which answers a question the customer never asked.
-                #
-                # Correct behaviour: enter the verification state machine here,
-                # exactly as PATH C does for history-found IDs that 404.
-                #
-                # If no ticket_id was actually extracted (intent fired but ID absent),
-                # fall through to RAG as before — that's a genuine general query.
-                # ──────────────────────────────────────────────────────────────────
+                # Customer gave us a specific ticket ID and API 404'd
                 if ticket_id:
                     logger.warning(
                         f"⚠️ PATH A — API 404 for customer-supplied ticket {ticket_id}"
@@ -727,11 +739,10 @@ def process_email_task(self, data):
                         ticket_id="",
                         meta={"state": "pending_verification", "ticket_id": ticket_id}
                     )
-                    save_to_history = False  # already pushed above
+                    save_to_history = False
 
                 else:
-                    # No extractable ticket ID — genuinely a general query
-                    logger.warning("⚠️ PATH A — API failed with no ticket_id, falling to RAG path")
+                    logger.warning("⚠️ PATH A — API failed with no ticket_id, falling to general flow")
                     intent = "general_query"
 
         # ──────────────────────────────
@@ -771,11 +782,12 @@ def process_email_task(self, data):
         # Skipped when a verification flow is active — a high RAG score on the
         # customer's issue description must not bypass the verification_failed
         # → create ticket branch.
+        # Also skipped if intent is ticket_status or ticket_create.
         # ──────────────────────────────
         if reply is None and active_state_name in _VERIFICATION_STATES:
             logger.info(f"⏭ PATH B skipped — active verification state: {active_state_name}")
 
-        if reply is None and intent != "ticket_create" and active_state_name not in _VERIFICATION_STATES and features["feature_rag"]:
+        if reply is None and intent not in ("ticket_create", "ticket_status") and active_state_name not in _VERIFICATION_STATES and features["feature_rag"]:
             logger.info("📚 PATH B — trying RAG/ChromaDB")
             execution_steps.append("RAG_Search")
 
@@ -848,28 +860,58 @@ def process_email_task(self, data):
             logger.info(f"🔍 Pending state: {state_name}")
 
             if state_name == "verification_failed":
-                if not features["feature_ticket_creation"]:
-                    logger.info("⏸ feature_ticket_creation disabled — holding for manual review")
-                    execution_steps.append("Held_For_Manual_Review_No_Ticket")
-                    status = "pending_manual_review"
-                    reply = None
-                    push_message(client_id=client_id, from_email=data["from_email"], role="customer",
-                                 subject=data["subject"], body=data["body"], ticket_id="")
-                    push_message(client_id=client_id, from_email=data["from_email"], role="support",
-                                 subject="Re: " + data["subject"],
-                                 body="[Held for manual review — no automated reply sent]",
-                                 ticket_id="", meta="")
-                    save_to_history = False
-                else:
-                    logger.info("🎫 PATH C / verification_failed — extracting issue and creating ticket")
-                    execution_steps.append("Ticket_Escalation")
-
-                    clean_description = extract_issue_description(data["body"], history)
-                    enriched_data = {**data, "body": clean_description, "subject": clean_description[:80]}
-                    reply, outgoing_ticket_id, status = _create_ticket_and_reply(
-                        enriched_data, client_id, context="", history=history,
-                        cursor=cursor, sentiment=sentiment, priority=priority
+                effective_id = ticket_id or pending_state.get("ticket_id")
+                if effective_id:
+                    from app.connector_config import run_order_status_lookup
+                    logger.info(f"🔄 PATH C / verification_failed — re-checking connector for {effective_id} before escalating")
+                    api_res = run_order_status_lookup(
+                        client_id=client_id, ticket_id=effective_id, body=data["body"],
+                        history=history, subject=data["subject"], from_email=data["from_email"],
+                        sentiment=sentiment, priority=priority, intent=intent,
                     )
+                    if api_res.get("success"):
+                        logger.info(f"✅ Record found for {effective_id} — resolving inquiry and clearing verification state")
+                        from app.connector_executor import format_mapped_data_for_prompt
+                        ticket_info = api_res.get("data", {})
+                        context = format_mapped_data_for_prompt(ticket_info)
+                        reply = generate_reply_llm(context, data["body"], "crm_support_agent", data["from_email"], history=history)
+                        score = llm_score(reply, data["body"])
+                        status, sent_ok = _dispatch_or_draft_reply(
+                            client_id=client_id, from_email=data["from_email"], subject=data["subject"],
+                            reply_body=reply, features=features, confidence_score=score, intent=intent,
+                            sentiment=sentiment, priority=ticket_info.get("priority_name", "Normal"),
+                            ticket_id=effective_id, original_body=data["body"], in_reply_to=data.get("message_id"),
+                            message_id=data.get("message_id"), execution_steps=execution_steps,
+                        )
+                        push_message(client_id=client_id, from_email=data["from_email"], role="customer",
+                                     subject=data["subject"], body=data["body"], ticket_id=effective_id)
+                        push_message(client_id=client_id, from_email=data["from_email"], role="support",
+                                     subject="Re: " + data["subject"], body=reply, ticket_id=effective_id, meta="")
+                        save_to_history = False
+
+                if reply is None:
+                    if not features["feature_ticket_creation"]:
+                        logger.info("⏸ feature_ticket_creation disabled — holding for manual review")
+                        execution_steps.append("Held_For_Manual_Review_No_Ticket")
+                        status = "pending_manual_review"
+                        reply = None
+                        push_message(client_id=client_id, from_email=data["from_email"], role="customer",
+                                     subject=data["subject"], body=data["body"], ticket_id="")
+                        push_message(client_id=client_id, from_email=data["from_email"], role="support",
+                                     subject="Re: " + data["subject"],
+                                     body="[Held for manual review — no automated reply sent]",
+                                     ticket_id="", meta="")
+                        save_to_history = False
+                    else:
+                        logger.info("🎫 PATH C / verification_failed — extracting issue and creating ticket")
+                        execution_steps.append("Ticket_Escalation")
+
+                        clean_description = extract_issue_description(data["body"], history)
+                        enriched_data = {**data, "body": clean_description, "subject": clean_description[:80]}
+                        reply, outgoing_ticket_id, status = _create_ticket_and_reply(
+                            enriched_data, client_id, context="", history=history,
+                            cursor=cursor, sentiment=sentiment, priority=priority
+                        )
 
                     if status == "ticket_creation_failed":
                         logger.error("❌ Ticket creation failed — holding for manual review")
@@ -898,14 +940,14 @@ def process_email_task(self, data):
                                                    priority="Normal", status="NEW")
 
             elif state_name == "pending_verification":
-                stored_ticket_id = pending_state.get("ticket_id", "")
-                logger.info(f"🔄 PATH C / pending_verification — re-trying API for {stored_ticket_id}")
+                effective_id = ticket_id or pending_state.get("ticket_id", "")
+                logger.info(f"🔄 PATH C / pending_verification — re-trying API for {effective_id}")
                 execution_steps.append("Order_Check")
 
                 from app.connector_config import run_order_status_lookup
                 api_res = run_order_status_lookup(
                     client_id=client_id,
-                    ticket_id=stored_ticket_id,
+                    ticket_id=effective_id,
                     body=data["body"],
                     history=history,
                     subject=data["subject"],
@@ -1231,29 +1273,6 @@ def _create_ticket_and_reply(data, client_id, context, history, cursor, sentimen
     ticket_remarks  = resp.get("remarks",  "")
 
     try:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS ticket_record (
-                ticket_id  VARCHAR(50)  NOT NULL PRIMARY KEY,
-                client_id  VARCHAR(50)  NOT NULL,
-                mail_id    VARCHAR(100) NOT NULL,
-                subject    TEXT         NOT NULL,
-                body       TEXT         NOT NULL,
-                status     VARCHAR(50)  NOT NULL,
-                created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        try:
-            cursor.execute("ALTER TABLE ticket_record CHANGE user_id client_id VARCHAR(50) NOT NULL")
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE ticket_record ADD COLUMN sentiment VARCHAR(50) DEFAULT 'Neutral'")
-        except Exception:
-            pass
-        try:
-            cursor.execute("ALTER TABLE ticket_record ADD COLUMN priority VARCHAR(50) DEFAULT 'Medium'")
-        except Exception:
-            pass
 
         cursor.execute("SELECT COUNT(*) FROM ticket_record WHERE ticket_id = %s", (outgoing_ticket_id,))
         if cursor.fetchone()[0] == 0:

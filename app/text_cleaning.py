@@ -68,6 +68,8 @@ def strip_quoted_reply(body: str) -> str:
         )
         return body.strip()
 
+    return cleaned
+
 _BUILTIN_DISCLAIMER_PATTERNS = [
     re.compile(
         r"(?:(?:\r?\n|^)(?:--\s*\r?\n)?(?:\*?\s*(?:DISCLAIMER|Confidentiality Notice|IMPORTANT NOTICE|PRIVACY NOTICE):?\*?|"

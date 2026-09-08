@@ -64,3 +64,8 @@ def insert_blocked_email(cursor, client_id, from_email, subject, body, matched_k
 
 
 _ensure_table = _ensure_blocked_keywords_table
+
+
+def ensure_keyword_filter_tables(cursor):
+    _ensure_blocked_keywords_table(cursor)
+    _ensure_reply_blocked_table(cursor)

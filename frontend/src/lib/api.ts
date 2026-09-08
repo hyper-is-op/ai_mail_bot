@@ -1,10 +1,16 @@
-const BASE_URL = '/api';
+const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, '') || '/api';
 
 function authHeaders(): Record<string, string> {
   const raw = localStorage.getItem('user');
   if (!raw) return {};
   try {
-    const { token } = JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    // If a legacy session stored a numeric or non-string client_id, evict it
+    if (parsed.client_id !== undefined && parsed.client_id !== null && typeof parsed.client_id !== 'string') {
+      localStorage.removeItem('user');
+      return {};
+    }
+    const { token } = parsed;
     return token ? { Authorization: `Bearer ${token}` } : {};
   } catch {
     return {};
@@ -115,6 +121,9 @@ export const api = {
     return safeJson(res, 'Failed to accept email');
   },
   async getEmailAccount(clientId: string) {
+    if (!clientId || (!clientId.startsWith('CLI-') && clientId !== 'ALL')) {
+      return null;
+    }
     const res = await fetch(`${BASE_URL}/email-account/${clientId}`, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch account');
   },

@@ -18,17 +18,19 @@ def ensure_users_table():
                     password_hash VARCHAR(255) NOT NULL,
                     role ENUM('admin', 'client') DEFAULT 'client',
                     status ENUM('active', 'inactive') NOT NULL DEFAULT 'active',
+                    name VARCHAR(255) DEFAULT NULL,
+                    phone_number VARCHAR(50) DEFAULT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
-            try:
+
+            cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users'")
+            existing_cols = {row[0] for row in cursor.fetchall()}
+
+            if "name" not in existing_cols:
                 cursor.execute("ALTER TABLE users ADD COLUMN name VARCHAR(255) DEFAULT NULL")
-            except:
-                pass
-            try:
+            if "phone_number" not in existing_cols:
                 cursor.execute("ALTER TABLE users ADD COLUMN phone_number VARCHAR(50) DEFAULT NULL")
-            except:
-                pass
         conn.commit()
     finally:
         conn.close()
@@ -37,42 +39,6 @@ def hash_password(password: str) -> str:
     # unsalted SHA256 — fine for now, flag separately if you want it hardened later
     return hashlib.sha256(password.encode()).hexdigest()
 
-# def register_user(email, password):
-#     """
-#     Public self-registration. Role is ALWAYS 'client' — no caller-controlled role,
-#     no magic email, no auto-approval. Every account starts pending.
-#     """
-#     ensure_users_table()
-#     conn = get_db()
-#     client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
-#     try:
-#         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-#             cursor.execute("SELECT id FROM users WHERE email=%s", (email,))
-#             if cursor.fetchone():
-#                 return {"success": False, "error": "Email already registered"}
-
-#             p_hash = hash_password(password)
-#             cursor.execute(
-#                 "INSERT INTO users (client_id, email, password_hash, role, status) VALUES (%s, %s, %s, 'client', 'pending')",
-#                 (client_id, email, p_hash)
-#             )
-#         conn.commit()
-
-#         try:
-#             admin_email = os.getenv("REGISTRATION_EMAIL", "monishrazammr@gmail.com")
-#             from app.mailer import send_email
-#             subject = "New User Registration Approval Request"
-#             body = (
-#                 f"Hello Admin,\n\nA new user registered and is pending approval:\n"
-#                 f"Email: {email}\n\nApprove from the admin panel (login required).\n"
-#             )
-#             send_email("registration", admin_email, subject, body)
-#         except Exception as mail_err:
-#             print(f"Error sending approval request email: {mail_err}")
-
-#         return {"success": True, "message": "Registration successful. Pending admin approval.", "client_id": client_id, "status": "pending"}
-#     finally:
-#         conn.close()
 
 def register_admin_by_admin(email, password, creator_client_id):
     """

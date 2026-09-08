@@ -58,29 +58,35 @@ def backfill_client_ids():
                     from_email VARCHAR(255),
                     subject TEXT,
                     body TEXT,
+                    body_html LONGTEXT NULL,
                     reply TEXT,
                     score INT,
                     status VARCHAR(50),
                     rag_id VARCHAR(255),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    sentiment VARCHAR(50) DEFAULT 'Neutral',
+                    priority VARCHAR(50) DEFAULT 'Medium',
+                    execution_steps TEXT NULL,
+                    summary VARCHAR(255) NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_email_logs_client_created (client_id, created_at),
+                    INDEX idx_email_logs_client_status (client_id, status)
                 )
                 """)
-                try:
-                    cursor.execute("ALTER TABLE email_logs ADD COLUMN client_id VARCHAR(50) NULL AFTER id")
-                except:
-                    pass
-                try:
-                    cursor.execute("ALTER TABLE email_logs ADD COLUMN sentiment VARCHAR(50) DEFAULT 'Neutral'")
-                except:
-                    pass
-                try:
-                    cursor.execute("ALTER TABLE email_logs ADD COLUMN priority VARCHAR(50) DEFAULT 'Medium'")
-                except:
-                    pass
-                try:
-                    cursor.execute("ALTER TABLE email_logs ADD COLUMN execution_steps TEXT NULL")
-                except:
-                    pass
+
+                cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'email_logs'")
+                existing_cols = {row[0] for row in cursor.fetchall()}
+
+                missing_email_log_cols = [
+                    ("client_id", "VARCHAR(50) NULL"),
+                    ("sentiment", "VARCHAR(50) DEFAULT 'Neutral'"),
+                    ("priority", "VARCHAR(50) DEFAULT 'Medium'"),
+                    ("execution_steps", "TEXT NULL"),
+                    ("summary", "VARCHAR(255) NULL"),
+                    ("body_html", "LONGTEXT NULL"),
+                ]
+                for col_name, col_def in missing_email_log_cols:
+                    if col_name not in existing_cols:
+                        cursor.execute(f"ALTER TABLE email_logs ADD COLUMN {col_name} {col_def}")
                 
                 cursor.execute("SELECT id, rag_id FROM email_logs WHERE client_id IS NULL AND rag_id IS NOT NULL")
                 rows = cursor.fetchall()
@@ -376,22 +382,6 @@ def ensure_client_llm_config_table():
     except Exception as e:
         logger.warning(f"⚠️ Failed to ensure client_llm_config table: {e}")
 
-# @asynccontextmanager
-# async def lifespan(app: FastAPI):
-#     await asyncio.to_thread(ensure_create_payload_table)
-#     await asyncio.to_thread(ensure_payload_get_ticket_table)
-#     await asyncio.to_thread(ensure_users_table)
-#     await asyncio.to_thread(preload_chroma_embeddings)
-#     await asyncio.to_thread(backfill_client_ids)
-#     await asyncio.to_thread(ensure_paused_emails_table)
-#     
-#     listener_task = asyncio.create_task(redis_pubsub_listener(app))
-#     yield
-#     listener_task.cancel()
-#     try:
-#         await listener_task
-#     except asyncio.CancelledError:
-#         pass
 
 def _run_ensure_accounts_table():
     from app.db import get_db_ctx
@@ -406,6 +396,123 @@ def _run_ensure_draft_emails_table():
     from app.draft_service import ensure_draft_emails_table
     ensure_draft_emails_table()
     logger.info("✅ draft_emails table ensured at startup")
+
+def ensure_llm_logs_table():
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS llm_logs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    client_id VARCHAR(50) NOT NULL,
+                    provider VARCHAR(50) NOT NULL DEFAULT 'groq',
+                    model_name VARCHAR(100) NOT NULL,
+                    prompt_tokens INT NOT NULL,
+                    completion_tokens INT NOT NULL,
+                    cost DECIMAL(10, 6) NOT NULL,
+                    billed_cost DECIMAL(10, 6) DEFAULT NULL,
+                    latency_ms INT NOT NULL,
+                    caller_function VARCHAR(100) NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+                try:
+                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN provider VARCHAR(50) NOT NULL DEFAULT 'groq'")
+                except Exception:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN billed_cost DECIMAL(10, 6) DEFAULT NULL")
+                except Exception:
+                    pass
+                db.commit()
+        logger.info("✅ llm_logs table ensured at startup")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure llm_logs table: {e}")
+
+def _run_ensure_chat_history_table():
+    try:
+        from app.db import get_db_ctx
+        from app.chat_history import ensure_chat_history_table
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                ensure_chat_history_table(cursor)
+            db.commit()
+        logger.info("✅ chat_history table ensured at startup")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure chat_history table: {e}")
+
+def _run_ensure_keyword_filter_tables():
+    try:
+        from app.db import get_db_ctx
+        from app.keyword_filter import ensure_keyword_filter_tables
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                ensure_keyword_filter_tables(cursor)
+            db.commit()
+        logger.info("✅ keyword_filter tables ensured at startup")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure keyword_filter tables: {e}")
+
+def _run_ensure_ticket_record_table():
+    try:
+        from app.db import get_db_ctx
+        from app.email_credential import ensure_ticket_record_table
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                ensure_ticket_record_table(cursor)
+            db.commit()
+        logger.info("✅ ticket_record table ensured at startup")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure ticket_record table: {e}")
+
+def _run_ensure_marketing_senders_table():
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS marketing_senders (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        client_id VARCHAR(50) NOT NULL,
+                        sender_email VARCHAR(255) NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY unique_client_sender (client_id, sender_email)
+                    )
+                """)
+            db.commit()
+        logger.info("✅ marketing_senders table ensured at startup")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure marketing_senders table: {e}")
+
+def _run_ensure_worker_tables():
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS celery_task_log (
+                    task_id     VARCHAR(255) NOT NULL PRIMARY KEY,
+                    client_id   VARCHAR(50)  NOT NULL,
+                    from_email  VARCHAR(255) NOT NULL,
+                    status      VARCHAR(50)  NOT NULL DEFAULT 'processing',
+                    created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+                    updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                )
+                """)
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS email_customers (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    client_id VARCHAR(255) UNIQUE,
+                    rag_id VARCHAR(255),
+                    customer_name VARCHAR(255),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
+            db.commit()
+        logger.info("✅ celery_task_log and email_customers tables ensured at startup")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure worker tables: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -423,6 +530,12 @@ async def lifespan(app: FastAPI):
     await asyncio.to_thread(ensure_global_llm_tables)
     await asyncio.to_thread(ensure_client_llm_config_table)
     await asyncio.to_thread(ensure_email_disclaimers_table)
+    await asyncio.to_thread(ensure_llm_logs_table)
+    await asyncio.to_thread(_run_ensure_chat_history_table)
+    await asyncio.to_thread(_run_ensure_keyword_filter_tables)
+    await asyncio.to_thread(_run_ensure_ticket_record_table)
+    await asyncio.to_thread(_run_ensure_marketing_senders_table)
+    await asyncio.to_thread(_run_ensure_worker_tables)
 
     await asyncio.to_thread(_run_ensure_paused_email_history_table)
     
@@ -435,8 +548,16 @@ async def lifespan(app: FastAPI):
         pass
 
 
-# app = FastAPI() # old way
-app = FastAPI(lifespan=lifespan) # new way with lifespan
+app = FastAPI(lifespan=lifespan)
+
+from fastapi.middleware.cors import CORSMiddleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -512,22 +633,11 @@ class AcceptEmailRequest(BaseModel):
             raise ValueError("Password must be at least 8 characters")
         return v
 
-class RegisterRequest(BaseModel):
-    email: EmailStr
-    password: str
-    # role: str
+
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
-
-# @app.post("/register", dependencies=[Depends(RedisRateLimiter(limit=5, window=60))])
-# def register(data: RegisterRequest):
-#     from app.auth import register_user
-#     res = register_user(data.email, data.password)
-#     if not res["success"]:
-#         raise HTTPException(status_code=400, detail=res["error"])
-#     return res
 
 @app.post("/login", dependencies=[Depends(RedisRateLimiter(limit=5, window=60))])
 def login(data: LoginRequest):
@@ -598,6 +708,8 @@ def accept_email(data: AcceptEmailRequest, user: dict = Depends(get_current_user
         
 @app.get("/email-account/{client_id}")
 def get_email_account_by_id(client_id: str):
+    if not (client_id == "ALL" or client_id.startswith("CLI-")):
+        raise HTTPException(status_code=400, detail="Invalid client_id format. Expected 'CLI-XXXXXXXX' or 'ALL'")
     try:
         account = get_email_account(client_id)
         if not account:
@@ -934,16 +1046,6 @@ def get_emails_logs_endpoint(client_id: str, user: dict = Depends(get_current_us
                 except Exception as ex:
                     logger.warning(f"⚠️ Could not describe email_logs: {ex}")
                 
-                try:
-                    cursor.execute("ALTER TABLE email_logs ADD COLUMN summary VARCHAR(255) NULL")
-                    db.commit()
-                except Exception:
-                    pass
-                try:
-                    cursor.execute("ALTER TABLE email_logs ADD COLUMN body_html LONGTEXT NULL")
-                    db.commit()
-                except Exception:
-                    pass
                 
                 if client_id == "ALL":
                     cursor.execute(f"""
@@ -1020,31 +1122,11 @@ def get_tickets_logs_endpoint(client_id: str, user: dict = Depends(get_current_u
         from app.db import get_db_ctx
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                # Ensure the table is created/updated
                 try:
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS ticket_record (
-                            ticket_id  VARCHAR(50)  NOT NULL PRIMARY KEY,
-                            client_id  VARCHAR(50)  NOT NULL,
-                            mail_id    VARCHAR(100) NOT NULL,
-                            subject    TEXT         NOT NULL,
-                            body       TEXT         NOT NULL,
-                            status     VARCHAR(50)  NOT NULL,
-                            created_at TIMESTAMP    DEFAULT CURRENT_TIMESTAMP
-                        )
-                    """)
+                    from app.email_credential import ensure_ticket_record_table
+                    ensure_ticket_record_table(cursor)
                 except Exception as tbl_ex:
                     logger.warning(f"⚠️ Could not ensure ticket_record table: {tbl_ex}")
-
-                # Ensure sentiment and priority exist in ticket_record
-                try:
-                    cursor.execute("ALTER TABLE ticket_record ADD COLUMN sentiment VARCHAR(50) DEFAULT 'Neutral'")
-                except Exception:
-                    pass
-                try:
-                    cursor.execute("ALTER TABLE ticket_record ADD COLUMN priority VARCHAR(50) DEFAULT 'Medium'")
-                except Exception:
-                    pass
 
                 # Dynamically determine column
                 col = "client_id"
@@ -1269,34 +1351,9 @@ def get_llm_metrics_endpoint(client_id: str, user: dict = Depends(get_current_us
     require_client_access(client_id, user)
     try:
         from app.db import get_db_ctx
+        ensure_llm_logs_table()
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                # First ensure table exists
-                cursor.execute("""
-                CREATE TABLE IF NOT EXISTS llm_logs (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    client_id VARCHAR(50) NOT NULL,
-                    provider VARCHAR(50) NOT NULL DEFAULT 'groq',
-                    model_name VARCHAR(100) NOT NULL,
-                    prompt_tokens INT NOT NULL,
-                    completion_tokens INT NOT NULL,
-                    cost DECIMAL(10, 6) NOT NULL,
-                    billed_cost DECIMAL(10, 6) DEFAULT NULL,
-                    latency_ms INT NOT NULL,
-                    caller_function VARCHAR(100) NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-                """)
-                # Auto-migrate table if needed
-                try:
-                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN provider VARCHAR(50) NOT NULL DEFAULT 'groq'")
-                except Exception:
-                    pass
-                try:
-                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN billed_cost DECIMAL(10, 6) DEFAULT NULL")
-                except Exception:
-                    pass
-                db.commit()
                 
                 # 1. Total statistics
                 if client_id == "ALL":
@@ -1638,15 +1695,6 @@ def mark_marketing_sender(data: MarketingSenderRequest, user: dict = Depends(get
         with get_db_ctx() as db:
             with db.cursor() as cursor:
                 cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS marketing_senders (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        client_id VARCHAR(50) NOT NULL,
-                        sender_email VARCHAR(255) NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE KEY unique_client_sender (client_id, sender_email)
-                    )
-                """)
-                cursor.execute("""
                     INSERT IGNORE INTO marketing_senders (client_id, sender_email) 
                     VALUES (%s, %s)
                 """, (data.client_id, clean_sender))
@@ -1679,15 +1727,6 @@ def get_marketing_senders_endpoint(client_id: str, user: dict = Depends(get_curr
         from app.db import get_db_ctx
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS marketing_senders (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        client_id VARCHAR(50) NOT NULL,
-                        sender_email VARCHAR(255) NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE KEY unique_client_sender (client_id, sender_email)
-                    )
-                """)
                 if client_id == "ALL":
                     cursor.execute("SELECT sender_email FROM marketing_senders ORDER BY created_at DESC")
                 else:
@@ -2024,17 +2063,6 @@ def get_master_bot_status(client_id: str, user: dict = Depends(get_current_user)
     from app.db import get_db_ctx
     with get_db_ctx() as db:
         with db.cursor() as cursor:
-            try:
-                cursor.execute("ALTER TABLE email_accounts ADD COLUMN admin_bot_enabled BOOLEAN DEFAULT TRUE")
-                db.commit()
-            except Exception:
-                pass
-            try:
-                cursor.execute("ALTER TABLE email_accounts ADD COLUMN client_bot_enabled BOOLEAN DEFAULT TRUE")
-                db.commit()
-            except Exception:
-                pass
-
             cursor.execute("""
                 SELECT 
                     COALESCE(admin_bot_enabled, 1) AS admin_bot_enabled,
@@ -2065,11 +2093,6 @@ def admin_master_bot_toggle(data: AdminMasterBotToggleRequest, user: dict = Depe
     from app.db import get_db_ctx
     with get_db_ctx() as db:
         with db.cursor() as cursor:
-            try:
-                cursor.execute("ALTER TABLE email_accounts ADD COLUMN admin_bot_enabled BOOLEAN DEFAULT TRUE")
-                db.commit()
-            except Exception:
-                pass
             cursor.execute(
                 "UPDATE email_accounts SET admin_bot_enabled=%s WHERE client_id=%s",
                 (data.admin_bot_enabled, data.client_id)
@@ -2087,16 +2110,7 @@ def client_master_bot_toggle(data: ClientMasterBotToggleRequest, user: dict = De
     from app.db import get_db_ctx
     with get_db_ctx() as db:
         with db.cursor() as cursor:
-            try:
-                cursor.execute("ALTER TABLE email_accounts ADD COLUMN admin_bot_enabled BOOLEAN DEFAULT TRUE")
-                db.commit()
-            except Exception:
-                pass
-            try:
-                cursor.execute("ALTER TABLE email_accounts ADD COLUMN client_bot_enabled BOOLEAN DEFAULT TRUE")
-                db.commit()
-            except Exception:
-                pass
+
 
             # Enforce admin lock: If admin turned it off, client CANNOT turn it back on!
             cursor.execute("SELECT COALESCE(admin_bot_enabled, 1) FROM email_accounts WHERE client_id=%s", (data.client_id,))

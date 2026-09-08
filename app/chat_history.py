@@ -57,6 +57,8 @@ def _ensure_table(cursor):
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
     """)
 
+ensure_chat_history_table = _ensure_table
+
 
 # ==============================
 # 💾 MySQL — upsert ticket row

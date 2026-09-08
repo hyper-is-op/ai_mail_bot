@@ -203,7 +203,7 @@ export default function PayloadConfig() {
   const handleOpenEdit = (config: ConnectorConfig) => {
     setEditingId(config.id);
     setOauthTestResult(null);
-    const isStandard = ['ticket_create', 'order_status'].includes(config.trigger_type);
+    const isStandard = ['ticket_create', 'ticket_status', 'order_status'].includes(config.trigger_type);
     setFormData({
       ...defaultFormData,
       client_id: config.client_id,
@@ -1065,7 +1065,8 @@ export default function PayloadConfig() {
                       className="w-full p-2.5 rounded-xl border border-zinc-200 dark:border-white/10 bg-transparent focus:ring-2 focus:ring-primary/20 outline-none"
                     >
                       <option value="ticket_create" className="dark:bg-zinc-900">ticket_create (Ticket Generation)</option>
-                      <option value="order_status" className="dark:bg-zinc-900">order_status (Status Lookup)</option>
+                      <option value="ticket_status" className="dark:bg-zinc-900">ticket_status (Ticket Status Tracking)</option>
+                      <option value="order_status" className="dark:bg-zinc-900">order_status (Order Status Tracking)</option>
                       <option value="custom" className="dark:bg-zinc-900">Custom Trigger...</option>
                     </select>
                   </div>

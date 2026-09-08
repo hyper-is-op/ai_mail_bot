@@ -161,11 +161,6 @@ def log_llm_metrics_db(client_id: str, provider: str, model_name: str, prompt_to
         from app.db import get_db_ctx
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                # Ensure provider column exists in llm_logs
-                try:
-                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN provider VARCHAR(50) NOT NULL DEFAULT 'groq'")
-                except Exception:
-                    pass
 
                 cursor.execute("SELECT cost_multiplier FROM email_accounts WHERE client_id=%s", (client_id,))
                 row = cursor.fetchone()
@@ -746,6 +741,54 @@ def _format_history(history: list) -> str:
 
 
 # ==============================
+# 🎫 Ticket & Order ID Extractor
+# ==============================
+def extract_ticket_and_order_ids(text: str) -> list[str]:
+    """
+    Extracts all ticket IDs, order numbers, case numbers, and reference numbers
+    from text using comprehensive regex patterns. Returns cleaned, deduplicated IDs.
+    Also handles email line-wrapping/folding across newlines.
+    """
+    if not text:
+        return []
+    
+    # Normalize soft line breaks within potential tokens (e.g., #27542400000039\r\n9001 -> #275424000000399001)
+    texts_to_check = [text]
+    unwrapped_text = re.sub(r'([A-Za-z0-9_#-]+)[\r\n]+([A-Za-z0-9_-]+)', r'\1\2', text)
+    if unwrapped_text != text:
+        texts_to_check.append(unwrapped_text)
+
+    ids = []
+    for t in texts_to_check:
+        # 1. Standard pattern formats like T-YYMMDD-XXXXX
+        for m in re.finditer(r'\b(T-\d{6}-\d+)\b', t, re.IGNORECASE):
+            ids.append(m.group(1).upper())
+        # 2. Common CRM / Ticketing prefixes (ORD, INC, CAS, SR, REQ)
+        for m in re.finditer(r'\b(ORD-?\d+|INC\d+|CAS-\d+(?:-[A-Za-z0-9]+)?|SR-\d+|REQ\d+)\b', t, re.IGNORECASE):
+            ids.append(m.group(1).upper())
+        # 3. Explicit keywords: ticket/case/order/complaint/issue/ref followed by an ID
+        for m in re.finditer(r'(?:ticket|case|order|complaint|issue|incident|ref(?:erence)?)\s*(?:id|no|num|number)?\s*[:#\s-]?\s*#?([A-Za-z0-9_-]{4,30})', t, re.IGNORECASE):
+            val = m.group(1).strip()
+            if val.lower() not in ("status", "update", "details", "information", "number", "issue", "query", "support", "please", "regarding", "about", "there", "here"):
+                ids.append(val)
+        # 4. Hash followed by digits/alphanumeric (e.g. #275424000000399001, #98765)
+        for m in re.finditer(r'#([A-Za-z0-9_-]{4,30})', t):
+            val = m.group(1).strip()
+            if val:
+                ids.append(val)
+
+    clean_ids = []
+    for item in ids:
+        cleaned = item.strip().lstrip("#").strip()
+        if cleaned and cleaned not in clean_ids:
+            # If a longer version of this ID exists in clean_ids (e.g., 275424000000399001 vs 27542400000039), prefer the longer one
+            if any(c != cleaned and cleaned in c for c in ids):
+                continue
+            clean_ids.append(cleaned)
+    return clean_ids
+
+
+# ==============================
 # 🧠 Detect Intent
 # ==============================
 def detect_intent_llm(query: str) -> dict:
@@ -753,7 +796,7 @@ def detect_intent_llm(query: str) -> dict:
 You are a query classifier. Your only job is to analyze the user query and return structured JSON.
 
 ## Task
-Classify the query into exactly one intent, extract ALL ticket_ids if present, perform sentiment analysis, and assign a priority level.
+Classify the query into exactly one intent, extract ALL ticket_ids/order_ids if present, perform sentiment analysis, and assign a priority level.
 
 ## Intents
 - `ticket_create`: User is explicitly asking to create, open, raise, or log a new ticket/complaint/case, or asking support to create a ticket for their issue
@@ -774,13 +817,17 @@ Classify priority level into exactly one of:
 - `Medium`: General query or ticket status checks with neutral sentiment.
 - `Low`: Marketing/newsletter emails, promotional updates, positive feedback, or suggestions.
 
-## Ticket ID Patterns
-- Support ticket: T-YYMMDD-XXXXX (e.g. T-260505-00117)
-- Order ID: alphanumeric (e.g. ORD12345, #98765)
+## Ticket & Order ID Extraction
+Extract ALL ticket IDs, case numbers, order IDs, or tracking references mentioned in the query.
+Examples:
+- Numeric & Hash IDs: `#275424000000399001`, `275424000000399001`, `#98765`, `#123456`
+- Support tickets: `T-260505-00117`, `T-YYMMDD-XXXXX`
+- Helpdesk / Incident / Case IDs: `INC1234567`, `CAS-98765`, `SR-10293`
+- Order / Tracking IDs: `ORD12345`, `ORD-98765`, `ORDER#54321`
 
 ## Rules
 - Return ONLY raw JSON. No explanation, no markdown, no extra text.
-- Extract ALL ticket IDs found in the query into a list.
+- Extract ALL ticket/order IDs found in the query into the `ticket_ids` list. Return clean IDs (strip leading '#' symbols).
 - If no ticket_id is found, set ticket_ids to empty list [].
 - If intent is `marketing_promotional`, sentiment is typically `Neutral` and priority is `Low`.
 
@@ -830,17 +877,31 @@ Classify priority level into exactly one of:
 
         data = json.loads(cleaned_output)
         intent = data.get("intent", "general_query")
-        ticket_ids = data.get("ticket_ids", [])
+        raw_ticket_ids = data.get("ticket_ids", [])
         sentiment = data.get("sentiment", "Neutral")
         priority = data.get("priority", "Medium")
 
-        if isinstance(ticket_ids, str):
-            ticket_ids = [ticket_ids] if ticket_ids else []
+        if isinstance(raw_ticket_ids, str):
+            raw_ticket_ids = [raw_ticket_ids] if raw_ticket_ids else []
 
-        logger.info(f"✅ Intent detected: intent={intent}, ticket_ids={ticket_ids}, sentiment={sentiment}, priority={priority}")
+        cleaned_ticket_ids = []
+        for tid in raw_ticket_ids:
+            if isinstance(tid, str):
+                c = tid.strip().lstrip("#").strip()
+                if c and c not in cleaned_ticket_ids:
+                    cleaned_ticket_ids.append(c)
+
+        # Regex fallback verification if LLM missed ticket IDs
+        if not cleaned_ticket_ids:
+            regex_ids = extract_ticket_and_order_ids(query)
+            if regex_ids:
+                cleaned_ticket_ids = regex_ids
+                logger.info(f"🔎 Regex supplemented ticket IDs: {cleaned_ticket_ids}")
+
+        logger.info(f"✅ Intent detected: intent={intent}, ticket_ids={cleaned_ticket_ids}, sentiment={sentiment}, priority={priority}")
         return {
             "intent": intent, 
-            "ticket_ids": ticket_ids, 
+            "ticket_ids": cleaned_ticket_ids, 
             "sentiment": sentiment, 
             "priority": priority,
             "used_fallback": False
@@ -851,8 +912,7 @@ Classify priority level into exactly one of:
 
         ticket_ids = []
         try:
-            matches = re.findall(r'(T-\d{6}-\d{5}|ORD\d+)', query, re.IGNORECASE)
-            ticket_ids = matches if matches else []
+            ticket_ids = extract_ticket_and_order_ids(query)
         except Exception:
             pass
 
@@ -1164,12 +1224,12 @@ def scan_history_for_ticket(query: str, history: list) -> dict:
     for the current customer query.
 
     Returns:
-        {"found": True,  "ticket_id": "T-260601-12345"}
-        {"found": False, "ticket_id": None}
-        {"found": "ambiguous", "ticket_ids": [...]}  ← multiple, cannot decide
+        {"found": True,  "ticket_id": "275424000000399001", "ambiguous": False}
+        {"found": False, "ticket_id": None, "ambiguous": False}
+        {"found": True, "ticket_id": None, "ambiguous": True, "ticket_ids": [...]}
     """
     if not history:
-        return {"found": False, "ticket_id": None}
+        return {"found": False, "ticket_id": None, "ambiguous": False}
 
     # Format history for prompt
     history_text = _format_history(history)
@@ -1184,9 +1244,9 @@ You are a support assistant analyzing a conversation history to find a relevant 
 {history_text}
 
 ## Task
-1. Look through the conversation history for any ticket IDs (e.g. T-260601-12345) or order IDs (e.g. ORD12345).
+1. Look through the conversation history for any ticket/case IDs (e.g. #275424000000399001, T-260601-12345, INC123456) or order IDs (e.g. ORD12345, #98765).
 2. Determine if any of them are relevant to the current query.
-3. If one is clearly relevant, return it.
+3. If one is clearly relevant, return it (clean ID without '#').
 4. If multiple exist and you cannot determine which is relevant, return all of them as ambiguous.
 5. If none are relevant or none exist, return not found.
 
@@ -1228,12 +1288,34 @@ If none found:
             raise ValueError("No JSON found in history scan response")
 
         data = json.loads(match.group(0).strip())
+        
+        # Clean ticket_id or ticket_ids in output
+        tid = data.get("ticket_id")
+        if isinstance(tid, str):
+            data["ticket_id"] = tid.strip().lstrip("#").strip()
+
+        tids = data.get("ticket_ids", [])
+        if isinstance(tids, list):
+            cleaned_list = []
+            for item in tids:
+                if isinstance(item, str):
+                    c = item.strip().lstrip("#").strip()
+                    if c and c not in cleaned_list:
+                        cleaned_list.append(c)
+            data["ticket_ids"] = cleaned_list
+
         logger.info(f"✅ History scan result: {data}")
         return data
 
     except Exception as e:
         logger.error(f"❌ History scan failed: {e}")
-        return {"found": False, "ticket_id": None}
+        # Regex fallback scanning history
+        history_ids = extract_ticket_and_order_ids(history_text)
+        if len(history_ids) == 1:
+            return {"found": True, "ticket_id": history_ids[0], "ambiguous": False}
+        elif len(history_ids) > 1:
+            return {"found": True, "ticket_id": None, "ambiguous": True, "ticket_ids": history_ids}
+        return {"found": False, "ticket_id": None, "ambiguous": False}
 
 
 
