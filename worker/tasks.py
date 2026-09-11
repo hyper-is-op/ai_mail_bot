@@ -3,6 +3,7 @@ import json
 import re
 import os
 import random
+import uuid
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 
@@ -171,7 +172,7 @@ _dispatch_or_draft_reply = dispatch_or_draft_reply
 
 @celery.task(bind=True, max_retries=2, default_retry_delay=10)
 def process_email_task(self, data: Dict[str, Any]):
-    task_id = self.request.id
+    task_id = self.request.id or str(uuid.uuid4())
     client_id = data.get("client_id", "SYSTEM") or "SYSTEM"
     from_email = (data.get("from_email") or "").strip()
     logger.info(f"📥 Received email task [{task_id}]: from={from_email} subject={data.get('subject')}")

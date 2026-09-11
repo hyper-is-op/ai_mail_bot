@@ -154,7 +154,7 @@ def create_ticket_and_reply(
             """, (
                 outgoing_ticket_id,
                 client_id,
-                data.get("mail_id", f"msg-{outgoing_ticket_id}"),
+                data.get("mail_id") or data.get("message_id") or f"msg-{outgoing_ticket_id}",
                 data["subject"],
                 data["body"],
                 "Ticket_Generated",
