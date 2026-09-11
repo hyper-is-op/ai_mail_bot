@@ -1,4 +1,5 @@
 import logging
+import re
 from typing import Tuple, Optional, Dict, Any
 from app.mailer import send_email
 from app.action_outbox import execute_idempotent_action
@@ -96,14 +97,23 @@ def create_ticket_and_reply(
     if features is None:
         features = {"feature_auto_send": True}
 
-    message_ref = data.get("message_id") or data.get("mail_id") or f"{client_id}:{data['from_email']}:{data['subject']}"
+    raw_sub = (data.get("subject") or "").strip()
+    if not raw_sub or raw_sub.lower() in ("(no subject)", "no subject", "none", "null"):
+        fallback_text = (data.get("body") or context or "").strip()
+        first_line = fallback_text.split("\n")[0].strip() if fallback_text else ""
+        clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
+        effective_subject = clean_first if len(clean_first) >= 3 else "Support Request"
+    else:
+        effective_subject = raw_sub
+
+    message_ref = data.get("message_id") or data.get("mail_id") or f"{client_id}:{data['from_email']}:{effective_subject}"
 
     # 1. Execute idempotent CRM Ticket Creation
     def _do_create():
         return run_ticket_create(
             client_id=client_id,
             from_email=data["from_email"],
-            subject=data["subject"],
+            subject=effective_subject,
             body=data["body"],
             history=history,
             sentiment=sentiment,

@@ -1,6 +1,7 @@
 # app/context_data.py
 
 from typing import TypedDict, Optional
+import re
 
 
 class ContextData(TypedDict, total=False):
@@ -125,10 +126,17 @@ def build_context_data_base(
     ad-hoc inline variable assembly.
     """
     from app.llm import extract_name_from_email
+    clean_sub = (subject or "").strip()
+    if not clean_sub or clean_sub.lower() in ("(no subject)", "no subject", "none", "null"):
+        fallback_text = (cleaned_body or body or "").strip()
+        first_line = fallback_text.split("\n")[0].strip() if fallback_text else ""
+        clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
+        clean_sub = clean_first if len(clean_first) >= 3 else "Support Request"
+
     return {
         "client_id": client_id or "",
         "from_email": from_email or "",
-        "subject": subject or "",
+        "subject": clean_sub,
         "body": body if body is not None else "",
         "cleaned_body": cleaned_body if cleaned_body is not None else (body or ""),
         "ticket_id": ticket_id,

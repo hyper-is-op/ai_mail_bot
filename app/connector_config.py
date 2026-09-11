@@ -46,8 +46,15 @@ def run_ticket_create(
     if config is None:
         return {"success": False, "ticket_id": None, "error": f"No live ticket_create connector config for client_id={client_id}"}
 
+    clean_sub = (subject or "").strip()
+    if not clean_sub or clean_sub.lower() in ("(no subject)", "no subject", "none", "null"):
+        fallback_text = (body or "").strip()
+        first_line = fallback_text.split("\n")[0].strip() if fallback_text else ""
+        clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
+        clean_sub = clean_first if len(clean_first) >= 3 else "Support Request"
+
     context_base = build_context_data_base(
-        client_id=client_id, from_email=from_email, subject=subject,
+        client_id=client_id, from_email=from_email, subject=clean_sub,
         body=body, cleaned_body=body, ticket_id=None,
         intent=intent, sentiment=sentiment, priority=priority,
         history=history,

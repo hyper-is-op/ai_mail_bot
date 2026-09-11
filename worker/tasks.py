@@ -214,11 +214,13 @@ def process_email_task(self, data: Dict[str, Any]):
         ctx.features = features
 
         # Normalize subject: if missing or blank, derive from first line of body
-        if not ctx.subject:
+        if not ctx.subject or ctx.subject.lower() in ("(no subject)", "no subject", "none", "null"):
             first_line = ctx.body.strip().split("\n")[0].strip() if ctx.body.strip() else ""
             clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
             ctx.subject = clean_first if len(clean_first) >= 3 else "Support Request"
             logger.info(f"🏷️ Empty subject normalized to: '{ctx.subject}'")
+
+        data["subject"] = ctx.subject
 
         # Strip disclaimers if enabled
         if features.get("feature_strip_disclaimers", True):
@@ -291,7 +293,7 @@ def process_email_task(self, data: Dict[str, Any]):
         elif ctx.response_action == "create_ticket":
             logger.info("🎫 Evaluator decided to escalate and create ticket")
             reply, outgoing_ticket_id, status = create_ticket_and_reply(
-                data=data,
+                data=ctx.to_task_data(),
                 client_id=client_id,
                 context=ctx.draft_reply or ctx.body,
                 history=ctx.history,

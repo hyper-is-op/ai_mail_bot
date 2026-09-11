@@ -86,7 +86,13 @@ def _render_template(template_json: str | dict | None, context: dict) -> dict | 
                 f"Template placeholder '{{{{{key}}}}}' has no value in this "
                 f"email's context (missing or None) — cannot render."
             )
-        escaped = json.dumps(str(context[key]))[1:-1]
+        val = str(context[key])
+        if key == "subject" and (not val.strip() or val.strip().lower() in ("(no subject)", "no subject", "none", "null")):
+            body_val = str(context.get("body") or "").strip()
+            first_line = body_val.split("\n")[0].strip() if body_val else ""
+            clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
+            val = clean_first if len(clean_first) >= 3 else "Support Request"
+        escaped = json.dumps(val)[1:-1]
         return escaped
 
     rendered_str = _PLACEHOLDER_RE.sub(_replace, template_json)

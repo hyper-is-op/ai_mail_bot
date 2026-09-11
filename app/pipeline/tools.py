@@ -152,16 +152,12 @@ def execute_tool_call(
                 }
 
         elif tool_name == "escalate_and_create_ticket":
-            issue_summary = arguments.get("issue_summary", ctx.subject)
+            issue_summary = (arguments.get("issue_summary") or "").strip() or ctx.subject
             priority = arguments.get("priority", ctx.priority or "Medium")
 
-            task_data = {
-                "from_email": ctx.from_email,
-                "subject": ctx.subject,
-                "body": ctx.body,
-                "message_id": ctx.message_id,
-                "mail_id": ctx.mail_id
-            }
+            task_data = ctx.to_task_data()
+            if ctx.subject.lower() in ("support request", "(no subject)", "no subject") and issue_summary:
+                task_data["subject"] = issue_summary[:100]
 
             reply, ticket_id, status = create_ticket_and_reply(
                 data=task_data,

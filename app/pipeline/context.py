@@ -62,8 +62,8 @@ class PipelineContext:
                 body_html = body_text
             body_text = extract_clean_text_from_html(body_text)
 
-        # Normalize subject if missing
-        if not raw_subject:
+        # Normalize subject if missing or blank placeholder
+        if not raw_subject or raw_subject.lower() in ("(no subject)", "no subject", "none", "null"):
             first_line = body_text.strip().split("\n")[0].strip() if body_text.strip() else ""
             clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
             raw_subject = clean_first if len(clean_first) >= 3 else "Support Request"
@@ -82,6 +82,20 @@ class PipelineContext:
             sender_name=data.get("sender_name")
         )
 
+    def to_task_data(self) -> Dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "client_id": self.client_id,
+            "from_email": self.from_email,
+            "subject": self.subject,
+            "body": self.body,
+            "body_html": self.body_html,
+            "message_id": self.message_id,
+            "mail_id": self.mail_id,
+            "in_reply_to": self.in_reply_to,
+            "sender_name": self.sender_name
+        }
+
     def log_step(self, step_name: str):
         self.execution_steps.append(step_name)
 
@@ -91,3 +105,4 @@ class PipelineContext:
         self.halt_reason = reason
         if log_step_name:
             self.log_step(log_step_name)
+
