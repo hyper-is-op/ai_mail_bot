@@ -50,7 +50,9 @@ def run_ticket_create(
         client_id=client_id, from_email=from_email, subject=subject,
         body=body, cleaned_body=body, ticket_id=None,
         intent=intent, sentiment=sentiment, priority=priority,
+        history=history,
     )
+
 
     result = execute_connector(config, context_base, body=body, history=history, old_summary=old_summary)
     if not result.get("success"):
@@ -127,7 +129,9 @@ def run_order_status_lookup(
         client_id=client_id, from_email=from_email, subject=subject,
         body=body, cleaned_body=body, ticket_id=ticket_id,
         intent=intent, sentiment=sentiment, priority=priority,
+        history=history,
     )
+
 
     result = execute_connector(selected_config, context_base, body=body, history=history, old_summary=old_summary)
     if not result.get("success"):

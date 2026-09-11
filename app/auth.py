@@ -63,6 +63,47 @@ def register_admin_by_admin(email, password, creator_client_id):
     finally:
         conn.close()
 
+
+def ensure_admin_seeded():
+    """
+    Auto-seeds or syncs an admin user defined in .env (ADMIN_EMAIL, ADMIN_PASSWORD).
+    Runs on startup so any new/blank database gets an admin automatically.
+    """
+    admin_email = os.getenv("ADMIN_EMAIL", "").strip()
+    admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
+    if not admin_email or not admin_password:
+        return
+
+    ensure_users_table()
+    conn = get_db()
+    try:
+        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+            cursor.execute("SELECT id, role, password_hash FROM users WHERE email=%s", (admin_email,))
+            existing = cursor.fetchone()
+            p_hash = hash_password(admin_password)
+
+            if existing:
+                # Update password/role/status if changed in .env
+                if existing.get("role") != "admin" or existing.get("password_hash") != p_hash or existing.get("status") != "active":
+                    cursor.execute(
+                        "UPDATE users SET role='admin', status='active', password_hash=%s WHERE id=%s",
+                        (p_hash, existing["id"])
+                    )
+                    conn.commit()
+            else:
+                client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
+                cursor.execute(
+                    "INSERT INTO users (client_id, email, password_hash, role, status, name) "
+                    "VALUES (%s, %s, %s, 'admin', 'active', 'System Admin')",
+                    (client_id, admin_email, p_hash)
+                )
+                conn.commit()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"⚠️ Failed to seed admin user from .env: {e}")
+    finally:
+        conn.close()
+
 def login_user(email, password):
     ensure_users_table()
     conn = get_db()

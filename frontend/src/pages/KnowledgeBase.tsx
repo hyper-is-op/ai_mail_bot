@@ -78,7 +78,7 @@ export default function KnowledgeBase() {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const allowedExtensions = ['pdf', 'doc', 'docx', 'txt'];
+    const allowedExtensions = ['md', 'markdown', 'txt', 'docx', 'doc', 'pdf'];
     const ext = file.name.split('.').pop()?.toLowerCase();
 
     if (!ext || !allowedExtensions.includes(ext)) {
@@ -249,13 +249,13 @@ export default function KnowledgeBase() {
               ) : (
                 <form onSubmit={handleFileUpload} className="space-y-3">
                   <div className="space-y-1.5">
-                    <label className="text-xs font-medium text-foreground block">Supported Formats: PDF, DOC, DOCX, TXT only</label>
+                    <label className="text-xs font-medium text-foreground block">Supported Formats: MD, TXT, DOCX, PDF</label>
                     <div className="border-2 border-dashed border-black/[0.1] dark:border-white/[0.1] hover:border-primary/50 transition-all rounded-lg p-6 flex flex-col items-center justify-center relative cursor-pointer group">
                       <input 
                         type="file" 
                         id="rag-file-input"
                         required
-                        accept=".pdf,.doc,.docx,.txt"
+                        accept=".md,.markdown,.txt,.docx,.doc,.pdf"
                         onChange={handleFileChange}
                         className="absolute inset-0 opacity-0 cursor-pointer"
                       />
@@ -358,15 +358,13 @@ export default function KnowledgeBase() {
                         {doc.doc_type && <span className="uppercase text-[9px] bg-primary/10 text-primary px-1.5 py-0.5 rounded font-mono">{doc.doc_type}</span>}
                       </div>
                     </div>
-                    {user?.role !== 'admin' && (
-                      <button 
-                        onClick={() => handleDelete(doc.id)} 
-                        className="text-muted-foreground hover:text-red-500 hover:bg-red-500/10 p-1.5 rounded-md transition-all cursor-pointer"
-                        title="Delete Document"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    )}
+                    <button 
+                      onClick={() => handleDelete(doc)} 
+                      className="text-muted-foreground hover:text-red-500 hover:bg-red-500/10 p-1.5 rounded-md transition-all cursor-pointer"
+                      title="Delete Document"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 ))}
               </div>

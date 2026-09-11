@@ -20,7 +20,10 @@ function authHeaders(): Record<string, string> {
 async function handleAuthFailure(res: Response) {
   if (res.status === 401) {
     localStorage.removeItem('user');
-    window.location.href = '/login';
+    // Only redirect if not already on the login page to prevent wiping form state/error messages
+    if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.location.href = '/login';
+    }
   }
 }
 
@@ -880,5 +883,26 @@ export const api = {
       body: JSON.stringify(params),
     });
     return safeJson(res, 'Failed to execute batch send by filter');
+  },
+
+  async getActionOutbox(params?: { client_id?: string; status?: string; limit?: number }) {
+    const q = new URLSearchParams();
+    if (params?.client_id) q.set('client_id', params.client_id);
+    if (params?.status) q.set('status', params.status);
+    if (params?.limit) q.set('limit', String(params.limit));
+    const qs = q.toString() ? `?${q.toString()}` : '';
+    const res = await fetch(`${BASE_URL}/admin/action-outbox${qs}`, {
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to fetch action outbox telemetry');
+  },
+
+  async sweepActionOutbox(maxAgeSeconds?: number) {
+    const q = maxAgeSeconds ? `?max_age_seconds=${maxAgeSeconds}` : '';
+    const res = await fetch(`${BASE_URL}/admin/action-outbox/sweep${q}`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to trigger outbox sweep');
   },
 };

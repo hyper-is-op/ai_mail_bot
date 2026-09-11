@@ -300,8 +300,8 @@ export default function Login() {
           </p>
           <div className="flex items-center gap-6 pt-4 border-t border-zinc-200 dark:border-white/10">
             <div className="flex flex-col gap-0.5">
-              <span className="text-2xl font-bold text-zinc-900 dark:text-white font-mono">99.8%</span>
-              <span className="text-xs text-zinc-500 dark:text-zinc-400 uppercase tracking-wider font-semibold">AI Accuracy</span>
+              <span className="text-2xl font-bold text-zinc-900 dark:text-white font-mono">Automation</span>
+              <span className="text-xs text-zinc-500 dark:text-zinc-400 uppercase tracking-wider font-semibold">Integrated</span>
             </div>
             <div className="w-px h-8 bg-zinc-200 dark:bg-white/10"></div>
             <div className="flex flex-col gap-0.5">

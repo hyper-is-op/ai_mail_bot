@@ -72,3 +72,41 @@ class RedisRateLimiter:
             raise
         except Exception as e:
             logger.error(f"❌ Redis Rate Limiter execution error: {e}. Passing request to avoid blocking.")
+
+
+def check_sender_rate_limit(
+    client_id: str,
+    from_email: str,
+    limit: int = 10,
+    window_seconds: int = 3600
+) -> tuple[bool, int]:
+    """
+    Checks if an inbound sender has exceeded their hourly email processing limit.
+    Returns (is_allowed: bool, current_count: int).
+    """
+    if not from_email or not client_id:
+        return True, 0
+
+    sender_clean = from_email.lower().strip()
+    key = f"ratelimit:sender:{client_id}:{sender_clean}"
+
+    try:
+        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
+        if not redis_url:
+            redis_url = "redis://localhost:6379/0"
+        r = redis.from_url(redis_url, decode_responses=True)
+
+        current = r.get(key)
+        if current is not None and int(current) >= limit:
+            return False, int(current)
+
+        pipe = r.pipeline()
+        pipe.incr(key)
+        if current is None:
+            pipe.expire(key, window_seconds)
+        results = pipe.execute()
+        new_count = results[0] if results else 1
+        return True, new_count
+    except Exception as e:
+        logger.warning(f"⚠️ Redis rate limiter error for sender {from_email}: {e}. Allowing passthrough.")
+        return True, 0

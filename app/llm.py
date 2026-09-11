@@ -354,8 +354,8 @@ def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
 
     # 5. Ultimate fallback to environment variables
     if not resolved_config:
-        default_groq_key = os.getenv("GROQ_API_KEY", "")
-        default_groq_model = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+        default_groq_key = os.getenv("GROQ_API_KEY", "").strip()
+        default_groq_model = os.getenv("GROQ_MODEL", "").strip()
         resolved_config = {
             "provider": "groq",
             "api_key": default_groq_key,
@@ -752,9 +752,9 @@ def extract_ticket_and_order_ids(text: str) -> list[str]:
     if not text:
         return []
     
-    # Normalize soft line breaks within potential tokens (e.g., #27542400000039\r\n9001 -> #275424000000399001)
+    # Normalize soft line breaks ONLY within ticket tokens split across lines (e.g., #27542400000039\r\n9001 -> #275424000000399001)
     texts_to_check = [text]
-    unwrapped_text = re.sub(r'([A-Za-z0-9_#-]+)[\r\n]+([A-Za-z0-9_-]+)', r'\1\2', text)
+    unwrapped_text = re.sub(r'(#\d+|\bT-\d+|\bORD-\d+|\bINC\d+|\d+)[\r\n]+(\d+)', r'\1\2', text)
     if unwrapped_text != text:
         texts_to_check.append(unwrapped_text)
 
@@ -767,14 +767,22 @@ def extract_ticket_and_order_ids(text: str) -> list[str]:
         for m in re.finditer(r'\b(ORD-?\d+|INC\d+|CAS-\d+(?:-[A-Za-z0-9]+)?|SR-\d+|REQ\d+)\b', t, re.IGNORECASE):
             ids.append(m.group(1).upper())
         # 3. Explicit keywords: ticket/case/order/complaint/issue/ref followed by an ID
-        for m in re.finditer(r'(?:ticket|case|order|complaint|issue|incident|ref(?:erence)?)\s*(?:id|no|num|number)?\s*[:#\s-]?\s*#?([A-Za-z0-9_-]{4,30})', t, re.IGNORECASE):
+        # CRITICAL: Candidate ID MUST contain at least one digit to prevent matching words like "what", "first", "details"
+        for m in re.finditer(r'(?:ticket|case|order|complaint|issue|incident|ref(?:erence)?)\s*(?:id|no|num|number)?\s*[:#\s-]?\s*#?([A-Za-z0-9_-]{1,30})', t, re.IGNORECASE):
             val = m.group(1).strip()
-            if val.lower() not in ("status", "update", "details", "information", "number", "issue", "query", "support", "please", "regarding", "about", "there", "here"):
+            if not re.search(r'\d', val):
+                continue
+            if val.lower() not in (
+                "status", "update", "details", "information", "number", "issue", "query",
+                "support", "please", "regarding", "about", "there", "here", "with", "from",
+                "that", "this", "resolved", "fixed", "been", "have"
+            ):
                 ids.append(val)
-        # 4. Hash followed by digits/alphanumeric (e.g. #275424000000399001, #98765)
-        for m in re.finditer(r'#([A-Za-z0-9_-]{4,30})', t):
+        # 4. Hash followed by digits/alphanumeric (e.g. #275424000000399001, #98765, #121)
+        # Must contain at least one digit
+        for m in re.finditer(r'#([A-Za-z0-9_-]{1,30})', t):
             val = m.group(1).strip()
-            if val:
+            if val and re.search(r'\d', val):
                 ids.append(val)
 
     clean_ids = []
@@ -799,23 +807,25 @@ You are a query classifier. Your only job is to analyze the user query and retur
 Classify the query into exactly one intent, extract ALL ticket_ids/order_ids if present, perform sentiment analysis, and assign a priority level.
 
 ## Intents
+- `issue_resolved`: Customer explicitly indicates that their problem, issue, ticket, or inquiry has been resolved, fixed, sorted out, is working fine now, or they no longer need assistance (with no new questions or pending problems).
+- `off_topic_nonsense`: Standalone greetings/casual openers with no issue described (e.g. "hello", "hi there", "hello ladies", "hey guys", "good morning"), unintelligible gibberish, keyboard mash, spam, test text, blank/random characters, or completely off-topic emails unrelated to company support, products, or services.
 - `ticket_create`: User is explicitly asking to create, open, raise, or log a new ticket/complaint/case, or asking support to create a ticket for their issue
 - `ticket_status`: User is asking about status of an existing ticket, order, complaint, delivery, or support request
 - `marketing_promotional`: Marketing email, promotional campaign, newsletter, job alert blast, webinar invite, discount/sale offer, automated digest, or educational course advertisement (requiring no customer support action)
-- `general_query`: Genuine customer support query, product question, policy inquiry, technical issue, or feedback requiring an answer
+- `general_query`: Genuine customer support query, product question, policy inquiry, technical issue, or problem description requiring an answer (MUST contain an actual question, problem, or inquiry).
 
 ## Sentiment Analysis
 Classify user sentiment into exactly one of:
 - `Angry`: User shows frustration, anger, impatience, or threatens escalation/cancellation.
-- `Neutral`: General query, factual, standard request, or marketing/newsletter announcement.
-- `Happy`: Expresses gratitude, happiness, satisfaction.
+- `Neutral`: General query, factual, standard request, off-topic, or marketing/newsletter announcement.
+- `Happy`: Expresses gratitude, happiness, satisfaction, or that their issue is resolved.
 
 ## Priority Tagging
 Classify priority level into exactly one of:
 - `Critical`: Urgent issues like order cancellation, immediate refunds, lawsuit threats, legal actions, security/data issues, or extreme user anger.
 - `High`: General support issues with angry/impatient sentiment, or containing key words like "urgent", "broken", "cancel", "refund", "sue", "failed".
 - `Medium`: General query or ticket status checks with neutral sentiment.
-- `Low`: Marketing/newsletter emails, promotional updates, positive feedback, or suggestions.
+- `Low`: Marketing/newsletter emails, promotional updates, positive feedback, issue resolved notices, off-topic nonsense, or suggestions.
 
 ## Ticket & Order ID Extraction
 Extract ALL ticket IDs, case numbers, order IDs, or tracking references mentioned in the query.
@@ -829,11 +839,14 @@ Examples:
 - Return ONLY raw JSON. No explanation, no markdown, no extra text.
 - Extract ALL ticket/order IDs found in the query into the `ticket_ids` list. Return clean IDs (strip leading '#' symbols).
 - If no ticket_id is found, set ticket_ids to empty list [].
-- If intent is `marketing_promotional`, sentiment is typically `Neutral` and priority is `Low`.
+- If the query is just a greeting, salutation, or pleasantry with no issue described (e.g. "hi", "hello", "hello ladies", "good morning", "how are you"), intent MUST be `off_topic_nonsense`.
+- Do NOT classify a query as `general_query` unless it presents an actual question, problem description, product inquiry, or request for support.
+- If intent is `issue_resolved`, sentiment is typically `Happy` or `Neutral` and priority is `Low`.
+- If intent is `off_topic_nonsense` or `marketing_promotional`, sentiment is typically `Neutral` and priority is `Low`.
 
 ## Output Format
 {{
-  "intent": "ticket_create" | "ticket_status" | "marketing_promotional" | "general_query",
+  "intent": "issue_resolved" | "off_topic_nonsense" | "ticket_create" | "ticket_status" | "marketing_promotional" | "general_query",
   "ticket_ids": ["<id1>", "<id2>"] | [],
   "sentiment": "Angry" | "Neutral" | "Happy",
   "priority": "Critical" | "High" | "Medium" | "Low"
@@ -888,7 +901,7 @@ Examples:
         for tid in raw_ticket_ids:
             if isinstance(tid, str):
                 c = tid.strip().lstrip("#").strip()
-                if c and c not in cleaned_ticket_ids:
+                if c and re.search(r'\d', c) and c.lower() not in ("none", "null", "n/a", "unknown") and c not in cleaned_ticket_ids:
                     cleaned_ticket_ids.append(c)
 
         # Regex fallback verification if LLM missed ticket IDs
@@ -916,21 +929,38 @@ Examples:
         except Exception:
             pass
 
-        fallback_intent = "ticket_status" if ticket_ids else "general_query"
+        q_lower = query.lower().strip()
         
-        q_lower = query.lower()
-        if any(w in q_lower for w in ["sue", "legal", "lawyer", "court", "scam"]):
-            fallback_priority = "Critical"
-            fallback_sentiment = "Angry"
-        elif any(w in q_lower for w in ["refund", "cancel", "urgent", "wrong", "fake", "bad", "worst"]):
-            fallback_priority = "High"
-            fallback_sentiment = "Angry"
-        elif any(w in q_lower for w in ["thanks", "thank you", "great", "good", "happy"]):
+        # Check resolved patterns
+        resolved_keywords = [
+            "issue is resolved", "issue resolved", "problem is resolved", "problem resolved",
+            "solved now", "fixed now", "working now", "it works now", "working fine now",
+            "all good now", "never mind", "nevermind", "please close the ticket", "close ticket",
+            "no longer need help", "resolved my issue"
+        ]
+        
+        if any(rk in q_lower for rk in resolved_keywords):
+            fallback_intent = "issue_resolved"
             fallback_priority = "Low"
             fallback_sentiment = "Happy"
-        else:
+        elif ticket_ids:
+            fallback_intent = "ticket_status"
             fallback_priority = "Medium"
             fallback_sentiment = "Neutral"
+        else:
+            fallback_intent = "general_query"
+            if any(w in q_lower for w in ["sue", "legal", "lawyer", "court", "scam"]):
+                fallback_priority = "Critical"
+                fallback_sentiment = "Angry"
+            elif any(w in q_lower for w in ["refund", "cancel", "urgent", "wrong", "fake", "bad", "worst"]):
+                fallback_priority = "High"
+                fallback_sentiment = "Angry"
+            elif any(w in q_lower for w in ["thanks", "thank you", "great", "good", "happy"]):
+                fallback_priority = "Low"
+                fallback_sentiment = "Happy"
+            else:
+                fallback_priority = "Medium"
+                fallback_sentiment = "Neutral"
 
         logger.info(f"🔁 Fallback intent: intent={fallback_intent}, ticket_ids={ticket_ids}, sentiment={fallback_sentiment}, priority={fallback_priority}")
         return {
@@ -953,11 +983,13 @@ def generate_reply_llm(
     from_email: str = None,
     is_ticket: bool = False,
     ticket_id: str = None,
-    history: list = None
+    history: list = None,
+    is_status_inquiry: bool = False,
 ) -> str:
     """
     Generate professional email reply.
     history: list of prior conversation dicts from chat_history module.
+    is_status_inquiry: when True, strictly prohibits hallucinating turnaround ETAs, diagnostic steps, or internal teams.
     """
 
     response_tone = "Formal"
@@ -1042,6 +1074,15 @@ Write ONLY the final email message text. No preamble, no quotes, no explanation,
     # ==========================================
     else:
 
+        status_guardrails = ""
+        if is_status_inquiry:
+            status_guardrails = """- CRITICAL STATUS INQUIRY CONSTRAINTS:
+  * State the current ticket/order status accurately as provided in Context.
+  * NEVER invent, estimate, or promise timelines, ETAs, turnaround hours, or days (e.g. DO NOT say 'within 2 hours', 'within 24 hours', or 'within 48 hours').
+  * NEVER invent fictional diagnostic procedures, manufacturing logs, internal QA teams, or technician assignments.
+  * Address any specific notes, questions, or updates the customer mentioned, and assure them their notes are logged for the support team.
+  * Reassure the customer that the support team is actively reviewing the case."""
+
         prompt = f"""
 Customer Name:
 {customer_name}
@@ -1059,6 +1100,7 @@ Instructions:
 - Be concise
 - Do NOT hallucinate
 - NEVER claim or state that a ticket has been created, and NEVER output placeholder ticket references like "[Insert Ticket ID]" or "[Ticket Number]" or "[Ticket ID]".
+{status_guardrails}
 - If previous conversation exists above, maintain continuity — do not repeat what was already addressed
 - If no answer available, say politely
 - End professionally
@@ -1110,6 +1152,9 @@ Company: {company_name or 'derive from context/email'}
             clean_lines.append(line)
         reply = "\n".join(clean_lines).strip().strip('"').strip("'")
 
+        # 3. Strip any leaked "Subject: ..." or "Re: ..." header line placed at the very start of the email body
+        reply = re.sub(r'^(?:Subject|Re):\s*[^\n]+\n+', '', reply, flags=re.IGNORECASE).strip()
+
         logger.info(f"✅ Reply generated successfully: {reply[:150]}...")
         return reply
 
@@ -1118,6 +1163,150 @@ Company: {company_name or 'derive from context/email'}
         return (
             "Sorry, we are unable to process "
             "your request at the moment."
+        )
+
+
+def generate_issue_resolved_reply(
+    from_email: str,
+    subject: str = "",
+    query: str = "",
+    ticket_id: str = None,
+    history: list = None
+) -> str:
+    """
+    Generates a polite, warm confirmation acknowledging that the customer's
+    issue is resolved, without creating or modifying tickets.
+    """
+    customer_name = extract_name_from_email(from_email) if from_email else "Customer"
+    client_id = current_client_id.get()
+    department_name = None
+    company_name = None
+    response_tone = "Friendly"
+
+    if client_id and client_id != "SYSTEM":
+        try:
+            from app.email_credential import get_email_account
+            account = get_email_account(client_id)
+            if account:
+                response_tone = account.get("response_tone", "Friendly")
+                department_name = account.get("department_name")
+                company_name = account.get("company_name")
+        except Exception as e:
+            logger.warning(f"Failed to fetch account profile for resolved reply: {e}")
+
+    team_name = department_name or "Support Team"
+    if company_name:
+        team_name = f"{company_name} {team_name}"
+
+    ticket_mention = f" regarding ticket #{ticket_id}" if ticket_id else ""
+
+    prompt = f"""Write a short, professional, and courteous email response to {customer_name}.
+The customer sent an email stating that their issue{ticket_mention} has been resolved / is working fine.
+
+Customer Query:
+{query}
+
+Requirements:
+1. Greet: Hi {customer_name},
+2. Express that you are glad to hear everything is sorted out and working properly.
+3. Let them know they are welcome to reach back out anytime if they need any further assistance.
+4. Keep it concise (2-3 sentences total).
+5. Tone: {response_tone}
+6. Conclude with:
+Thanks & Regards,
+{team_name}
+
+Write ONLY the final email text. No explanation, no quotes.
+"""
+    try:
+        res = client.chat.completions.create(
+            model=resolve_model(current_client_id.get(), "generate_reply_llm"),
+            messages=[
+                {"role": "system", "content": "You are a courteous customer support assistant. Write concise, warm emails."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=300
+        )
+        reply = strip_reasoning_and_think_tags(res.choices[0].message.content).strip()
+        return reply
+    except Exception as e:
+        logger.error(f"❌ Failed to generate issue_resolved reply via LLM: {e}")
+        return (
+            f"Hi {customer_name},\n\n"
+            f"Thank you for letting us know! We are glad to hear that your issue{ticket_mention} has been resolved.\n\n"
+            f"If you ever need any further assistance, please feel free to reach back out.\n\n"
+            f"Thanks & Regards,\n"
+            f"{team_name}"
+        )
+
+
+def generate_off_topic_reply(
+    from_email: str,
+    subject: str = "",
+    query: str = "",
+    history: list = None
+) -> str:
+    """
+    Generates a polite boundary-setting response for off-topic, gibberish,
+    or non-support inquiries without escalating or creating tickets.
+    """
+    customer_name = extract_name_from_email(from_email) if from_email else "Customer"
+    client_id = current_client_id.get()
+    department_name = None
+    company_name = None
+
+    if client_id and client_id != "SYSTEM":
+        try:
+            from app.email_credential import get_email_account
+            account = get_email_account(client_id)
+            if account:
+                department_name = account.get("department_name")
+                company_name = account.get("company_name")
+        except Exception as e:
+            logger.warning(f"Failed to fetch account profile for off_topic reply: {e}")
+
+    team_name = department_name or "Customer Support Team"
+    if company_name:
+        team_name = f"{company_name} {team_name}"
+
+    prompt = f"""Write a polite, professional customer support email to {customer_name}.
+The customer sent an email that appears to be incomplete, gibberish, or outside the scope of customer support:
+
+Customer Email:
+{query}
+
+Requirements:
+1. Greet: Hi {customer_name},
+2. Politely mention that we received their email, but we were unable to identify a clear support request or inquiry from the message.
+3. Invite them to reply with specific details or order/account information if they require assistance with our products or services.
+4. Keep it concise, respectful, and helpful (2-3 sentences max).
+5. Conclude with:
+Thanks & Regards,
+{team_name}
+
+Write ONLY the final email text. No explanation, no quotes.
+"""
+    try:
+        res = client.chat.completions.create(
+            model=resolve_model(current_client_id.get(), "generate_reply_llm"),
+            messages=[
+                {"role": "system", "content": "You are a professional customer support assistant. Write concise, polite boundary-setting emails."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.2,
+            max_tokens=300
+        )
+        reply = strip_reasoning_and_think_tags(res.choices[0].message.content).strip()
+        return reply
+    except Exception as e:
+        logger.error(f"❌ Failed to generate off_topic reply via LLM: {e}")
+        return (
+            f"Hi {customer_name},\n\n"
+            f"Thank you for contacting us. We received your email, but were unable to identify a specific question or support request.\n\n"
+            f"If you need assistance with our products or services, please reply with details and we will be glad to help.\n\n"
+            f"Thanks & Regards,\n"
+            f"{team_name}"
         )
 
 
@@ -1246,9 +1435,10 @@ You are a support assistant analyzing a conversation history to find a relevant 
 ## Task
 1. Look through the conversation history for any ticket/case IDs (e.g. #275424000000399001, T-260601-12345, INC123456) or order IDs (e.g. ORD12345, #98765).
 2. Determine if any of them are relevant to the current query.
-3. If one is clearly relevant, return it (clean ID without '#').
-4. If multiple exist and you cannot determine which is relevant, return all of them as ambiguous.
-5. If none are relevant or none exist, return not found.
+3. CRITICAL FOLLOW-UP RULE: If the customer's query is a follow-up inquiry, question, or reply referring to their ongoing conversation, past problem, root cause, or resolution (e.g. "why was the problem", "what caused it", "why did this happen", "is it resolved", "thank you", "any update"), map it to the most recent ticket ID found in the conversation history rather than returning false.
+4. If one is clearly relevant or inferred from the thread, return it (clean ID without '#').
+5. If multiple distinct unresolved tickets exist and you genuinely cannot determine which is relevant, return them as ambiguous.
+6. If no ticket IDs exist anywhere in the conversation history, return not found.
 
 ## Output Format
 Return ONLY valid JSON. No explanation. No markdown.

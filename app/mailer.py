@@ -21,7 +21,7 @@ def send_email(client_id, to_email, subject, body, in_reply_to=None):
         # Retrieve email credentials
         if client_id == "registration":
             import os
-            EMAIL_USER = os.getenv("REGISTRATION_EMAIL", "monishrazammr@gmail.com")
+            EMAIL_USER = os.getenv("REGISTRATION_EMAIL", "").strip()
             EMAIL_PASS = os.getenv("REGISTRATION_EMAIL_PASS", "").strip('"\'')
         else:
             EMAIL_USER, EMAIL_PASS = get_email_credentials(client_id)

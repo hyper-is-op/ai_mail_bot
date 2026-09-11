@@ -406,7 +406,7 @@ def parse_uploaded_file(file_name: str, file_content: bytes) -> tuple[str, str]:
     ext = file_name.split('.')[-1].lower()
     logger.info(f"Parsing uploaded file: name={file_name}, ext={ext}")
 
-    if ext == 'txt':
+    if ext in ['txt', 'md', 'markdown']:
         content = file_content.decode('utf-8', errors='ignore')
         return file_name, content.strip()
 
@@ -438,4 +438,4 @@ def parse_uploaded_file(file_name: str, file_content: bytes) -> tuple[str, str]:
         return file_name, text.strip()
 
     else:
-        raise ValueError(f"Unsupported file format: .{ext}. Only .pdf, .doc, .docx, and .txt files are allowed.")
+        raise ValueError(f"Unsupported file format: .{ext}. Only .md, .txt, .docx, .doc, and .pdf files are allowed.")

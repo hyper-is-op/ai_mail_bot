@@ -108,8 +108,10 @@ def rule_based_penalty(reply, query):
     if any(p in reply_lower for p in generic_phrases):
         penalty -= 10
 
-    # 🚫 No numbers when expected (like order id)
-    if "ord" in query_lower and "ord" not in reply_lower:
+    # 🚫 Specific order ID in query but omitted in reply
+    has_order_ref_query = bool(re.search(r'\b(ord\d+|order\s*#?\s*\d+)\b', query_lower))
+    has_order_ref_reply = bool(re.search(r'\b(ord\d+|order\s*#?\s*\d+|\d{5,})\b', reply_lower))
+    if has_order_ref_query and not has_order_ref_reply:
         penalty -= 25
 
     return penalty

@@ -70,13 +70,36 @@ def is_bot_enabled_for_client(client_id: str) -> tuple[bool, str]:
         return True, "Active (Fallback)"
 
 
+def is_message_duplicate(client_id: str, message_id: str) -> bool:
+    """
+    Checks if this Message-ID has already been queued for this client in the last 24h.
+    Returns True if duplicate, False if new.
+    Falls back to False on Redis failure so emails are never dropped.
+    """
+    if not message_id or not message_id.strip():
+        return False
+    try:
+        import redis
+        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
+        r = redis.from_url(redis_url, socket_timeout=3)
+        key = f"imap_dedup:{client_id}:{message_id.strip()}"
+        was_set = r.set(key, "1", nx=True, ex=86400)
+        r.close()
+        return not bool(was_set)
+    except Exception as e:
+        logger.warning(f"⚠️ Redis deduplication check failed for {client_id}: {e} (proceeding without dedup)")
+        return False
+
+
 def poll_inbox(client_id, email_user, email_pass, stop_event):
     logger.info(f"📬 Starting IMAP poll thread for Client: {client_id} ({email_user})")
+    retry_delay = 5
     
     while not stop_event.is_set():
+        mail = None
         try:
             logger.info(f"📡 [Client {client_id}] Connecting to Gmail IMAP...")
-            mail = imaplib.IMAP4_SSL("imap.gmail.com")
+            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
             try:
                 mail.login(email_user, email_pass)
             except imaplib.IMAP4.error as auth_err:
@@ -91,7 +114,8 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
                 raise
             mail.select("inbox")
             logger.info(f"✅ [Client {client_id}] Connected and authenticated ({email_user})")
-            
+            retry_delay = 5
+
             while not stop_event.is_set():
                 try:
                     mail.noop()
@@ -129,9 +153,14 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
                                 if raw_email is None:
                                     continue
 
-                                # Mark seen before queueing
-                                mail.store(num, '+FLAGS', '\\Seen')
                                 msg = email.message_from_bytes(raw_email)
+                                raw_message_id = msg.get("Message-ID", "")
+
+                                # Deduplication check: if seen within 24h, mark seen and skip
+                                if raw_message_id and is_message_duplicate(client_id, raw_message_id):
+                                    logger.warning(f"⏩ [Client {client_id}] Duplicate message {raw_message_id} already queued — marking \\Seen and skipping")
+                                    mail.store(num, '+FLAGS', '\\Seen')
+                                    continue
 
                                 # Decode MIME-encoded subject
                                 subject = decode_subject(msg.get("subject", ""))
@@ -183,18 +212,24 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
                                     plain_text = extract_clean_text_from_html(plain_text)
 
                                 logger.info(f"📧 [Client {client_id}] NEW EMAIL: From={from_email} Subject={subject} (HTML={bool(html_text)})")
+                                
+                                # Enqueue task to Celery FIRST
                                 task_result = process_email_task.delay({
                                     "client_id": client_id,
                                     "from_email": from_email,
                                     "subject": subject,
                                     "body": plain_text or "",
                                     "body_html": html_text or "",
-                                    "message_id": msg.get("Message-ID", "")
+                                    "message_id": raw_message_id
                                 })
                                 logger.info(f"✅ [Client {client_id}] Task queued: {task_result.id}")
 
+                                # ONLY mark \Seen once task is successfully queued
+                                mail.store(num, '+FLAGS', '\\Seen')
+
                             except Exception as e:
-                                logger.error(f"Error processing single email: {e}", exc_info=True)
+                                num_str = num.decode() if isinstance(num, bytes) else str(num)
+                                logger.error(f"❌ [Client {client_id}] Error processing email #{num_str} (left UNSEEN for retry): {e}", exc_info=True)
 
                     # Poll interval
                     for _ in range(10):
@@ -206,17 +241,19 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
                     logger.error(f"Mail polling error for Client {client_id}: {e}", exc_info=True)
                     break
             
-            try:
-                mail.logout()
-            except:
-                pass
+            if mail:
+                try:
+                    mail.logout()
+                except:
+                    pass
 
         except Exception as e:
-            logger.error(f"IMAP connection failed for Client {client_id}: {e}", exc_info=True)
-            for _ in range(30):
+            logger.error(f"IMAP connection failed for Client {client_id}: {e}. Retrying in {retry_delay}s...", exc_info=True)
+            for _ in range(retry_delay):
                 if stop_event.is_set():
                     break
                 time.sleep(1)
+            retry_delay = min(retry_delay * 2, 60)
 
     logger.info(f"🛑 Thread stopped for Client: {client_id} ({email_user})")
 
