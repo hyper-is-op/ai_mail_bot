@@ -48,9 +48,13 @@ export default function Sidebar({ mobileOpen, setMobileOpen }: SidebarProps) {
   const navigation = user?.role === 'admin'
     ? [
         { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
+        { name: 'Mail (Monitor/Control)', href: '/inbox', icon: Inbox },
         { name: 'Pause & Draft', href: '/drafts', icon: FileText },
+        { name: 'AI Processing', href: '/ai-processing', icon: BrainCircuit },
+        { name: 'Reference Status', href: '/tickets', icon: Ticket },
         { name: 'Mailbox Accounts', href: '/accounts', icon: Users },
         { name: 'System Connector', href: '/payloads', icon: Code2 },
+        { name: 'Knowledge Base', href: '/knowledge', icon: Database },
         { name: 'LLM Analytics', href: '/llm-analytics', icon: BarChart3 },
         { name: 'Settings', href: '/settings', icon: Settings },
         { name: 'Clients Management', href: '/admin/clients', icon: ShieldCheck },

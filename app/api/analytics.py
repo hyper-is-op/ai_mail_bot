@@ -122,11 +122,11 @@ def get_dashboard_stats_endpoint(
                     cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('sent', 'ticket_created_and_sent')" + date_filter, (client_id, *date_params))
                 stats_data["ai_replies"] = cursor.fetchone()[0]
 
-                # 4. Failed Emails
+                # 4. Failed / Review-Required Emails
                 if client_id == "ALL":
-                    cursor.execute("SELECT COUNT(*) FROM email_logs WHERE status IN ('send_failed', 'ticket_created_send_failed')" + date_filter, tuple(date_params))
+                    cursor.execute("SELECT COUNT(*) FROM email_logs WHERE status IN ('send_failed', 'ticket_created_send_failed', 'pending_manual_review', 'ticket_creation_failed')" + date_filter, tuple(date_params))
                 else:
-                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('send_failed', 'ticket_created_send_failed')" + date_filter, (client_id, *date_params))
+                    cursor.execute(f"SELECT COUNT(*) FROM email_logs WHERE {col} = %s AND status IN ('send_failed', 'ticket_created_send_failed', 'pending_manual_review', 'ticket_creation_failed')" + date_filter, (client_id, *date_params))
                 stats_data["failed_emails"] = cursor.fetchone()[0]
 
                 # 5. Tickets Generated

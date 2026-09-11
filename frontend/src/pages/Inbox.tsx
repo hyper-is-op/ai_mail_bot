@@ -25,7 +25,8 @@ import {
   Code2,
   FileText,
   Megaphone,
-  Shield
+  Shield,
+  AlertCircle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
@@ -702,6 +703,38 @@ export default function Inbox() {
                 className="w-full bg-zinc-100 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl pl-8 pr-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary" 
               />
             </div>
+          </div>
+
+          {/* Quick Filter Section Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1 text-[11px]">
+            {(['All', 'Failed', 'Pending Review', 'Replied'] as const).map(tab => (
+              <button
+                key={tab}
+                onClick={() => { setActiveTab(tab); setIsReplying(false); setReplyText(''); }}
+                className={cn(
+                  "px-2.5 py-1 rounded-lg font-medium transition-all shrink-0 flex items-center gap-1",
+                  activeTab === tab
+                    ? tab === 'Failed' 
+                      ? "bg-rose-500/20 text-rose-600 dark:text-rose-400 font-semibold border border-rose-500/30"
+                      : tab === 'Pending Review'
+                      ? "bg-amber-500/20 text-amber-600 dark:text-amber-400 font-semibold border border-amber-500/30"
+                      : "bg-primary text-primary-foreground font-semibold shadow-xs"
+                    : "bg-zinc-100 dark:bg-white/5 text-muted-foreground hover:text-foreground border border-transparent"
+                )}
+              >
+                <span>{tab}</span>
+                {tab === 'Failed' && failedCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-rose-500 text-white font-bold">
+                    {failedCount}
+                  </span>
+                )}
+                {tab === 'Pending Review' && pendingReviewCount > 0 && (
+                  <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-amber-500 text-white font-bold">
+                    {pendingReviewCount}
+                  </span>
+                )}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -1389,6 +1422,24 @@ export default function Inbox() {
               <button
                 onClick={() => setIsReplying(true)}
                 className="px-3 py-1 bg-amber-500 text-white rounded-lg font-semibold hover:bg-amber-600 transition-all text-xs"
+              >
+                Reply Now
+              </button>
+            </div>
+          )}
+
+          {/* Pending Review / Failed Alert Callout */}
+          {(selectedThread.status === 'Pending Review' || selectedThread.status === 'Failed') && (
+            <div className="mx-6 mt-4 p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 flex items-center justify-between text-xs">
+              <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300">
+                <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
+                <span>
+                  <strong>Manual Review Required:</strong> Automated escalation could not complete (CRM ticket creation failed or needs review). Please inspect and send a manual reply.
+                </span>
+              </div>
+              <button
+                onClick={() => setIsReplying(true)}
+                className="px-3 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-semibold transition-all text-xs shrink-0 ml-3"
               >
                 Reply Now
               </button>
