@@ -111,7 +111,7 @@ export default function Inbox() {
   const [selectedThread, setSelectedThread] = useState<any>(null);
   const [selectedBlockedItem, setSelectedBlockedItem] = useState<any>(null);
   const [selectedPausedItem, setSelectedPausedItem] = useState<any>(null);
-  const [activeTab, setActiveTab] = useState<'All' | 'Marketing' | 'Replied' | 'Processing' | 'Failed' | 'Paused' | 'Blocked'>('All');
+  const [activeTab, setActiveTab] = useState<'All' | 'Marketing' | 'Replied' | 'Processing' | 'Failed' | 'Pending Review' | 'Paused' | 'Blocked'>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [ticketLoadingId, setTicketLoadingId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -338,9 +338,10 @@ export default function Inbox() {
 
     const matchesTab = activeTab === 'All' || 
       (activeTab === 'Marketing' && isMarketing) ||
-      (activeTab === 'Replied' && latestStatus === 'replied') ||
+      (activeTab === 'Replied' && (latestStatus === 'replied' || latestStatus === 'ticket_generated')) ||
       (activeTab === 'Processing' && latestStatus === 'processing') ||
-      (activeTab === 'Failed' && latestStatus === 'failed');
+      (activeTab === 'Failed' && (latestStatus === 'failed' || latestStatus === 'pending review')) ||
+      (activeTab === 'Pending Review' && latestStatus === 'pending review');
     
     const query = searchQuery.toLowerCase();
     const matchesSearch = 
@@ -593,6 +594,11 @@ export default function Inbox() {
   const pausedPendingCount = pausedHistory.filter(p => p.status === 'pending_review' || !p.status).length;
   const totalPausedBadge = pausedPendingCount > 0 ? pausedPendingCount : pausedEmails.length;
   const marketingCount = groupedThreads.filter(t => t.latest_email.category === 'Marketing / Promo' || (t.latest_email.status || '').toLowerCase() === 'no action needed' || t.latest_email.raw_status === 'no_action_needed' || isSenderMarketing(t.sender)).length;
+  const failedCount = groupedThreads.filter(t => {
+    const st = (t.latest_email.status || '').toLowerCase();
+    return st === 'failed' || st === 'pending review';
+  }).length;
+  const pendingReviewCount = groupedThreads.filter(t => (t.latest_email.status || '').toLowerCase() === 'pending review').length;
 
   if (loading) {
     return (
@@ -664,7 +670,12 @@ export default function Inbox() {
                 </option>
                 <option value="Replied" className="dark:bg-zinc-900">Replied</option>
                 <option value="Processing" className="dark:bg-zinc-900">Processing</option>
-                <option value="Failed" className="dark:bg-zinc-900">Failed</option>
+                <option value="Failed" className="dark:bg-zinc-900">
+                  Failed {failedCount > 0 ? `(${failedCount})` : ''}
+                </option>
+                <option value="Pending Review" className="dark:bg-zinc-900">
+                  Pending Review {pendingReviewCount > 0 ? `(${pendingReviewCount})` : ''}
+                </option>
                 <option value="Paused" className="dark:bg-zinc-900">
                   Paused {totalPausedBadge > 0 ? `(${totalPausedBadge})` : ''}
                 </option>
