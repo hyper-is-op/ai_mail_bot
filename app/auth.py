@@ -182,15 +182,27 @@ def create_client_atomic(name, phone_number, login_email, login_password, imap_e
     client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
     try:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT id FROM users WHERE email=%s", (login_email,))
-            if cursor.fetchone():
-                return {"success": False, "error": "Login email already registered"}
-
-            p_hash = hash_password(login_password)
-            cursor.execute(
-                "INSERT INTO users (client_id, email, password_hash, role, status, name, phone_number) VALUES (%s, %s, %s, 'client', 'active', %s, %s)",
-                (client_id, login_email, p_hash, name, phone_number)
-            )
+            cursor.execute("SELECT id, client_id FROM users WHERE email=%s", (login_email,))
+            existing_user = cursor.fetchone()
+            if existing_user:
+                # Check if this user is an orphan (missing from email_accounts)
+                cursor.execute("SELECT id FROM email_accounts WHERE client_id=%s", (existing_user["client_id"],))
+                if cursor.fetchone():
+                    return {"success": False, "error": "Login email already registered"}
+                
+                # Self-heal orphan: update profile/password and populate email_accounts
+                client_id = existing_user["client_id"]
+                p_hash = hash_password(login_password)
+                cursor.execute("""
+                    UPDATE users SET password_hash=%s, name=%s, phone_number=%s, status='active'
+                    WHERE id=%s
+                """, (p_hash, name, phone_number, existing_user["id"]))
+            else:
+                p_hash = hash_password(login_password)
+                cursor.execute(
+                    "INSERT INTO users (client_id, email, password_hash, role, status, name, phone_number) VALUES (%s, %s, %s, 'client', 'active', %s, %s)",
+                    (client_id, login_email, p_hash, name, phone_number)
+                )
             
             actual_imap = imap_email if imap_email else login_email
             cursor.execute("""

@@ -178,26 +178,29 @@ def get_all_email_accounts_endpoint(user: dict = Depends(require_admin())):
             cursor = db.cursor(pymysql.cursors.DictCursor)
             cursor.execute("""
                 SELECT 
-                    ea.client_id, 
-                    COALESCE(u.email, ea.email) AS email, 
-                    ea.password,
+                    u.client_id, 
+                    u.email AS email, 
+                    COALESCE(ea.password, '') AS password,
                     u.email AS login_email,
-                    ea.email AS imap_email,
-                    ea.password AS imap_password,
+                    COALESCE(ea.email, u.email) AS imap_email,
+                    COALESCE(ea.password, '') AS imap_password,
                     u.name,
                     u.phone_number,
-                    ea.agent_type,
-                    ea.department_name,
-                    ea.company_name,
+                    COALESCE(ea.agent_type, 'customer_support_agent') AS agent_type,
+                    COALESCE(ea.department_name, '') AS department_name,
+                    COALESCE(ea.company_name, '') AS company_name,
                     COALESCE(ea.feature_ticket_creation, 1) AS feature_ticket_creation,
                     COALESCE(ea.feature_auto_send, 1) AS feature_auto_send,
                     COALESCE(ea.feature_rag, 1) AS feature_rag,
                     COALESCE(ea.feature_order_tracking, 1) AS feature_order_tracking,
                     COALESCE(ea.feature_manual_reply, 1) AS feature_manual_reply,
                     COALESCE(ea.cost_multiplier, 1.0) AS cost_multiplier,
-                    ea.monthly_budget_usd
-                FROM email_accounts ea 
-                LEFT JOIN users u ON ea.client_id = u.client_id
+                    ea.monthly_budget_usd,
+                    u.status
+                FROM users u 
+                LEFT JOIN email_accounts ea ON u.client_id = ea.client_id
+                WHERE u.role = 'client'
+                ORDER BY u.id DESC
             """)
             rows = cursor.fetchall()
             for r in rows:

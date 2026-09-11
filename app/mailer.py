@@ -44,8 +44,8 @@ def send_email(client_id, to_email, subject, body, in_reply_to=None):
         # Attach body with UTF-8 encoding
         message.attach(MIMEText(body, "plain", "utf-8"))
 
-        # Connect SMTP
-        server = smtplib.SMTP("smtp.gmail.com", 587)
+        # Connect SMTP with timeout
+        server = smtplib.SMTP("smtp.gmail.com", 587, timeout=15)
         server.starttls()
 
         logger.debug("🔐 Started TLS session with SMTP server")
