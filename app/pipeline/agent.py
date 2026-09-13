@@ -5,7 +5,7 @@ from app.pipeline.context import PipelineContext
 from app.pipeline.tools import SUPPORT_TOOLS, execute_tool_call
 from app.pipeline.drafter import append_client_disclaimers
 from app.pipeline.evaluator import evaluate_draft_and_decide
-from app.llm import extract_name_from_email, get_llm_config_for_client, get_dynamic_client
+from app.llm import extract_name_from_email, get_llm_config_for_client, client
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +62,6 @@ def run_support_agent(ctx: PipelineContext, cursor) -> PipelineContext:
 
     # 1. Resolve LLM client and configuration
     cfg = get_llm_config_for_client(ctx.client_id, "run_support_agent")
-    config_id = cfg.get("id", 1)
-    llm_client = get_dynamic_client(config_id, cfg)
     raw_model = cfg.get("model_name") or "llama-3.3-70b-versatile"
     provider = (cfg.get("provider") or "groq").lower()
 
@@ -91,12 +89,13 @@ def run_support_agent(ctx: PipelineContext, cursor) -> PipelineContext:
 
     # 3. Round 1: Let the model decide whether to call tools
     try:
-        response = llm_client.chat.completions.create(
+        response = client.chat.completions.create(
             model=model_name,
             messages=messages,
             tools=SUPPORT_TOOLS,
             tool_choice="auto",
-            temperature=0.1
+            temperature=0.1,
+            caller="run_support_agent"
         )
     except Exception as e:
         err_str = str(e)
@@ -104,12 +103,13 @@ def run_support_agent(ctx: PipelineContext, cursor) -> PipelineContext:
             logger.warning(f"⚠️ Model {model_name} failed tool calling on Groq, retrying with qwen/qwen3.6-27b")
             model_name = "qwen/qwen3.6-27b"
             try:
-                response = llm_client.chat.completions.create(
+                response = client.chat.completions.create(
                     model=model_name,
                     messages=messages,
                     tools=SUPPORT_TOOLS,
                     tool_choice="auto",
-                    temperature=0.1
+                    temperature=0.1,
+                    caller="run_support_agent"
                 )
             except Exception as retry_err:
                 logger.error(f"❌ [Agent Loop] Tool calling retry failed: {retry_err}")
@@ -169,10 +169,11 @@ def run_support_agent(ctx: PipelineContext, cursor) -> PipelineContext:
 
         # Round 2: Model synthesizes final answer with tool outputs
         try:
-            second_response = llm_client.chat.completions.create(
+            second_response = client.chat.completions.create(
                 model=model_name,
                 messages=messages,
-                temperature=0.2
+                temperature=0.2,
+                caller="run_support_agent"
             )
             raw_content = second_response.choices[0].message.content or ""
             final_draft = strip_reasoning_and_think_tags(raw_content)

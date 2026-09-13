@@ -12,8 +12,7 @@ from app.llm_utils import strip_reasoning_and_think_tags
 
 logger = logging.getLogger(__name__)
 
-# Dynamic client holder
-client = OpenAI(api_key="placeholder-unused")
+# Dynamic tenant context variable
 current_client_id = contextvars.ContextVar("current_client_id", default="SYSTEM")
 
 _llm_configs_cache = {}
@@ -406,21 +405,26 @@ def get_dynamic_client(config_id: int, config: dict):
     return new_client
 
 
-def telemetry_create(*args, **kwargs):
-    caller = "unknown"
-    try:
-        stack = inspect.stack()
-        if len(stack) > 1:
-            caller = stack[1].function
-    except Exception:
-        pass
+def telemetry_create(*args, caller: str | None = None, **kwargs):
+    if not caller:
+        caller = "unknown"
+        try:
+            stack = inspect.stack()
+            if len(stack) > 1:
+                for frame in stack[1:4]:
+                    fn = frame.function
+                    if fn not in ("create", "telemetry_create"):
+                        caller = fn
+                        break
+        except Exception:
+            pass
 
     start_time = time.time()
     client_id = current_client_id.get()
 
     try:
         config = get_llm_config_for_client(client_id, caller)
-        actual_model = config["model_name"]
+        actual_model = kwargs.get("model") or config["model_name"]
         kwargs["model"] = actual_model
         provider = config.get("provider", "groq").lower()
 
@@ -507,8 +511,28 @@ def telemetry_create(*args, **kwargs):
 
     return res
 
-# Retain the global client monkey-patch
-client.chat.completions.create = telemetry_create
+class _TelemetryCompletions:
+    def create(self, *args, caller: str | None = None, **kwargs):
+        return telemetry_create(*args, caller=caller, **kwargs)
+
+
+class _TelemetryChat:
+    def __init__(self):
+        self.completions = _TelemetryCompletions()
+
+
+class TelemetryLLMClient:
+    """
+    Transparent client wrapper providing the OpenAI-compatible client.chat.completions.create(...)
+    interface while dynamically resolving tenant configurations, managing circuit breakers,
+    and recording cost telemetry without monkey-patching external libraries.
+    """
+    def __init__(self):
+        self.chat = _TelemetryChat()
+
+
+# Canonical shared client instance
+client = TelemetryLLMClient()
 
 
 def resolve_langchain_model(client_id: str, caller_function: str, temperature: float = 0.2):

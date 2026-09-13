@@ -79,6 +79,7 @@ Examples:
 
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "detect_intent_llm"),
+            caller="detect_intent_llm",
             messages=[
                 {
                     "role": "system",
@@ -338,6 +339,7 @@ Company: {company_name or 'derive from context/email'}
 
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "generate_reply_llm"),
+            caller="generate_reply_llm",
             messages=[
                 {
                     "role": "system",
@@ -438,6 +440,7 @@ Write ONLY the final email text. No explanation, no quotes.
     try:
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "generate_reply_llm"),
+            caller="generate_issue_resolved_reply",
             messages=[
                 {"role": "system", "content": "You are a courteous customer support assistant. Write concise, warm emails."},
                 {"role": "user", "content": prompt}
@@ -507,6 +510,7 @@ Write ONLY the final email text. No explanation, no quotes.
     try:
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "generate_reply_llm"),
+            caller="generate_ticket_status_reply",
             messages=[
                 {"role": "system", "content": "You are a professional customer support assistant. Write concise, polite boundary-setting emails."},
                 {"role": "user", "content": prompt}
@@ -587,6 +591,7 @@ Return ONLY valid JSON. No explanation. No markdown. No extra text.
     try:
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "design_payload"),
+            caller="design_payload",
             messages=[
                 {
                     "role": "system",
@@ -673,6 +678,7 @@ If none found:
     try:
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "scan_history_for_ticket"),
+            caller="scan_history_for_ticket",
             messages=[
                 {
                     "role": "system",
@@ -763,6 +769,7 @@ from the customer email below.
 
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "extract_issue_description"),
+            caller="extract_issue_description",
             messages=[
                 {
                     "role": "system",
@@ -848,6 +855,7 @@ Return ONLY the plain summary text. Nothing else.
 
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "generate_summary_llm"),
+            caller="generate_summary_llm",
             messages=[
                 {
                     "role": "system",

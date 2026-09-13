@@ -49,6 +49,7 @@ Return ONLY a number between 0 and 100.
     try:
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "llm_score"),
+            caller="llm_score",
             messages=[
                 {"role": "system", "content": "You are a strict evaluator. Return ONLY a single integer between 0 and 100. No explanation. No reasoning. No text."},
                 {"role": "user", "content": prompt}

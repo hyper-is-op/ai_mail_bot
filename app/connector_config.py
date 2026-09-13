@@ -836,6 +836,7 @@ No markdown, no explanation, no code fences. Raw JSON only.
     try:
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "generate_connector_template"),
+            caller="generate_connector_template",
             messages=[
                 {"role": "system", "content": "You are a JSON-only response system. Return ONLY valid JSON. No markdown, no explanation."},
                 {"role": "user", "content": prompt}

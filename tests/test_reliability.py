@@ -83,5 +83,45 @@ class TestNormalizeSubject(unittest.TestCase):
         self.assertEqual(normalize_subject("Re: Urgent issue"), "Re: Urgent issue")
 
 
+class TestTelemetryLLMClient(unittest.TestCase):
+    def test_client_structure(self):
+        from app.llm_config import client, TelemetryLLMClient
+        self.assertIsInstance(client, TelemetryLLMClient)
+        self.assertTrue(hasattr(client, "chat"))
+        self.assertTrue(hasattr(client.chat, "completions"))
+        self.assertTrue(hasattr(client.chat.completions, "create"))
+
+    @patch("app.llm_config.get_llm_config_for_client")
+    @patch("app.llm_config.get_dynamic_client")
+    @patch("app.llm_config.log_llm_metrics_db")
+    def test_client_create_with_explicit_caller(self, mock_log_db, mock_get_client, mock_get_cfg):
+        import sys
+        from unittest.mock import MagicMock
+        from app.llm_config import client
+        mock_get_cfg.return_value = {
+            "id": 1,
+            "provider": "groq",
+            "model_name": "llama-3.3-70b-versatile",
+            "api_key": "test_key",
+            "base_url": None
+        }
+        mock_target = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.choices = [MagicMock()]
+        mock_resp.choices[0].message.content = "Test response"
+        mock_resp.usage = MagicMock(prompt_tokens=10, completion_tokens=20)
+        mock_target.chat.completions.create.return_value = mock_resp
+        mock_get_client.return_value = mock_target
+
+        res = client.chat.completions.create(
+            messages=[{"role": "user", "content": "hello"}],
+            caller="test_unit_caller"
+        )
+        self.assertEqual(res, mock_resp)
+        mock_get_cfg.assert_called_with("SYSTEM", "test_unit_caller")
+        mock_log_db.assert_called()
+        self.assertEqual(mock_log_db.call_args[0][6], "test_unit_caller")
+
+
 if __name__ == "__main__":
     unittest.main()
