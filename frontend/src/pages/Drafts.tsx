@@ -79,7 +79,7 @@ export function Drafts() {
   const isAdmin = user?.role === 'admin';
   const [accounts, setAccounts] = useState<any[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<string>(
-    isAdmin ? '' : user?.client_id || ''
+    isAdmin ? 'ALL' : user?.client_id || ''
   );
 
   // Filter States
@@ -111,8 +111,8 @@ export function Drafts() {
       api.getAllEmailAccounts().then((res) => {
         const accs = Array.isArray(res) ? res : res?.accounts || [];
         setAccounts(accs);
-        if (accs.length > 0 && !selectedClientId) {
-          setSelectedClientId(accs[0].client_id);
+        if (!selectedClientId) {
+          setSelectedClientId('ALL');
         }
       }).catch(console.error);
     }
@@ -480,11 +480,14 @@ export function Drafts() {
               {accounts.length === 0 ? (
                 <option value="">No registered client accounts</option>
               ) : (
-                accounts.map((acc) => (
-                  <option key={acc.client_id} value={acc.client_id}>
-                    {acc.name || acc.client_id} ({acc.email})
-                  </option>
-                ))
+                <>
+                  <option value="ALL">All Clients ({accounts.length})</option>
+                  {accounts.map((acc) => (
+                    <option key={acc.client_id} value={acc.client_id}>
+                      {acc.name || acc.client_id} ({acc.email})
+                    </option>
+                  ))}
+                </>
               )}
             </select>
           </div>

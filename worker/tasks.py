@@ -159,6 +159,36 @@ def _finalize_task_and_log(ctx: PipelineContext, cursor, db, task_id: str):
         except Exception as sum_err:
             logger.warning(f"⚠️ Summary generation skipped: {sum_err}")
 
+    # Auto-populate Pending Review in draft_emails if manual review is required
+    if ctx.status == "pending_manual_review":
+        try:
+            from app.draft_service import create_draft
+            create_draft(
+                client_id=ctx.client_id,
+                email_log_id=db_log_id,
+                from_email=ctx.from_email,
+                to_email=ctx.from_email,
+                subject=ctx.subject,
+                original_body=ctx.body,
+                draft_reply=ctx.draft_reply or (
+                    f"Hello,\n\n"
+                    f"Thank you for reaching out regarding '{ctx.subject}'.\n"
+                    f"Your inquiry has been received and escalated for specialist assistance. A support engineer will update you shortly.\n\n"
+                    f"Best regards,\nSupport Team"
+                ),
+                confidence_score=ctx.score,
+                intent=ctx.intent or "ticket_creation_failed",
+                sentiment=ctx.sentiment,
+                priority=ctx.priority,
+                ticket_id=ctx.ticket_id,
+                in_reply_to=ctx.message_id,
+                message_id=ctx.message_id,
+                sender_name=ctx.sender_name,
+            )
+            logger.info(f"📝 Auto-created Pending Review draft in draft_emails for log_id {db_log_id}")
+        except Exception as draft_err:
+            logger.error(f"⚠️ Failed to create draft for pending manual review: {draft_err}")
+
     cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s", (task_id,))
     db.commit()
     publish_email_update(ctx.client_id)
