@@ -1,3 +1,11 @@
+"""
+app/mcp_server.py
+
+[EXPERIMENTAL / OPTIONAL INTEGRATION]
+Model Context Protocol (MCP) server exposing platform capabilities (email accounts,
+order status, RAG knowledge, outbound mail) as tools for external MCP-compatible agents.
+"""
+
 import logging
 import os
 import sys
