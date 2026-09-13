@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from app.pipeline.context import PipelineContext
 from app.pipeline.tools import SUPPORT_TOOLS, execute_tool_call
 from app.pipeline.drafter import append_client_disclaimers
@@ -51,7 +51,7 @@ GUIDELINES & HARD CONSTRAINTS:
 """
 
 
-def run_support_agent(ctx: PipelineContext, cursor) -> PipelineContext:
+def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> PipelineContext:
     """
     Autonomous ReAct / Tool-Calling Agent Loop.
     The LLM reasons over the customer query, selects tools to call, inspects tool outputs,

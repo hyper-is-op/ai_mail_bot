@@ -84,7 +84,7 @@ def execute_tool_call(
     tool_name: str,
     arguments: Dict[str, Any],
     ctx: PipelineContext,
-    cursor
+    cursor: Optional[Any] = None
 ) -> Dict[str, Any]:
     """
     Executes the specified tool with arguments against underlying CRM/RAG backends.

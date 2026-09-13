@@ -84,7 +84,7 @@ def create_ticket_and_reply(
     client_id: str,
     context: str,
     history: list,
-    cursor,
+    cursor: Optional[Any] = None,
     sentiment: str = "Neutral",
     priority: str = "Medium",
     features: Optional[dict] = None
@@ -140,10 +140,10 @@ def create_ticket_and_reply(
     ticket_remarks = resp.get("remarks", "") if isinstance(resp, dict) else ""
 
     # 2. Record to local ticket_record table
-    try:
-        cursor.execute("SELECT COUNT(*) FROM ticket_record WHERE ticket_id = %s", (outgoing_ticket_id,))
-        if cursor.fetchone()[0] == 0:
-            cursor.execute("""
+    def _insert_ticket_record(cur):
+        cur.execute("SELECT COUNT(*) FROM ticket_record WHERE ticket_id = %s", (outgoing_ticket_id,))
+        if cur.fetchone()[0] == 0:
+            cur.execute("""
                 INSERT INTO ticket_record (ticket_id, client_id, mail_id, subject, body, status, sentiment, priority)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (
@@ -157,6 +157,16 @@ def create_ticket_and_reply(
                 priority
             ))
             logger.info(f"✅ Ticket saved to ticket_record: {outgoing_ticket_id}")
+
+    try:
+        if cursor is not None:
+            _insert_ticket_record(cursor)
+        else:
+            from app.db import get_db_ctx
+            with get_db_ctx() as db:
+                with db.cursor() as cur:
+                    _insert_ticket_record(cur)
+                    db.commit()
     except Exception as t_err:
         logger.warning(f"⚠️ Failed to save ticket_record: {t_err}")
 

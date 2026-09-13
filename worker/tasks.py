@@ -19,7 +19,6 @@ from app.pipeline.filters import apply_deterministic_filters
 from app.pipeline.agent import run_support_agent
 from app.pipeline.dispatcher import dispatch_or_draft_reply, create_ticket_and_reply
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -33,22 +32,22 @@ def generate_ticket_id() -> str:
     return f"T-{date_part}-{random_part}"
 
 
-def get_client_features(cursor, client_id: str) -> Dict[str, Any]:
+def get_client_features(cursor=None, client_id: str = "") -> Dict[str, Any]:
     defaults = {
         "feature_ticket_creation": True, "feature_auto_send": True,
         "feature_rag": True, "feature_order_tracking": True, "feature_manual_reply": True,
         "feature_strip_disclaimers": True,
         "admin_bot_enabled": True, "client_bot_enabled": True,
     }
-    try:
-        cursor.execute("""
+    def _query(cur):
+        cur.execute("""
             SELECT feature_ticket_creation, feature_auto_send, feature_rag,
                    feature_order_tracking, feature_manual_reply,
                    COALESCE(feature_strip_disclaimers, 1),
                    COALESCE(admin_bot_enabled, 1), COALESCE(client_bot_enabled, 1)
             FROM email_accounts WHERE client_id = %s
         """, (client_id,))
-        row = cursor.fetchone()
+        row = cur.fetchone()
         if row:
             return {
                 "feature_ticket_creation": bool(row[0]), "feature_auto_send": bool(row[1]),
@@ -58,6 +57,15 @@ def get_client_features(cursor, client_id: str) -> Dict[str, Any]:
                 "admin_bot_enabled": bool(row[6]) if row[6] is not None else True,
                 "client_bot_enabled": bool(row[7]) if row[7] is not None else True,
             }
+        return defaults
+
+    try:
+        if cursor is not None:
+            return _query(cursor)
+        else:
+            with get_db_ctx() as db:
+                with db.cursor() as cur:
+                    return _query(cur)
     except Exception as e:
         logger.warning(f"⚠️ Failed to fetch client features for {client_id}, using defaults: {e}")
     return defaults
@@ -73,22 +81,42 @@ def publish_email_update(client_id: str):
         logger.warning(f"⚠️ Failed to publish real-time notification: {e}")
 
 
-def generate_and_save_summary(db, cursor, log_id: int, data: Dict[str, Any], context_text: str = ""):
+def generate_and_save_summary(
+    log_id: int, 
+    data: Dict[str, Any], 
+    context_text: str = "", 
+    db=None, 
+    cursor=None
+):
+    """
+    Generates an LLM summary of the issue without holding open a long-lived database connection.
+    1. Short DB read: Prior 5 emails from same sender.
+    2. LLM inference: generate_summary_llm() with ZERO DB connection held.
+    3. Short DB write: UPDATE email_logs SET summary = %s.
+    """
     try:
         client_id = data.get("client_id")
         from_email = data.get("from_email")
         body = data.get("body")
 
-        # Fetch up to 5 prior emails from same sender
-        cursor.execute("""
-            SELECT body, reply, summary 
-            FROM email_logs 
-            WHERE client_id = %s 
-              AND from_email = %s 
-              AND id < %s
-            ORDER BY id DESC LIMIT 5
-        """, (client_id, from_email, log_id))
-        prior_rows = cursor.fetchall()
+        # Step 1: Read prior rows in discrete transaction
+        def _read_prior(cur):
+            cur.execute("""
+                SELECT body, reply, summary 
+                FROM email_logs 
+                WHERE client_id = %s 
+                  AND from_email = %s 
+                  AND id < %s
+                ORDER BY id DESC LIMIT 5
+            """, (client_id, from_email, log_id))
+            return cur.fetchall()
+
+        if cursor is not None:
+            prior_rows = _read_prior(cursor)
+        else:
+            with get_db_ctx() as db_conn:
+                with db_conn.cursor() as cur:
+                    prior_rows = _read_prior(cur)
 
         old_summary = ""
         history_list = []
@@ -99,6 +127,7 @@ def generate_and_save_summary(db, cursor, log_id: int, data: Dict[str, Any], con
             if r[1]:
                 history_list.insert(1, {"role": "support", "body": r[1]})
 
+        # Step 2: LLM inference with ZERO database connection held
         summary = generate_summary_llm(
             context=context_text,
             customer_body=body,
@@ -106,89 +135,115 @@ def generate_and_save_summary(db, cursor, log_id: int, data: Dict[str, Any], con
             old_summary=old_summary
         )
 
-        cursor.execute("UPDATE email_logs SET summary = %s WHERE id = %s", (summary, log_id))
-        db.commit()
+        # Step 3: Write summary in discrete transaction
+        def _write_summary(cur, conn):
+            cur.execute("UPDATE email_logs SET summary = %s WHERE id = %s", (summary, log_id))
+            conn.commit()
+
+        if cursor is not None and db is not None:
+            _write_summary(cursor, db)
+        else:
+            with get_db_ctx() as db_conn:
+                with db_conn.cursor() as cur:
+                    _write_summary(cur, db_conn)
+
         logger.info(f"📊 Summary generated & updated for ID {log_id}: {summary}")
     except Exception as e:
         logger.warning(f"⚠️ Failed to generate/save summary: {e}")
 
 
-def _finalize_task_and_log(ctx: PipelineContext, cursor, db, task_id: str):
+def _finalize_task_and_log(ctx: PipelineContext, task_id: str, cursor=None, db=None):
     """
     Standardized persistence helper:
-    1. Inserts execution metadata and response into email_logs.
-    2. Updates celery_task_log to 'completed'.
-    3. Commits DB transaction.
-    4. Generates summary if appropriate.
-    5. Publishes real-time notification to Redis.
+    1. Inserts execution metadata and response into email_logs in a short discrete transaction.
+    2. Auto-populates draft_emails if pending manual review.
+    3. Updates celery_task_log to 'completed'.
+    4. Commits DB transaction immediately.
+    5. Asynchronously generates summary (if applicable).
+    6. Publishes real-time notification to Redis.
     """
-    cursor.execute("""
-        INSERT INTO email_logs (
-            client_id, from_email, subject, body, body_html, reply, score,
-            status, rag_id, sentiment, priority, execution_steps, summary
-        )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """, (
-        ctx.client_id,
-        ctx.from_email,
-        ctx.subject,
-        ctx.body,
-        ctx.body_html or None,
-        ctx.draft_reply,
-        ctx.score,
-        ctx.status,
-        ctx.rag_id,
-        ctx.sentiment,
-        ctx.priority,
-        json.dumps(ctx.execution_steps),
-        ctx.summary or ""
-    ))
-    db_log_id = cursor.lastrowid
+    def _execute_persistence(cur, conn):
+        cur.execute("""
+            INSERT INTO email_logs (
+                client_id, from_email, subject, body, body_html, reply, score,
+                status, rag_id, sentiment, priority, execution_steps, summary
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            ctx.client_id,
+            ctx.from_email,
+            ctx.subject,
+            ctx.body,
+            ctx.body_html or None,
+            ctx.draft_reply,
+            ctx.score,
+            ctx.status,
+            ctx.rag_id,
+            ctx.sentiment,
+            ctx.priority,
+            json.dumps(ctx.execution_steps),
+            ctx.summary or ""
+        ))
+        log_id = cur.lastrowid
 
-    # If active conversational email has no summary yet, generate issue summary
-    if not ctx.summary and ctx.status not in ("system_bounce_dropped", "rate_limited", "automation_halted", "no_action_needed"):
+        # Auto-populate Pending Review in draft_emails if manual review is required
+        if ctx.status == "pending_manual_review":
+            try:
+                from app.draft_service import create_draft
+                create_draft(
+                    client_id=ctx.client_id,
+                    email_log_id=log_id,
+                    from_email=ctx.from_email,
+                    to_email=ctx.from_email,
+                    subject=ctx.subject,
+                    original_body=ctx.body,
+                    draft_reply=ctx.draft_reply or (
+                        f"Hello,\n\n"
+                        f"Thank you for reaching out regarding '{ctx.subject}'.\n"
+                        f"Your inquiry has been received and escalated for specialist assistance. A support engineer will update you shortly.\n\n"
+                        f"Best regards,\nSupport Team"
+                    ),
+                    confidence_score=ctx.score,
+                    intent=ctx.intent or "ticket_creation_failed",
+                    sentiment=ctx.sentiment,
+                    priority=ctx.priority,
+                    ticket_id=ctx.ticket_id,
+                    in_reply_to=ctx.message_id,
+                    message_id=ctx.message_id,
+                    sender_name=ctx.sender_name,
+                )
+                logger.info(f"📝 Auto-created Pending Review draft in draft_emails for log_id {log_id}")
+            except Exception as draft_err:
+                logger.error(f"⚠️ Failed to create draft for pending manual review: {draft_err}")
+
+        cur.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s", (task_id,))
+        conn.commit()
+        return log_id
+
+    db_log_id = None
+    if cursor is not None and db is not None:
+        db_log_id = _execute_persistence(cursor, db)
+    else:
+        with get_db_ctx() as db_conn:
+            with db_conn.cursor() as cur:
+                db_log_id = _execute_persistence(cur, db_conn)
+
+    # Post-commit summary generation (runs outside main transaction without holding connection during LLM inference)
+    if db_log_id and not ctx.summary and ctx.status not in ("system_bounce_dropped", "rate_limited", "automation_halted", "no_action_needed"):
         try:
-            generate_and_save_summary(db, cursor, db_log_id, {
-                "client_id": ctx.client_id,
-                "from_email": ctx.from_email,
-                "subject": ctx.subject,
-                "body": ctx.body
-            }, ctx.context_text)
+            generate_and_save_summary(
+                log_id=db_log_id,
+                data={
+                    "client_id": ctx.client_id,
+                    "from_email": ctx.from_email,
+                    "subject": ctx.subject,
+                    "body": ctx.body
+                },
+                context_text=ctx.context_text
+            )
         except Exception as sum_err:
             logger.warning(f"⚠️ Summary generation skipped: {sum_err}")
 
-    # Auto-populate Pending Review in draft_emails if manual review is required
-    if ctx.status == "pending_manual_review":
-        try:
-            from app.draft_service import create_draft
-            create_draft(
-                client_id=ctx.client_id,
-                email_log_id=db_log_id,
-                from_email=ctx.from_email,
-                to_email=ctx.from_email,
-                subject=ctx.subject,
-                original_body=ctx.body,
-                draft_reply=ctx.draft_reply or (
-                    f"Hello,\n\n"
-                    f"Thank you for reaching out regarding '{ctx.subject}'.\n"
-                    f"Your inquiry has been received and escalated for specialist assistance. A support engineer will update you shortly.\n\n"
-                    f"Best regards,\nSupport Team"
-                ),
-                confidence_score=ctx.score,
-                intent=ctx.intent or "ticket_creation_failed",
-                sentiment=ctx.sentiment,
-                priority=ctx.priority,
-                ticket_id=ctx.ticket_id,
-                in_reply_to=ctx.message_id,
-                message_id=ctx.message_id,
-                sender_name=ctx.sender_name,
-            )
-            logger.info(f"📝 Auto-created Pending Review draft in draft_emails for log_id {db_log_id}")
-        except Exception as draft_err:
-            logger.error(f"⚠️ Failed to create draft for pending manual review: {draft_err}")
-
-    cursor.execute("UPDATE celery_task_log SET status = 'completed' WHERE task_id = %s", (task_id,))
-    db.commit()
     publish_email_update(ctx.client_id)
     logger.info(f"✅ [Task {task_id}] Finalized with status='{ctx.status}', log_id={db_log_id}")
 
@@ -207,67 +262,59 @@ def process_email_task(self, data: Dict[str, Any]):
 
     # Set context token for tenant isolation
     ctx_token = current_client_id.set(client_id)
+    ctx = PipelineContext.from_task_data(task_id, data)
 
-    db_ctx = get_db_ctx()
-    db = None
     try:
-        db = db_ctx.__enter__()
-        cursor = db.cursor()
+        # ====================================================================
+        # Phase A: Short Pre-Flight Gate (~10ms DB checkout)
+        # ====================================================================
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                # 1. Idempotency Check
+                cursor.execute("SELECT status FROM celery_task_log WHERE task_id = %s", (task_id,))
+                existing = cursor.fetchone()
+                if existing:
+                    if existing[0] == "completed":
+                        logger.info(f"⏭ Task {task_id} already completed — skipping to prevent duplicate")
+                        return
+                    elif existing[0] == "processing":
+                        logger.warning(f"🔄 Task {task_id} is a retry — continuing carefully")
+                else:
+                    cursor.execute(
+                        "INSERT INTO celery_task_log (task_id, client_id, from_email, status) VALUES (%s, %s, %s, 'processing')",
+                        (task_id, client_id, from_email)
+                    )
+                    db.commit()
 
-        # ==============================
-        # 1. Idempotency Check
-        # ==============================
-        cursor.execute("SELECT status FROM celery_task_log WHERE task_id = %s", (task_id,))
-        existing = cursor.fetchone()
-        if existing:
-            if existing[0] == "completed":
-                logger.info(f"⏭ Task {task_id} already completed — skipping to prevent duplicate")
-                return
-            elif existing[0] == "processing":
-                logger.warning(f"🔄 Task {task_id} is a retry — continuing carefully")
-        else:
-            cursor.execute(
-                "INSERT INTO celery_task_log (task_id, client_id, from_email, status) VALUES (%s, %s, %s, 'processing')",
-                (task_id, client_id, from_email)
-            )
-            db.commit()
+                if data.get("__test_fatal_error__"):
+                    raise RuntimeError("Deliberate poison pill test error")
 
-        if data.get("__test_fatal_error__"):
-            raise RuntimeError("Deliberate poison pill test error")
+                features = get_client_features(cursor, client_id)
+                ctx.features = features
 
+                # Level 0 Fast Deterministic Gates
+                if apply_deterministic_filters(ctx, cursor):
+                    _finalize_task_and_log(ctx, task_id=task_id, cursor=cursor, db=db)
+                    return
 
-        # ==============================
-        # 2. Pipeline Context Setup & Cleaning
-        # ==============================
-        features = get_client_features(cursor, client_id)
-        ctx = PipelineContext.from_task_data(task_id, data)
-        ctx.features = features
-
-        # Normalize subject: if missing or blank, derive from first line of body
+        # ====================================================================
+        # Phase B: Network, AI & Tools Execution (ZERO DB connection held)
+        # ====================================================================
+        # Normalize subject: derive from first line of body if blank
         from app.utils import normalize_subject
         ctx.subject = normalize_subject(ctx.subject, ctx.body)
         logger.info(f"🏷️ Subject normalized to: '{ctx.subject}'")
-
         data["subject"] = ctx.subject
 
         # Strip disclaimers if enabled
-        if features.get("feature_strip_disclaimers", True):
+        if ctx.features.get("feature_strip_disclaimers", True):
             try:
                 active_disclaimers = get_active_disclaimer_texts(client_id)
                 ctx.body = strip_disclaimers(ctx.body, active_disclaimers)
             except Exception as e:
                 logger.warning(f"⚠️ Failed to strip disclaimers: {e}")
 
-        # ==============================
-        # 3. Level 0 Fast Deterministic Gates (Zero LLM cost)
-        # ==============================
-        if apply_deterministic_filters(ctx, cursor):
-            _finalize_task_and_log(ctx, cursor, db, task_id)
-            return
-
-        # ==============================
-        # 4. Deterministic Multi-Ticket Check (Zero LLM cost)
-        # ==============================
+        # Deterministic Multi-Ticket Check
         email_query = f"Subject: {ctx.subject}\n\n{ctx.body}"
         ticket_ids = extract_ticket_and_order_ids(email_query)
         ticket_ids = list(dict.fromkeys(ticket_ids))
@@ -296,26 +343,20 @@ def process_email_task(self, data: Dict[str, Any]):
             ctx.status = "clarification_sent"
             ctx.summary = f"Multiple ticket IDs referenced ({', '.join(ticket_ids)}). Sent clarification request."
             ctx.score = 0
-            _finalize_task_and_log(ctx, cursor, db, task_id)
+            _finalize_task_and_log(ctx, task_id=task_id)
             return
 
         if ticket_ids:
             ctx.ticket_id = ticket_ids[0]
 
-        # ==============================
-        # 5. Load Conversation History
-        # ==============================
+        # Load Conversation History from Redis
         ctx.history = get_history(client_id, ctx.from_email, last_n=10)
         logger.info(f"📜 Loaded {len(ctx.history)} history messages")
 
-        # ==============================
-        # 6. Autonomous Support Agent Loop (LLM Function Calling)
-        # ==============================
-        ctx = run_support_agent(ctx, cursor)
+        # Autonomous Support Agent Loop (No DB held across 10-30s LLM / Tool execution)
+        ctx = run_support_agent(ctx, cursor=None)
 
-        # ==============================
-        # 7. Post-Agent Dispatch & Outbox
-        # ==============================
+        # Post-Agent Dispatch & Outbox
         if ctx.status in ("ticket_created_and_sent", "ticket_created_draft_pending"):
             logger.info(f"🎫 Ticket escalation finalized by agent tool ({ctx.status})")
         elif ctx.response_action == "create_ticket":
@@ -325,10 +366,10 @@ def process_email_task(self, data: Dict[str, Any]):
                 client_id=client_id,
                 context=ctx.draft_reply or ctx.body,
                 history=ctx.history,
-                cursor=cursor,
+                cursor=None,
                 sentiment=ctx.sentiment,
                 priority=ctx.priority,
-                features=features
+                features=ctx.features
             )
             ctx.draft_reply = reply
             ctx.ticket_id = outgoing_ticket_id
@@ -351,7 +392,7 @@ def process_email_task(self, data: Dict[str, Any]):
                 from_email=ctx.from_email,
                 subject=ctx.subject,
                 reply_body=ctx.draft_reply,
-                features=features,
+                features=ctx.features,
                 confidence_score=ctx.score,
                 intent=ctx.intent or "support_query",
                 sentiment=ctx.sentiment,
@@ -374,10 +415,10 @@ def process_email_task(self, data: Dict[str, Any]):
             ctx.status = "pending_manual_review"
             ctx.log_step("Agent_Fallback_Manual_Review")
 
-        # ==============================
-        # 8. Finalize Task & Write Logs
-        # ==============================
-        _finalize_task_and_log(ctx, cursor, db, task_id)
+        # ====================================================================
+        # Phase C: Finalize Task & Write Logs (~20ms DB checkout)
+        # ====================================================================
+        _finalize_task_and_log(ctx, task_id=task_id)
 
     except Exception as e:
         logger.error(f"❌ Task failed: {e}", exc_info=True)
@@ -388,36 +429,31 @@ def process_email_task(self, data: Dict[str, Any]):
                 f"🔥 [Poison Pill Circuit Breaker] Max retries ({max_retries}) exhausted for task {task_id} "
                 f"(Client: {client_id}, Sender: {from_email}). Terminating to prevent worker starvation."
             )
-            if db:
-                try:
-                    cursor = db.cursor()
-                    cursor.execute(
-                        "UPDATE celery_task_log SET status = 'fatal_processing_error' WHERE task_id = %s",
-                        (task_id,)
-                    )
-                    error_summary = f"Fatal worker error: {str(e)[:200]}"
-                    cursor.execute("""
-                        INSERT INTO email_logs (client_id, from_email, subject, body, status, summary)
-                        VALUES (%s, %s, %s, %s, 'failed', %s)
-                    """, (
-                        client_id,
-                        from_email,
-                        (data.get("subject") or "Support Request")[:255],
-                        (data.get("body") or "")[:1000],
-                        error_summary
-                    ))
-                    db.commit()
-                except Exception as log_err:
-                    logger.error(f"⚠️ Failed to write fatal task error to DB: {log_err}")
+            try:
+                with get_db_ctx() as db:
+                    with db.cursor() as cursor:
+                        cursor.execute(
+                            "UPDATE celery_task_log SET status = 'fatal_processing_error' WHERE task_id = %s",
+                            (task_id,)
+                        )
+                        error_summary = f"Fatal worker error: {str(e)[:200]}"
+                        cursor.execute("""
+                            INSERT INTO email_logs (client_id, from_email, subject, body, status, summary)
+                            VALUES (%s, %s, %s, %s, 'failed', %s)
+                        """, (
+                            client_id,
+                            from_email,
+                            (data.get("subject") or "Support Request")[:255],
+                            (data.get("body") or "")[:1000],
+                            error_summary
+                        ))
+                        db.commit()
+            except Exception as log_err:
+                logger.error(f"⚠️ Failed to write fatal task error to DB: {log_err}")
             return {"status": "fatal_processing_error", "error": str(e)}
         else:
             raise self.retry(exc=e, countdown=10)
     finally:
-        if db:
-            try:
-                db_ctx.__exit__(None, None, None)
-            except Exception:
-                pass
         publish_email_update(client_id)
 
 
@@ -430,4 +466,3 @@ def sweep_stale_outbox_task(max_age_seconds: int = 120):
     logger.info(f"🧹 Running background outbox sweeper (max_age={max_age_seconds}s)...")
     res = sweep_stale_actions(max_age_seconds)
     return res
-
