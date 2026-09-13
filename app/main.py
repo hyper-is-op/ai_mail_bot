@@ -37,10 +37,15 @@ class ConnectionManager:
             self.active_connections.remove(websocket)
         logger.info(f"Active connections: {len(self.active_connections)}")
 
-    async def broadcast(self, message: str):
+    async def broadcast(self, message: str, target_client_id: str = None):
         dead_connections = []
         for connection in list(self.active_connections):
             try:
+                # Admins receive everything; clients receive only their own events
+                conn_role = getattr(connection.state, "role", None)
+                conn_cid = getattr(connection.state, "client_id", None)
+                if target_client_id and conn_role != "admin" and conn_cid != target_client_id:
+                    continue
                 await connection.send_text(message)
             except Exception as e:
                 logger.warning(f"WebSocket send failed: {e}")
@@ -68,7 +73,14 @@ async def redis_pubsub_listener(app: FastAPI):
                 if message["type"] == "message":
                     data = message["data"]
                     logger.info(f"Broadcasting Redis pub/sub event: {data}")
-                    await manager.broadcast(data)
+                    # Extract client_id for tenant-filtered broadcast
+                    try:
+                        import json as _json
+                        parsed = _json.loads(data)
+                        cid = parsed.get("client_id")
+                    except Exception:
+                        cid = None
+                    await manager.broadcast(data, target_client_id=cid)
         except asyncio.CancelledError:
             logger.info("Redis pubsub listener cancelled")
             break
@@ -104,9 +116,11 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:1947,http://172.16.3.215:1947").split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[o.strip() for o in _CORS_ORIGINS if o.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -138,7 +152,20 @@ def home():
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: str = None):
+    # Validate session before accepting connection
+    if not token:
+        await websocket.close(code=4001, reason="Missing auth token")
+        return
+    from app.auth import get_session
+    session = get_session(token)
+    if not session:
+        await websocket.close(code=4001, reason="Invalid or expired token")
+        return
+
+    # Store session info on the websocket for tenant-filtered broadcasts
+    websocket.state.client_id = session.get("client_id")
+    websocket.state.role = session.get("role")
     await manager.connect(websocket)
     try:
         while True:

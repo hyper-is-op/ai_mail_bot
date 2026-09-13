@@ -261,11 +261,12 @@ def fetch_db_accounts():
     """Queries all email accounts from the database."""
     try:
         from app.db import get_db_ctx
+        from app.email_credential import _decrypt_imap_password
         with get_db_ctx() as db:
             with db.cursor() as cursor:
                 cursor.execute("SELECT client_id, email, password FROM email_accounts")
                 rows = cursor.fetchall()
-                return {row[0]: {"email": row[1], "password": row[2]} for row in rows}
+                return {row[0]: {"email": row[1], "password": _decrypt_imap_password(row[2])} for row in rows}
     except Exception as e:
         logger.error(f"Failed to fetch accounts from DB: {e}", exc_info=True)
         return {}

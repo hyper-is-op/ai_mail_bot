@@ -10,8 +10,24 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 logger = logging.getLogger(__name__)
 
 
+def _decrypt_imap_password(stored: str) -> str:
+    """Decrypt IMAP password, handling both encrypted and legacy plaintext."""
+    if not stored:
+        return ""
+    if stored.startswith("gAAAAA"):  # Fernet token prefix
+        from app.secrets_crypto import decrypt_secret
+        try:
+            return decrypt_secret(stored)
+        except Exception as e:
+            logger.error(f"Failed to decrypt IMAP password: {e}")
+            return stored
+    return stored  # Legacy plaintext fallback during migration
+
+
 def save_email_account(client_id: str, email: str, password: str, score_threshold: int = 80, response_tone: str = "Formal", agent_type: str = "customer_support"):
     logger.info(f"💾 Saving email account for client_id={client_id} email={email} score_threshold={score_threshold} response_tone={response_tone} agent_type={agent_type}")
+    from app.secrets_crypto import encrypt_secret
+    encrypted_password = encrypt_secret(password) if password and not password.startswith("gAAAAA") else (password or "")
     db = get_db()
     cursor = db.cursor()
     try:
@@ -25,13 +41,13 @@ def save_email_account(client_id: str, email: str, password: str, score_threshol
                 UPDATE email_accounts 
                 SET email = %s, password = %s, score_threshold = %s, response_tone = %s, agent_type = %s
                 WHERE client_id = %s
-            """, (email, password, score_threshold, response_tone, agent_type, client_id))
+            """, (email, encrypted_password, score_threshold, response_tone, agent_type, client_id))
         else:
             logger.info(f"📝 Inserting new record for client_id={client_id}")
             cursor.execute("""
                 INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type)
                 VALUES (%s, %s, %s, %s, %s, %s)
-            """, (client_id, email, password, score_threshold, response_tone, agent_type))
+            """, (client_id, email, encrypted_password, score_threshold, response_tone, agent_type))
             
         db.commit()
         logger.info(f"✅ Email account saved successfully for client_id={client_id}")
@@ -84,7 +100,7 @@ def get_email_account(client_id: str) -> dict:
         return {
             "client_id":       row[0],
             "email":           row[1],
-            "password":        row[2],
+            "password":        _decrypt_imap_password(row[2]),
             "score_threshold": row[3] if row[3] is not None else 80,
             "response_tone":   row[4] if row[4] is not None else "Formal",
             "agent_type":      row[5] if row[5] is not None else "customer_support_agent",
@@ -172,6 +188,25 @@ def ensure_accounts_table_startup(cursor):
     for col_name, col_def in missing_cols:
         if col_name not in existing_cols:
             cursor.execute(f"ALTER TABLE email_accounts ADD COLUMN {col_name} {col_def}")
+
+    # --- Encrypt any plaintext IMAP passwords ---
+    try:
+        from app.secrets_crypto import encrypt_secret
+        cursor.execute("SELECT id, password FROM email_accounts WHERE password IS NOT NULL AND password != ''")
+        rows = cursor.fetchall()
+        migrated = 0
+        for row_id, raw_pw in rows:
+            # Skip if already Fernet-encrypted (base64 token starting with 'gAAAAA')
+            if raw_pw and raw_pw.startswith("gAAAAA"):
+                continue
+            encrypted = encrypt_secret(raw_pw)
+            cursor.execute("UPDATE email_accounts SET password = %s WHERE id = %s", (encrypted, row_id))
+            migrated += 1
+        if migrated:
+            logger.info(f"🔐 Migrated {migrated} plaintext IMAP passwords to encrypted storage")
+    except Exception as e:
+        logger.error(f"❌ IMAP password encryption migration failed: {e}")
+        raise  # Fail startup loudly — don't silently skip
 
 def ensure_ticket_record_table(cursor):
     """

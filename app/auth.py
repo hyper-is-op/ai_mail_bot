@@ -1,5 +1,9 @@
 import hashlib
+import bcrypt
+import logging
 import pymysql
+
+logger = logging.getLogger(__name__)
 import uuid
 import secrets
 import json
@@ -36,8 +40,33 @@ def ensure_users_table():
         conn.close()
 
 def hash_password(password: str) -> str:
-    # unsalted SHA256 — fine for now, flag separately if you want it hardened later
-    return hashlib.sha256(password.encode()).hexdigest()
+    """Hash password with bcrypt (salted, key-stretched)."""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    """
+    Verify password against stored hash.
+    Supports both legacy SHA-256 (64-char hex) and bcrypt hashes.
+    If SHA-256 match found, returns True (caller should re-hash and update).
+    """
+    if not stored_hash:
+        return False
+    # Legacy SHA-256 detection: exactly 64 hex chars
+    if len(stored_hash) == 64 and all(c in '0123456789abcdef' for c in stored_hash):
+        if hashlib.sha256(password.encode()).hexdigest() == stored_hash:
+            return True  # Legacy match — caller should upgrade hash
+        return False
+    # bcrypt verification
+    try:
+        return bcrypt.checkpw(password.encode(), stored_hash.encode())
+    except Exception:
+        return False
+
+
+def is_legacy_hash(stored_hash: str) -> bool:
+    """Returns True if the stored hash is a legacy SHA-256 (needs upgrade)."""
+    return len(stored_hash) == 64 and all(c in '0123456789abcdef' for c in stored_hash)
 
 
 def register_admin_by_admin(email, password, creator_client_id):
@@ -83,8 +112,12 @@ def ensure_admin_seeded():
             p_hash = hash_password(admin_password)
 
             if existing:
-                # Update password/role/status if changed in .env
-                if existing.get("role") != "admin" or existing.get("password_hash") != p_hash or existing.get("status") != "active":
+                needs_update = (
+                    existing.get("role") != "admin"
+                    or existing.get("status") != "active"
+                    or not verify_password(admin_password, existing.get("password_hash", ""))
+                )
+                if needs_update:
                     cursor.execute(
                         "UPDATE users SET role='admin', status='active', password_hash=%s WHERE id=%s",
                         (p_hash, existing["id"])
@@ -121,8 +154,15 @@ def login_user(email, password):
                 return {"success": False, "error": "Invalid email or password"}
             if user.get("status") != "active":
                 return {"success": False, "error": "Your account is inactive. Contact admin."}
-            if user["password_hash"] != hash_password(password):
+            if not verify_password(password, user["password_hash"]):
                 return {"success": False, "error": "Invalid email or password"}
+
+            # Auto-upgrade legacy SHA-256 hash to bcrypt on successful login
+            if is_legacy_hash(user["password_hash"]):
+                new_hash = hash_password(password)
+                cursor.execute("UPDATE users SET password_hash=%s WHERE id=%s", (new_hash, user["id"]))
+                conn.commit()
+                logger.info(f"🔐 Upgraded password hash to bcrypt for user {user['email']}")
 
             user_payload = {
                 "id": user["id"], 
@@ -205,10 +245,12 @@ def create_client_atomic(name, phone_number, login_email, login_password, imap_e
                 )
             
             actual_imap = imap_email if imap_email else login_email
+            from app.secrets_crypto import encrypt_secret
+            encrypted_imap = encrypt_secret(imap_password) if imap_password and not imap_password.startswith("gAAAAA") else (imap_password or "")
             cursor.execute("""
                 INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type, department_name, company_name, flag)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
-            """, (client_id, actual_imap, imap_password or "", score_threshold, response_tone,
+            """, (client_id, actual_imap, encrypted_imap, score_threshold, response_tone,
                 agent_type, department_name, company_name)) 
         conn.commit()
 

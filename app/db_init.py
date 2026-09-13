@@ -232,6 +232,20 @@ def ensure_global_llm_tables():
                     except Exception as e:
                         logger.warning(f"Failed to drop legacy table default_global_llm_config: {e}")
 
+                # --- Encrypt any plaintext LLM API keys ---
+                try:
+                    from app.secrets_crypto import encrypt_secret
+                    cursor.execute("SELECT id, api_key FROM global_default_llm WHERE api_key IS NOT NULL AND api_key != ''")
+                    for r_id, r_key in cursor.fetchall():
+                        if r_key and not r_key.startswith("gAAAAA"):
+                            cursor.execute("UPDATE global_default_llm SET api_key = %s WHERE id = %s", (encrypt_secret(r_key), r_id))
+                    cursor.execute("SELECT id, api_key FROM globally_available_llm_configs WHERE api_key IS NOT NULL AND api_key != ''")
+                    for r_id, r_key in cursor.fetchall():
+                        if r_key and not r_key.startswith("gAAAAA"):
+                            cursor.execute("UPDATE globally_available_llm_configs SET api_key = %s WHERE id = %s", (encrypt_secret(r_key), r_id))
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to migrate plaintext LLM API keys: {e}")
+
                 db.commit()
                 logger.info("✅ Ensured global_default_llm and globally_available_llm_configs tables exist")
     except Exception as e:
@@ -304,6 +318,16 @@ def ensure_client_llm_config_table():
                     cursor.execute("ALTER TABLE client_llm_config MODIFY COLUMN model_name VARCHAR(255) NOT NULL DEFAULT ''")
                 except Exception:
                     pass
+
+                # --- Encrypt any plaintext client LLM API keys ---
+                try:
+                    from app.secrets_crypto import encrypt_secret
+                    cursor.execute("SELECT client_id, caller_function, api_key FROM client_llm_config WHERE api_key IS NOT NULL AND api_key != ''")
+                    for c_id, c_fn, r_key in cursor.fetchall():
+                        if r_key and not r_key.startswith("gAAAAA"):
+                            cursor.execute("UPDATE client_llm_config SET api_key = %s WHERE client_id = %s AND caller_function = %s", (encrypt_secret(r_key), c_id, c_fn))
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to migrate plaintext client LLM API keys: {e}")
 
                 db.commit()
                 logger.info("✅ Ensured client_llm_config table exists with refreshed column")

@@ -197,9 +197,15 @@ def get_llm_config(config_id: int) -> dict | None:
                 )
                 row = cursor.fetchone()
                 if row:
+                    from app.secrets_crypto import decrypt_secret
+                    raw_key = row[1]
+                    try:
+                        api_key = decrypt_secret(raw_key) if raw_key and raw_key.startswith("gAAAAA") else raw_key
+                    except Exception:
+                        api_key = raw_key
                     config = {
                         "provider": row[0],
-                        "api_key": row[1],
+                        "api_key": api_key,
                         "base_url": row[2],
                         "model_name": row[3],
                         "api_version": row[4],
@@ -234,10 +240,16 @@ def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
                     g_row = cursor.fetchone()
                 if g_row and len(g_row) > 6 and g_row[6]:  # is_override_active is True
                     logger.warning(f"🚨 EMERGENCY GLOBAL OVERRIDE ACTIVE: Enforcing Global Default LLM for client={client_id}, function={caller_function}")
+                    from app.secrets_crypto import decrypt_secret
+                    raw_g_key = g_row[2]
+                    try:
+                        g_key = decrypt_secret(raw_g_key) if raw_g_key and raw_g_key.startswith("gAAAAA") else raw_g_key
+                    except Exception:
+                        g_key = raw_g_key
                     return {
                         "id": g_row[0],
                         "provider": g_row[1],
-                        "api_key": g_row[2],
+                        "api_key": g_key,
                         "base_url": g_row[3],
                         "model_name": g_row[4],
                         "api_version": g_row[5],
@@ -263,9 +275,14 @@ def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
                         
                         # 1a. If client specified full custom provider credentials for this function
                         if c_provider and c_key:
+                            from app.secrets_crypto import decrypt_secret
+                            try:
+                                dec_c_key = decrypt_secret(c_key) if c_key and c_key.startswith("gAAAAA") else c_key
+                            except Exception:
+                                dec_c_key = c_key
                             return {
                                 "provider": c_provider,
-                                "api_key": c_key,
+                                "api_key": dec_c_key,
                                 "base_url": c_url,
                                 "model_name": c_model,
                                 "api_version": c_ver,
@@ -313,10 +330,16 @@ def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
                     cursor.execute("SELECT id, provider, api_key, base_url, model_name, api_version FROM global_default_llm LIMIT 1")
                     row = cursor.fetchone()
                 if row:
+                    from app.secrets_crypto import decrypt_secret
+                    raw_row_key = row[2]
+                    try:
+                        row_key = decrypt_secret(raw_row_key) if raw_row_key and raw_row_key.startswith("gAAAAA") else raw_row_key
+                    except Exception:
+                        row_key = raw_row_key
                     resolved_config = {
                         "id": row[0],
                         "provider": row[1],
-                        "api_key": row[2],
+                        "api_key": row_key,
                         "base_url": row[3],
                         "model_name": row[4],
                         "api_version": row[5],
@@ -335,10 +358,16 @@ def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
                     )
                     row = cursor.fetchone()
                     if row:
+                        from app.secrets_crypto import decrypt_secret
+                        raw_fb_key = row[2]
+                        try:
+                            fb_key = decrypt_secret(raw_fb_key) if raw_fb_key and raw_fb_key.startswith("gAAAAA") else raw_fb_key
+                        except Exception:
+                            fb_key = raw_fb_key
                         resolved_config = {
                             "id": row[0],
                             "provider": row[1],
-                            "api_key": row[2],
+                            "api_key": fb_key,
                             "base_url": row[3],
                             "model_name": row[4],
                             "api_version": row[5],

@@ -21,6 +21,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Settings & Configuration"])
 
 
+def _encrypt_key(key: str | None) -> str | None:
+    if not key:
+        return key
+    if key.startswith("gAAAAA"):
+        return key
+    from app.secrets_crypto import encrypt_secret
+    return encrypt_secret(key)
+
+
+def _decrypt_key(key: str | None) -> str:
+    if not key:
+        return ""
+    if key.startswith("gAAAAA"):
+        from app.secrets_crypto import decrypt_secret
+        try:
+            return decrypt_secret(key)
+        except Exception:
+            return key
+    return key
+
+
 # ==============================
 # 🎛️ Client Features
 # ==============================
@@ -194,14 +215,15 @@ class ClientLlmConfigRequest(BaseModel):
 def set_client_llm_config(data: ClientLlmConfigRequest, user: dict = Depends(require_admin())):
     with get_db_ctx() as db:
         with db.cursor() as cursor:
+            enc_api_key = _encrypt_key(data.api_key)
             cursor.execute("""
                 INSERT INTO client_llm_config (client_id, caller_function, global_config_id, provider, api_key, base_url, model_name, api_version)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE 
                     global_config_id=%s, provider=%s, api_key=%s, base_url=%s, model_name=%s, api_version=%s
             """, (
-                data.client_id, data.caller_function, data.global_config_id, data.provider, data.api_key, data.base_url, data.model_name, data.api_version,
-                data.global_config_id, data.provider, data.api_key, data.base_url, data.model_name, data.api_version
+                data.client_id, data.caller_function, data.global_config_id, data.provider, enc_api_key, data.base_url, data.model_name, data.api_version,
+                data.global_config_id, data.provider, enc_api_key, data.base_url, data.model_name, data.api_version
             ))
             db.commit()
     return {"status": "success"}
@@ -222,7 +244,7 @@ def get_client_llm_config(client_id: str, user: dict = Depends(require_admin()))
         "model_name": r[1],
         "global_config_id": r[2],
         "provider": r[3],
-        "api_key": r[4],
+        "api_key": _decrypt_key(r[4]),
         "base_url": r[5],
         "api_version": r[6],
         "created_at": str(r[7]) if r[7] else None,
@@ -261,7 +283,7 @@ def refresh_client_llm_config(data: ClientLlmRefreshRequest, user: dict = Depend
                 if not row:
                     raise HTTPException(status_code=404, detail="Referenced globally available LLM config not found")
                 target_provider = row[1]
-                target_api_key = row[2]
+                target_api_key = _decrypt_key(row[2])
                 target_base_url = row[3]
                 target_api_version = row[4]
     elif not target_provider and not target_api_key:
@@ -278,7 +300,7 @@ def refresh_client_llm_config(data: ClientLlmRefreshRequest, user: dict = Depend
                     row = cursor.fetchone()
                 if row:
                     target_provider = row[1]
-                    target_api_key = row[2]
+                    target_api_key = _decrypt_key(row[2])
                     target_base_url = row[3]
                     target_api_version = row[4]
 
@@ -319,7 +341,7 @@ def refresh_client_llm_config(data: ClientLlmRefreshRequest, user: dict = Depend
                 """, (
                     data.client_id, data.caller_function, global_config_id,
                     data.provider if not global_config_id else None,
-                    data.api_key if not global_config_id else None,
+                    _encrypt_key(data.api_key) if not global_config_id else None,
                     data.base_url if not global_config_id else None,
                     data.api_version if not global_config_id else None
                 ))
@@ -423,7 +445,7 @@ def get_global_default_llm_endpoint(user: dict = Depends(require_admin())):
                 return {
                     "id": row[0],
                     "provider": row[1],
-                    "api_key": row[2],
+                    "api_key": _decrypt_key(row[2]),
                     "base_url": row[3],
                     "model_name": row[4],
                     "api_version": row[5],
@@ -441,6 +463,7 @@ def set_global_default_llm_endpoint(data: GlobalDefaultLlmRequest, user: dict = 
     try:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
+                enc_api_key = _encrypt_key(data.api_key)
                 cursor.execute("""
                     INSERT INTO global_default_llm (id, provider, api_key, base_url, model_name, api_version)
                     VALUES (1, %s, %s, %s, %s, %s)
@@ -450,7 +473,7 @@ def set_global_default_llm_endpoint(data: GlobalDefaultLlmRequest, user: dict = 
                         base_url=VALUES(base_url),
                         model_name=VALUES(model_name),
                         api_version=VALUES(api_version)
-                """, (data.provider, data.api_key, data.base_url, data.model_name, data.api_version))
+                """, (data.provider, enc_api_key, data.base_url, data.model_name, data.api_version))
             db.commit()
         return {"status": "success"}
     except Exception as e:
@@ -488,7 +511,7 @@ def refresh_global_default_llm_endpoint(user: dict = Depends(require_admin())):
                 if not row:
                     raise HTTPException(status_code=404, detail="Global Default LLM configuration not found")
                 
-                provider, api_key, base_url, api_version = row[0], row[1], row[2], row[3]
+                provider, api_key, base_url, api_version = row[0], _decrypt_key(row[1]), row[2], row[3]
                 models = _query_provider_live_models(provider, api_key, base_url, api_version)
                 
                 cursor.execute("UPDATE global_default_llm SET refreshed = CURRENT_TIMESTAMP WHERE id = 1")
@@ -542,7 +565,7 @@ def get_globally_available_llm_configs_endpoint(user: dict = Depends(require_adm
                         "id": r[0],
                         "name": r[1],
                         "provider": r[2],
-                        "api_key": r[3],
+                        "api_key": _decrypt_key(r[3]),
                         "base_url": r[4],
                         "model_name": r[5],
                         "api_version": r[6],
@@ -560,17 +583,18 @@ def save_globally_available_llm_config_endpoint(data: GloballyAvailableLlmConfig
     try:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
+                enc_api_key = _encrypt_key(data.api_key)
                 if data.id:
                     cursor.execute("""
                         UPDATE globally_available_llm_configs 
                         SET name=%s, provider=%s, api_key=%s, base_url=%s, model_name=%s, api_version=%s
                         WHERE id=%s
-                    """, (data.name, data.provider, data.api_key, data.base_url, data.model_name, data.api_version, data.id))
+                    """, (data.name, data.provider, enc_api_key, data.base_url, data.model_name, data.api_version, data.id))
                 else:
                     cursor.execute("""
                         INSERT INTO globally_available_llm_configs (name, provider, api_key, base_url, model_name, api_version)
                         VALUES (%s, %s, %s, %s, %s, %s)
-                    """, (data.name, data.provider, data.api_key, data.base_url, data.model_name, data.api_version))
+                    """, (data.name, data.provider, enc_api_key, data.base_url, data.model_name, data.api_version))
             db.commit()
         return {"status": "success"}
     except Exception as e:
@@ -603,7 +627,7 @@ def refresh_globally_available_llm_config_endpoint(config_id: int, user: dict = 
                 if not row:
                     raise HTTPException(status_code=404, detail="Globally available LLM configuration not found")
                 
-                provider, api_key, base_url, api_version, name = row[0], row[1], row[2], row[3], row[4]
+                provider, api_key, base_url, api_version, name = row[0], _decrypt_key(row[1]), row[2], row[3], row[4]
                 models = _query_provider_live_models(provider, api_key, base_url, api_version)
                 
                 cursor.execute("""

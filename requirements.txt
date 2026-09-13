@@ -19,3 +19,4 @@ langchain-openai
 dbutils
 qdrant-client>=1.10,<2.0
 jmespath
+bcrypt
