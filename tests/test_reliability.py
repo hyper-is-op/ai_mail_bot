@@ -123,5 +123,38 @@ class TestTelemetryLLMClient(unittest.TestCase):
         self.assertEqual(mock_log_db.call_args[0][6], "test_unit_caller")
 
 
+class TestImapBoundedReader(unittest.TestCase):
+    def setUp(self):
+        from worker.imap_reader import _account_cooldowns
+        _account_cooldowns.clear()
+
+    def test_account_cooldown_lifecycle(self):
+        from worker.imap_reader import is_in_cooldown, set_account_cooldown, clear_account_cooldown
+        self.assertFalse(is_in_cooldown("CLI-TEST-1"))
+
+        set_account_cooldown("CLI-TEST-1", duration=10)
+        self.assertTrue(is_in_cooldown("CLI-TEST-1"))
+
+        clear_account_cooldown("CLI-TEST-1")
+        self.assertFalse(is_in_cooldown("CLI-TEST-1"))
+
+    @patch("worker.imap_reader.is_bot_enabled_for_client")
+    def test_check_mailbox_skips_when_bot_disabled(self, mock_bot_enabled):
+        from worker.imap_reader import check_client_mailbox
+        mock_bot_enabled.return_value = (False, "Disabled by Administrator")
+        
+        result = check_client_mailbox("CLI-DISABLED", "test@example.com", "secret")
+        self.assertEqual(result, 0)
+
+    @patch("worker.imap_reader.is_bot_enabled_for_client")
+    def test_check_mailbox_skips_when_in_cooldown(self, mock_bot_enabled):
+        from worker.imap_reader import check_client_mailbox, set_account_cooldown
+        mock_bot_enabled.return_value = (True, "Active")
+        set_account_cooldown("CLI-COOLDOWN", duration=60)
+
+        result = check_client_mailbox("CLI-COOLDOWN", "test@example.com", "secret")
+        self.assertEqual(result, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

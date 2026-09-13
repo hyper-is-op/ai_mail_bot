@@ -7,6 +7,7 @@ import logging
 import sys
 import threading
 import signal
+import concurrent.futures
 from email.header import decode_header as _decode_header
 
 # Ensure /app is on sys.path when running the script directly
@@ -23,17 +24,46 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Active listener threads tracking
-# {client_id: {"thread": Thread, "stop_event": Event, "email": str, "password": str}}
-active_listeners = {}
-listeners_lock = threading.Lock()
+# Configurable concurrency and polling limits
+IMAP_HOST = os.getenv("IMAP_HOST", "imap.gmail.com")
+IMAP_MAX_WORKERS = int(os.getenv("IMAP_MAX_WORKERS", "5"))
+IMAP_POLL_INTERVAL = float(os.getenv("IMAP_POLL_INTERVAL", "10.0"))
+IMAP_SOCKET_TIMEOUT = float(os.getenv("IMAP_SOCKET_TIMEOUT", "20.0"))
+IMAP_AUTH_COOLDOWN = float(os.getenv("IMAP_AUTH_COOLDOWN", "300.0"))
+
 shutdown_event = threading.Event()
+
+# Cooldown tracking for failing accounts (e.g. invalid credentials)
+_account_cooldowns: dict[str, float] = {}
+_cooldowns_lock = threading.Lock()
 
 
 def handle_shutdown(signum, frame):
     sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
     logger.info(f"🛑 Received {sig_name} ({signum}), initiating graceful shutdown...")
     shutdown_event.set()
+
+
+def is_in_cooldown(client_id: str) -> bool:
+    """Returns True if this client account is currently in error/auth cooldown."""
+    with _cooldowns_lock:
+        expiry = _account_cooldowns.get(client_id, 0)
+        if expiry and time.time() < expiry:
+            return True
+        _account_cooldowns.pop(client_id, None)
+        return False
+
+
+def set_account_cooldown(client_id: str, duration: float = IMAP_AUTH_COOLDOWN):
+    """Sets an error cooldown timestamp for a client account."""
+    with _cooldowns_lock:
+        _account_cooldowns[client_id] = time.time() + duration
+
+
+def clear_account_cooldown(client_id: str):
+    """Clears any active error cooldown for a client account."""
+    with _cooldowns_lock:
+        _account_cooldowns.pop(client_id, None)
 
 
 def decode_subject(raw_subject: str) -> str:
@@ -97,167 +127,154 @@ def is_message_duplicate(client_id: str, message_id: str) -> bool:
         return False
 
 
-def poll_inbox(client_id, email_user, email_pass, stop_event):
-    logger.info(f"📬 Starting IMAP poll thread for Client: {client_id} ({email_user})")
-    retry_delay = 5
-    
-    while not stop_event.is_set():
-        mail = None
+def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> int:
+    """
+    Connects to the client's IMAP mailbox, processes any unseen emails,
+    enqueues Celery tasks, and cleanly logs out.
+    Returns count of emails successfully queued.
+    """
+    if shutdown_event.is_set():
+        return 0
+
+    # Master Bot Switch Check — Complete Stop
+    bot_enabled, reason = is_bot_enabled_for_client(client_id)
+    if not bot_enabled:
+        logger.info(f"🛑 [Client {client_id}] Master Bot Switch is OFF ({reason}) — skipping inbox check")
+        return 0
+
+    if is_in_cooldown(client_id):
+        logger.debug(f"⏳ [Client {client_id}] Skipping inbox check (account in cooldown)")
+        return 0
+
+    mail = None
+    queued_count = 0
+    try:
+        mail = imaplib.IMAP4_SSL(IMAP_HOST, timeout=IMAP_SOCKET_TIMEOUT)
         try:
-            logger.info(f"📡 [Client {client_id}] Connecting to Gmail IMAP...")
-            mail = imaplib.IMAP4_SSL("imap.gmail.com", timeout=30)
-            try:
-                mail.login(email_user, email_pass)
-            except imaplib.IMAP4.error as auth_err:
-                error_str = str(auth_err)
-                if 'AUTHENTICATIONFAILED' in error_str or 'Invalid credentials' in error_str:
-                    logger.error(
-                        f"❌ [Client {client_id}] Authentication permanently failed for {email_user}. "
-                        f"Update credentials in UI to restart listener."
-                    )
-                    stop_event.set()
-                    return
-                raise
-            mail.select("inbox")
-            logger.info(f"✅ [Client {client_id}] Connected and authenticated ({email_user})")
-            retry_delay = 5
+            mail.login(email_user, email_pass)
+            clear_account_cooldown(client_id)
+        except imaplib.IMAP4.error as auth_err:
+            err_str = str(auth_err)
+            if 'AUTHENTICATIONFAILED' in err_str or 'Invalid credentials' in err_str:
+                logger.error(
+                    f"❌ [Client {client_id}] Authentication failed for {email_user}. "
+                    f"Setting {IMAP_AUTH_COOLDOWN}s cooldown: {auth_err}"
+                )
+                set_account_cooldown(client_id)
+                return 0
+            raise
 
-            while not stop_event.is_set():
+        mail.select("inbox")
+        status, messages = mail.search(None, 'UNSEEN')
+        if status == "OK" and messages and messages[0]:
+            nums = messages[0].split()
+            logger.info(f"📬 [Client {client_id}] Found {len(nums)} unseen email(s)")
+
+            for num in nums:
+                if shutdown_event.is_set():
+                    break
                 try:
-                    mail.noop()
-
-                    # Master Bot Switch Check — Complete Stop
-                    bot_enabled, reason = is_bot_enabled_for_client(client_id)
-                    if not bot_enabled:
-                        logger.info(f"🛑 [Client {client_id}] Master Bot Switch is OFF ({reason}) — skipping inbox check, emails remain untouched in Gmail")
-                        for _ in range(10):
-                            if stop_event.is_set():
-                                break
-                            time.sleep(1)
+                    f_status, data = mail.fetch(num, "(RFC822)")
+                    if f_status != "OK" or not data:
                         continue
 
-                    logger.info(f"🔄 [Client {client_id}] Poll cycle — checking UNSEEN")
-                    
-                    status, messages = mail.search(None, 'UNSEEN')
-                    
-                    if messages[0]:
-                        unseen_count = len(messages[0].split())
-                        logger.info(f"📬 [Client {client_id}] Found {unseen_count} unseen email(s)")
+                    raw_email = next((item[1] for item in data if isinstance(item, tuple)), None)
+                    if raw_email is None:
+                        continue
 
-                        for num in messages[0].split():
-                            if stop_event.is_set():
-                                break
-                            try:
-                                status, data = mail.fetch(num, "(RFC822)")
-                                if status != "OK" or not data:
-                                    continue
+                    msg = email.message_from_bytes(raw_email)
+                    raw_message_id = msg.get("Message-ID", "")
 
-                                raw_email = next(
-                                    (item[1] for item in data if isinstance(item, tuple)),
-                                    None
-                                )
-                                if raw_email is None:
-                                    continue
+                    # Deduplication check: if seen within 24h, mark seen and skip
+                    if raw_message_id and is_message_duplicate(client_id, raw_message_id):
+                        logger.warning(f"⏩ [Client {client_id}] Duplicate message {raw_message_id} already queued — marking \\Seen and skipping")
+                        mail.store(num, '+FLAGS', '\\Seen')
+                        continue
 
-                                msg = email.message_from_bytes(raw_email)
-                                raw_message_id = msg.get("Message-ID", "")
+                    subject = decode_subject(msg.get("subject", ""))
+                    from_email = msg.get("from", "")
 
-                                # Deduplication check: if seen within 24h, mark seen and skip
-                                if raw_message_id and is_message_duplicate(client_id, raw_message_id):
-                                    logger.warning(f"⏩ [Client {client_id}] Duplicate message {raw_message_id} already queued — marking \\Seen and skipping")
-                                    mail.store(num, '+FLAGS', '\\Seen')
-                                    continue
+                    # Extract actual email address
+                    match = re.search(r'<([^>]+)>', from_email)
+                    if match:
+                        from_email = match.group(1)
+                    else:
+                        match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', from_email)
+                        if match:
+                            from_email = match.group(0)
 
-                                # Decode MIME-encoded subject
-                                subject = decode_subject(msg.get("subject", ""))
-                                from_email = msg.get("from", "")
+                    plain_text = ""
+                    html_text = ""
 
-                                # extract actual email
-                                match = re.search(r'<([^>]+)>', from_email)
-                                if match:
-                                    from_email = match.group(1)
-                                else:
-                                    match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', from_email)
-                                    if match:
-                                        from_email = match.group(0)
+                    if msg.is_multipart():
+                        for part in msg.walk():
+                            ctype = part.get_content_type()
+                            if ctype == "text/plain" and not plain_text:
+                                try:
+                                    plain_text = part.get_payload(decode=True).decode(errors="ignore")
+                                except Exception:
+                                    pass
+                            elif ctype == "text/html" and not html_text:
+                                try:
+                                    html_text = part.get_payload(decode=True).decode(errors="ignore")
+                                except Exception:
+                                    pass
+                    else:
+                        try:
+                            payload = msg.get_payload(decode=True).decode(errors="ignore")
+                        except Exception:
+                            payload = ""
+                        if msg.get_content_type() == "text/html":
+                            html_text = payload
+                        else:
+                            plain_text = payload
 
-                                plain_text = ""
-                                html_text = ""
+                    from app.text_cleaning import extract_clean_text_from_html, is_html_content
 
-                                if msg.is_multipart():
-                                    for part in msg.walk():
-                                        ctype = part.get_content_type()
-                                        if ctype == "text/plain" and not plain_text:
-                                            try:
-                                                plain_text = part.get_payload(decode=True).decode(errors="ignore")
-                                            except Exception:
-                                                pass
-                                        elif ctype == "text/html" and not html_text:
-                                            try:
-                                                html_text = part.get_payload(decode=True).decode(errors="ignore")
-                                            except Exception:
-                                                pass
-                                else:
-                                    try:
-                                        payload = msg.get_payload(decode=True).decode(errors="ignore")
-                                    except Exception:
-                                        payload = ""
-                                    if msg.get_content_type() == "text/html":
-                                        html_text = payload
-                                    else:
-                                        plain_text = payload
+                    if not plain_text and html_text:
+                        plain_text = extract_clean_text_from_html(html_text)
+                    elif plain_text and is_html_content(plain_text):
+                        if not html_text:
+                            html_text = plain_text
+                        plain_text = extract_clean_text_from_html(plain_text)
 
-                                from app.text_cleaning import extract_clean_text_from_html, is_html_content
+                    logger.info(f"📧 [Client {client_id}] NEW EMAIL: From={from_email} Subject={subject} (HTML={bool(html_text)})")
 
-                                # If no plain text was provided or plain text contains raw HTML document, clean it
-                                if not plain_text and html_text:
-                                    plain_text = extract_clean_text_from_html(html_text)
-                                elif plain_text and is_html_content(plain_text):
-                                    if not html_text:
-                                        html_text = plain_text
-                                    plain_text = extract_clean_text_from_html(plain_text)
+                    # Enqueue task to Celery FIRST
+                    task_result = process_email_task.delay({
+                        "client_id": client_id,
+                        "from_email": from_email,
+                        "subject": subject,
+                        "body": plain_text or "",
+                        "body_html": html_text or "",
+                        "message_id": raw_message_id
+                    })
+                    logger.info(f"✅ [Client {client_id}] Task queued: {task_result.id}")
 
-                                logger.info(f"📧 [Client {client_id}] NEW EMAIL: From={from_email} Subject={subject} (HTML={bool(html_text)})")
-                                
-                                # Enqueue task to Celery FIRST
-                                task_result = process_email_task.delay({
-                                    "client_id": client_id,
-                                    "from_email": from_email,
-                                    "subject": subject,
-                                    "body": plain_text or "",
-                                    "body_html": html_text or "",
-                                    "message_id": raw_message_id
-                                })
-                                logger.info(f"✅ [Client {client_id}] Task queued: {task_result.id}")
+                    # ONLY mark \Seen once task is successfully queued
+                    mail.store(num, '+FLAGS', '\\Seen')
+                    queued_count += 1
 
-                                # ONLY mark \Seen once task is successfully queued
-                                mail.store(num, '+FLAGS', '\\Seen')
+                except Exception as email_err:
+                    num_str = num.decode() if isinstance(num, bytes) else str(num)
+                    logger.error(f"❌ [Client {client_id}] Error processing email #{num_str} (left UNSEEN for retry): {email_err}", exc_info=True)
 
-                            except Exception as e:
-                                num_str = num.decode() if isinstance(num, bytes) else str(num)
-                                logger.error(f"❌ [Client {client_id}] Error processing email #{num_str} (left UNSEEN for retry): {e}", exc_info=True)
+    except Exception as conn_err:
+        logger.error(f"⚠️ [Client {client_id}] IMAP sweep error: {conn_err}")
+    finally:
+        if mail:
+            try:
+                mail.logout()
+            except Exception:
+                pass
 
-                    # Poll interval (interruptible immediately if stop_event is set)
-                    if stop_event.wait(10):
-                        break
+    return queued_count
 
-                except Exception as e:
-                    logger.error(f"Mail polling error for Client {client_id}: {e}", exc_info=True)
-                    break
-            
-            if mail:
-                try:
-                    mail.logout()
-                except:
-                    pass
 
-        except Exception as e:
-            logger.error(f"IMAP connection failed for Client {client_id}: {e}. Retrying in {retry_delay}s...", exc_info=True)
-            if stop_event.wait(retry_delay):
-                break
-            retry_delay = min(retry_delay * 2, 60)
+def poll_inbox(client_id, email_user, email_pass, stop_event=None):
+    """Backward-compatible single-mailbox check wrapper."""
+    return check_client_mailbox(client_id, email_user, email_pass)
 
-    logger.info(f"🛑 Thread stopped for Client: {client_id} ({email_user})")
 
 def fetch_db_accounts():
     """Queries all email accounts from the database."""
@@ -275,13 +292,18 @@ def fetch_db_accounts():
 
 
 def manage_listeners():
+    """
+    Bounded concurrent listener loop.
+    Sweeps active client mailboxes using a fixed ThreadPoolExecutor pool,
+    preventing IMAP provider connection throttling and persistent socket leaks.
+    """
     try:
         signal.signal(signal.SIGTERM, handle_shutdown)
         signal.signal(signal.SIGINT, handle_shutdown)
     except (ValueError, AttributeError):
         pass  # In case called from non-main thread
 
-    logger.info("🚀 Starting Dynamic Email Listener Manager...")
+    logger.info(f"🚀 Starting Bounded Email Listener Manager (max_workers={IMAP_MAX_WORKERS}, poll_interval={IMAP_POLL_INTERVAL}s)...")
     
     try:
         from app.email_credential import ensure_accounts_table_startup
@@ -293,57 +315,35 @@ def manage_listeners():
     except Exception as e:
         logger.warning(f"⚠️ Initial accounts table check warning: {e}")
 
-    while not shutdown_event.is_set():
-        db_accounts = fetch_db_accounts()
-        
-        with listeners_lock:
-            # Stop threads no longer in DB or credentials changed
-            to_stop = []
-            for client_id, active_info in active_listeners.items():
-                if client_id not in db_accounts:
-                    logger.info(f"⚠️ Account for {client_id} was deleted from UI. Stopping listener...")
-                    to_stop.append(client_id)
-                else:
-                    db_info = db_accounts[client_id]
-                    if (active_info["email"] != db_info["email"]) or (active_info["password"] != db_info["password"]):
-                        logger.info(f"🔄 Credentials for {client_id} changed in UI. Restarting listener...")
-                        to_stop.append(client_id)
-            
-            for client_id in to_stop:
-                active_listeners[client_id]["stop_event"].set()
-                active_listeners.pop(client_id)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=IMAP_MAX_WORKERS, thread_name_prefix="imap_worker") as executor:
+        while not shutdown_event.is_set():
+            db_accounts = fetch_db_accounts()
 
-            # Start threads for new or updated accounts
-            for client_id, db_info in db_accounts.items():
-                if client_id not in active_listeners and not shutdown_event.is_set():
-                    stop_event = threading.Event()
-                    t = threading.Thread(
-                        target=poll_inbox,
-                        args=(client_id, db_info["email"], db_info["password"], stop_event),
-                        daemon=True
-                    )
-                    t.start()
-                    active_listeners[client_id] = {
-                        "thread": t,
-                        "stop_event": stop_event,
-                        "email": db_info["email"],
-                        "password": db_info["password"]
-                    }
-                    logger.info(f"✅ Started new listener for Client {client_id}")
+            # Clean up cooldowns for accounts deleted from DB
+            with _cooldowns_lock:
+                stale_keys = [cid for cid in _account_cooldowns if cid not in db_accounts]
+                for cid in stale_keys:
+                    _account_cooldowns.pop(cid, None)
 
-        shutdown_event.wait(10)
+            if db_accounts:
+                futures = {
+                    executor.submit(check_client_mailbox, cid, info["email"], info["password"]): cid
+                    for cid, info in db_accounts.items()
+                    if not shutdown_event.is_set()
+                }
 
-    # Clean shutdown sequence
-    logger.info("🛑 Shutting down all active IMAP listener threads...")
-    with listeners_lock:
-        for client_id, active_info in list(active_listeners.items()):
-            active_info["stop_event"].set()
-        
-        for client_id, active_info in list(active_listeners.items()):
-            active_info["thread"].join(timeout=5)
-            logger.info(f"✅ Joined listener thread for Client {client_id}")
-        active_listeners.clear()
-    logger.info("👋 Graceful shutdown complete.")
+                for f in concurrent.futures.as_completed(futures):
+                    if shutdown_event.is_set():
+                        break
+                    cid = futures[f]
+                    try:
+                        f.result()
+                    except Exception as exc:
+                        logger.warning(f"⚠️ [Client {cid}] Mailbox sweep task failed: {exc}")
+
+            shutdown_event.wait(IMAP_POLL_INTERVAL)
+
+    logger.info("👋 Bounded listener shutdown complete.")
 
 
 if __name__ == "__main__":
