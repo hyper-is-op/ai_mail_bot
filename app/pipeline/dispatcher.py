@@ -97,14 +97,9 @@ def create_ticket_and_reply(
     if features is None:
         features = {"feature_auto_send": True}
 
-    raw_sub = (data.get("subject") or "").strip()
-    if not raw_sub or raw_sub.lower() in ("(no subject)", "no subject", "none", "null"):
-        fallback_text = (data.get("body") or context or "").strip()
-        first_line = fallback_text.split("\n")[0].strip() if fallback_text else ""
-        clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
-        effective_subject = clean_first if len(clean_first) >= 3 else "Support Request"
-    else:
-        effective_subject = raw_sub
+    from app.utils import normalize_subject
+    fallback_text = (data.get("body") or context or "").strip()
+    effective_subject = normalize_subject(data.get("subject"), fallback_text)
 
     message_ref = data.get("message_id") or data.get("mail_id") or f"{client_id}:{data['from_email']}:{effective_subject}"
 

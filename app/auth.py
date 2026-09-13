@@ -1,18 +1,18 @@
 import hashlib
 import bcrypt
-import logging
+import uuid
 import pymysql
+import pymysql.cursors
+import redis
+import json
+import logging
+import os
+from app.db import get_db, get_db_ctx
 
 logger = logging.getLogger(__name__)
-import uuid
-import secrets
-import json
-import os
-from app.db import get_db
 
 def ensure_users_table():
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor() as cursor:
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -36,8 +36,6 @@ def ensure_users_table():
             if "phone_number" not in existing_cols:
                 cursor.execute("ALTER TABLE users ADD COLUMN phone_number VARCHAR(50) DEFAULT NULL")
         conn.commit()
-    finally:
-        conn.close()
 
 def hash_password(password: str) -> str:
     """Hash password with bcrypt (salted, key-stretched)."""
@@ -75,9 +73,8 @@ def register_admin_by_admin(email, password, creator_client_id):
     No self-service admin registration exists anymore.
     """
     ensure_users_table()
-    conn = get_db()
     client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute("SELECT id FROM users WHERE email=%s", (email,))
             if cursor.fetchone():
@@ -89,8 +86,6 @@ def register_admin_by_admin(email, password, creator_client_id):
             )
         conn.commit()
         return {"success": True, "client_id": client_id}
-    finally:
-        conn.close()
 
 
 def ensure_admin_seeded():
@@ -104,43 +99,41 @@ def ensure_admin_seeded():
         return
 
     ensure_users_table()
-    conn = get_db()
     try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT id, role, password_hash FROM users WHERE email=%s", (admin_email,))
-            existing = cursor.fetchone()
-            p_hash = hash_password(admin_password)
+        with get_db_ctx() as conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute("SELECT id, role, password_hash FROM users WHERE email=%s", (admin_email,))
+                existing = cursor.fetchone()
+                p_hash = hash_password(admin_password)
 
-            if existing:
-                needs_update = (
-                    existing.get("role") != "admin"
-                    or existing.get("status") != "active"
-                    or not verify_password(admin_password, existing.get("password_hash", ""))
-                )
-                if needs_update:
+                if existing:
+                    needs_update = (
+                        existing.get("role") != "admin"
+                        or existing.get("status") != "active"
+                        or not verify_password(admin_password, existing.get("password_hash", ""))
+                    )
+                    if needs_update:
+                        cursor.execute(
+                            "UPDATE users SET role='admin', status='active', password_hash=%s WHERE id=%s",
+                            (p_hash, existing["id"])
+                        )
+                        conn.commit()
+                else:
+                    client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
                     cursor.execute(
-                        "UPDATE users SET role='admin', status='active', password_hash=%s WHERE id=%s",
-                        (p_hash, existing["id"])
+                        "INSERT INTO users (client_id, email, password_hash, role, status, name) "
+                        "VALUES (%s, %s, %s, 'admin', 'active', 'System Admin')",
+                        (client_id, admin_email, p_hash)
                     )
                     conn.commit()
-            else:
-                client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
-                cursor.execute(
-                    "INSERT INTO users (client_id, email, password_hash, role, status, name) "
-                    "VALUES (%s, %s, %s, 'admin', 'active', 'System Admin')",
-                    (client_id, admin_email, p_hash)
-                )
-                conn.commit()
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"⚠️ Failed to seed admin user from .env: {e}")
-    finally:
-        conn.close()
+
 
 def login_user(email, password):
     ensure_users_table()
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute("""
                 SELECT u.id, u.client_id, u.email, u.role, u.password_hash, u.status, u.name,
@@ -175,33 +168,33 @@ def login_user(email, password):
             }
             token = create_session(user_payload)
             return {"success": True, "user": user_payload, "token": token}
-    finally:
-        conn.close()
 
-
-# ==============================
-# Redis-backed sessions
-# ==============================
-import redis as _redis
-
-_SESSION_TTL = 7 * 24 * 3600  # 7 days
 
 def _session_redis():
-    url = os.getenv("REDIS_SESSION_URL", "redis://mail_ai_redis:6379/2")
-    return _redis.from_url(url, decode_responses=True)
+    redis_url = os.getenv("REDIS_SESSION_URL", "redis://mail_ai_redis:6379/2")
+    return redis.from_url(redis_url, decode_responses=True)
 
-def create_session(user_payload: dict) -> str:
-    token = secrets.token_urlsafe(32)
+
+def create_session(user_payload: dict, ttl_seconds: int = 86400) -> str:
     r = _session_redis()
-    r.set(f"session:{token}", json.dumps(user_payload), ex=_SESSION_TTL)
+    token = str(uuid.uuid4())
+    key = f"session:{token}"
+    r.set(key, json.dumps(user_payload), ex=ttl_seconds)
     return token
+
 
 def get_session(token: str) -> dict | None:
     if not token:
         return None
     r = _session_redis()
     raw = r.get(f"session:{token}")
-    return json.loads(raw) if raw else None
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
 
 def destroy_session(token: str):
     r = _session_redis()
@@ -218,41 +211,41 @@ def create_client_atomic(name, phone_number, login_email, login_password, imap_e
     in a single transaction. No separate approval step needed.
     """
     ensure_users_table()
-    conn = get_db()
     client_id = "CLI-" + uuid.uuid4().hex[:8].upper()
     try:
-        with conn.cursor(pymysql.cursors.DictCursor) as cursor:
-            cursor.execute("SELECT id, client_id FROM users WHERE email=%s", (login_email,))
-            existing_user = cursor.fetchone()
-            if existing_user:
-                # Check if this user is an orphan (missing from email_accounts)
-                cursor.execute("SELECT id FROM email_accounts WHERE client_id=%s", (existing_user["client_id"],))
-                if cursor.fetchone():
-                    return {"success": False, "error": "Login email already registered"}
+        with get_db_ctx() as conn:
+            with conn.cursor(pymysql.cursors.DictCursor) as cursor:
+                cursor.execute("SELECT id, client_id FROM users WHERE email=%s", (login_email,))
+                existing_user = cursor.fetchone()
+                if existing_user:
+                    # Check if this user is an orphan (missing from email_accounts)
+                    cursor.execute("SELECT id FROM email_accounts WHERE client_id=%s", (existing_user["client_id"],))
+                    if cursor.fetchone():
+                        return {"success": False, "error": "Login email already registered"}
+                    
+                    # Self-heal orphan: update profile/password and populate email_accounts
+                    client_id = existing_user["client_id"]
+                    p_hash = hash_password(login_password)
+                    cursor.execute("""
+                        UPDATE users SET password_hash=%s, name=%s, phone_number=%s, status='active'
+                        WHERE id=%s
+                    """, (p_hash, name, phone_number, existing_user["id"]))
+                else:
+                    p_hash = hash_password(login_password)
+                    cursor.execute(
+                        "INSERT INTO users (client_id, email, password_hash, role, status, name, phone_number) VALUES (%s, %s, %s, 'client', 'active', %s, %s)",
+                        (client_id, login_email, p_hash, name, phone_number)
+                    )
                 
-                # Self-heal orphan: update profile/password and populate email_accounts
-                client_id = existing_user["client_id"]
-                p_hash = hash_password(login_password)
+                actual_imap = imap_email if imap_email else login_email
+                from app.secrets_crypto import encrypt_secret
+                encrypted_imap = encrypt_secret(imap_password) if imap_password and not imap_password.startswith("gAAAAA") else (imap_password or "")
                 cursor.execute("""
-                    UPDATE users SET password_hash=%s, name=%s, phone_number=%s, status='active'
-                    WHERE id=%s
-                """, (p_hash, name, phone_number, existing_user["id"]))
-            else:
-                p_hash = hash_password(login_password)
-                cursor.execute(
-                    "INSERT INTO users (client_id, email, password_hash, role, status, name, phone_number) VALUES (%s, %s, %s, 'client', 'active', %s, %s)",
-                    (client_id, login_email, p_hash, name, phone_number)
-                )
-            
-            actual_imap = imap_email if imap_email else login_email
-            from app.secrets_crypto import encrypt_secret
-            encrypted_imap = encrypt_secret(imap_password) if imap_password and not imap_password.startswith("gAAAAA") else (imap_password or "")
-            cursor.execute("""
-                INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type, department_name, company_name, flag)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
-            """, (client_id, actual_imap, encrypted_imap, score_threshold, response_tone,
-                agent_type, department_name, company_name)) 
-        conn.commit()
+                    INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type, department_name, company_name, flag)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
+                """, (client_id, actual_imap, encrypted_imap, score_threshold, response_tone,
+                    agent_type, department_name, company_name)) 
+            conn.commit()
 
         try:
             from app.mailer import send_email
@@ -268,26 +261,20 @@ def create_client_atomic(name, phone_number, login_email, login_password, imap_e
 
         return {"success": True, "client_id": client_id}
     except Exception as e:
-        conn.rollback()
         return {"success": False, "error": str(e)}
-    finally:
-        conn.close()
 
 
 def get_pending_users():
     ensure_users_table()
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute("SELECT id, client_id, email, role, created_at FROM users WHERE status='inactive' ORDER BY created_at ASC")
             return cursor.fetchall()
-    finally:
-        conn.close()
+
 
 def send_reset_otp(email: str):
     ensure_users_table()
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute("SELECT id, client_id, email, status FROM users WHERE email=%s", (email,))
             user = cursor.fetchone()
@@ -319,8 +306,7 @@ def send_reset_otp(email: str):
                 return {"success": False, "error": "Failed to send reset email due to internal SMTP error."}
                 
             return {"success": True, "message": "Verification code sent to your email address."}
-    finally:
-        conn.close()
+
 
 def reset_password_with_otp(email: str, otp: str, new_password: str):
     if len(new_password) < 8:
@@ -336,8 +322,7 @@ def reset_password_with_otp(email: str, otp: str, new_password: str):
     if stored_otp != otp.strip():
         return {"success": False, "error": "Invalid verification code"}
         
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             p_hash = hash_password(new_password)
             cursor.execute("UPDATE users SET password_hash=%s WHERE email=%s", (p_hash, email))
@@ -345,39 +330,31 @@ def reset_password_with_otp(email: str, otp: str, new_password: str):
             
         r.delete(f"reset_otp:{email}")
         return {"success": True, "message": "Password updated successfully. You can now log in."}
-    finally:
-        conn.close()
+
 
 def admin_reset_client_password(client_id: str, new_password: str):
     if len(new_password) < 8:
         return {"success": False, "error": "Password must be at least 8 characters"}
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor() as cursor:
             p_hash = hash_password(new_password)
             cursor.execute("UPDATE users SET password_hash=%s WHERE client_id=%s", (p_hash, client_id))
             conn.commit()
         return {"success": True, "message": "Client password updated successfully"}
-    finally:
-        conn.close()
-
 
 
 def set_user_status(client_id: str, status: str):
     if status not in ('active', 'inactive'):
         return {"success": False, "error": "Invalid status"}
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor() as cursor:
             cursor.execute("UPDATE users SET status=%s WHERE client_id=%s", (status, client_id))
         conn.commit()
         return {"success": True}
-    finally:
-        conn.close()
+
 
 def get_all_users():
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor(pymysql.cursors.DictCursor) as cursor:
             cursor.execute("""
                 SELECT id, client_id, email, role, status, created_at 
@@ -385,13 +362,10 @@ def get_all_users():
                 ORDER BY created_at DESC
             """)
             return cursor.fetchall()
-    finally:
-        conn.close()
 
 
 def delete_client_account(client_id: str) -> dict:
-    conn = get_db()
-    try:
+    with get_db_ctx() as conn:
         with conn.cursor() as cursor:
             # verify client exists
             cursor.execute("SELECT email FROM users WHERE client_id = %s", (client_id,))
@@ -407,7 +381,6 @@ def delete_client_account(client_id: str) -> dict:
             cursor.execute("DELETE FROM create_payload_table WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM email_accounts WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM email_customers WHERE client_id = %s", (client_id,))
-            #cursor.execute("DELETE FROM email_logs WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM llm_logs WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM paused_emails WHERE client_id = %s", (client_id,))
             cursor.execute("DELETE FROM payload_get_table WHERE client_id = %s", (client_id,))
@@ -461,9 +434,3 @@ def delete_client_account(client_id: str) -> dict:
             print(f"Qdrant purge error: {rag_err}")
 
         return {"success": True, "message": f"Client {client_id} deleted successfully"}
-
-    except Exception as e:
-        conn.rollback()
-        return {"success": False, "error": str(e)}
-    finally:
-        conn.close()

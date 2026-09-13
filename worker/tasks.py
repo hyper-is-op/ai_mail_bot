@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 
 from worker.celery_worker import celery
-from app.db import get_db
+from app.db import get_db_ctx
 from app.llm import current_client_id, extract_ticket_and_order_ids, generate_summary_llm
 from app.text_cleaning import strip_quoted_reply, strip_disclaimers, extract_clean_text_from_html, is_html_content
 from app.email_disclaimers import get_active_disclaimer_texts
@@ -210,9 +210,10 @@ def process_email_task(self, data: Dict[str, Any]):
     # Set context token for tenant isolation
     ctx_token = current_client_id.set(client_id)
 
+    db_ctx = get_db_ctx()
     db = None
     try:
-        db = get_db()
+        db = db_ctx.__enter__()
         cursor = db.cursor()
 
         # ==============================
@@ -245,11 +246,9 @@ def process_email_task(self, data: Dict[str, Any]):
         ctx.features = features
 
         # Normalize subject: if missing or blank, derive from first line of body
-        if not ctx.subject or ctx.subject.lower() in ("(no subject)", "no subject", "none", "null"):
-            first_line = ctx.body.strip().split("\n")[0].strip() if ctx.body.strip() else ""
-            clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
-            ctx.subject = clean_first if len(clean_first) >= 3 else "Support Request"
-            logger.info(f"🏷️ Empty subject normalized to: '{ctx.subject}'")
+        from app.utils import normalize_subject
+        ctx.subject = normalize_subject(ctx.subject, ctx.body)
+        logger.info(f"🏷️ Subject normalized to: '{ctx.subject}'")
 
         data["subject"] = ctx.subject
 
@@ -418,7 +417,7 @@ def process_email_task(self, data: Dict[str, Any]):
     finally:
         if db:
             try:
-                db.close()
+                db_ctx.__exit__(None, None, None)
             except Exception:
                 pass
         publish_email_update(client_id)

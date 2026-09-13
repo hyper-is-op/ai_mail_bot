@@ -63,10 +63,8 @@ class PipelineContext:
             body_text = extract_clean_text_from_html(body_text)
 
         # Normalize subject if missing or blank placeholder
-        if not raw_subject or raw_subject.lower() in ("(no subject)", "no subject", "none", "null"):
-            first_line = body_text.strip().split("\n")[0].strip() if body_text.strip() else ""
-            clean_first = re.sub(r'[\r\n\t]+', ' ', first_line)[:60].strip()
-            raw_subject = clean_first if len(clean_first) >= 3 else "Support Request"
+        from app.utils import normalize_subject
+        raw_subject = normalize_subject(raw_subject, body_text)
 
         return cls(
             task_id=task_id,
