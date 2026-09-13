@@ -474,27 +474,41 @@ def _run_ensure_worker_tables():
 
 async def initialize_database_and_services():
     """
-    Runs all startup table migrations, seedings, and vector store preloading in background threads.
+    Runs all startup table migrations, seedings, and vector store preloading in parallel batches.
     """
-    await asyncio.to_thread(ensure_url_allowlist_table)
-    await asyncio.to_thread(ensure_connector_configs_table)
-    await asyncio.to_thread(_run_ensure_draft_emails_table)
-    await asyncio.to_thread(_run_ensure_accounts_table)
-    await asyncio.to_thread(ensure_create_payload_table)
-    await asyncio.to_thread(ensure_payload_get_ticket_table)
-    await asyncio.to_thread(ensure_users_table)
+    logger.info("🚀 Starting database and service initialization...")
+
+    # Batch 1: Independent schema creations executed concurrently
+    await asyncio.gather(
+        asyncio.to_thread(ensure_url_allowlist_table),
+        asyncio.to_thread(ensure_connector_configs_table),
+        asyncio.to_thread(_run_ensure_draft_emails_table),
+        asyncio.to_thread(_run_ensure_accounts_table),
+        asyncio.to_thread(ensure_create_payload_table),
+        asyncio.to_thread(ensure_payload_get_ticket_table),
+        asyncio.to_thread(ensure_users_table),
+        asyncio.to_thread(ensure_paused_emails_table),
+        asyncio.to_thread(ensure_global_llm_tables),
+        asyncio.to_thread(ensure_client_llm_config_table),
+        asyncio.to_thread(ensure_email_disclaimers_table),
+        asyncio.to_thread(ensure_llm_logs_table),
+        asyncio.to_thread(_run_ensure_chat_history_table),
+        asyncio.to_thread(_run_ensure_keyword_filter_tables),
+        asyncio.to_thread(_run_ensure_ticket_record_table),
+        asyncio.to_thread(_run_ensure_marketing_senders_table),
+        asyncio.to_thread(_run_ensure_worker_tables),
+        asyncio.to_thread(_run_ensure_paused_email_history_table),
+        asyncio.to_thread(ensure_action_logs_table),
+    )
+
+    # Batch 2: Admin seeding (depends on users table)
     await asyncio.to_thread(ensure_admin_seeded)
-    await asyncio.to_thread(preload_qdrant_collection)
-    await asyncio.to_thread(backfill_client_ids)
-    await asyncio.to_thread(ensure_paused_emails_table)
-    await asyncio.to_thread(ensure_global_llm_tables)
-    await asyncio.to_thread(ensure_client_llm_config_table)
-    await asyncio.to_thread(ensure_email_disclaimers_table)
-    await asyncio.to_thread(ensure_llm_logs_table)
-    await asyncio.to_thread(_run_ensure_chat_history_table)
-    await asyncio.to_thread(_run_ensure_keyword_filter_tables)
-    await asyncio.to_thread(_run_ensure_ticket_record_table)
-    await asyncio.to_thread(_run_ensure_marketing_senders_table)
-    await asyncio.to_thread(_run_ensure_worker_tables)
-    await asyncio.to_thread(_run_ensure_paused_email_history_table)
-    await asyncio.to_thread(ensure_action_logs_table)
+
+    # Batch 3: External service preloading & client backfilling
+    await asyncio.gather(
+        asyncio.to_thread(preload_qdrant_collection),
+        asyncio.to_thread(backfill_client_ids),
+    )
+
+    logger.info("✅ Database and service initialization complete!")
+

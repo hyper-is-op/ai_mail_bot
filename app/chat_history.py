@@ -3,19 +3,19 @@ import json
 import os
 import logging
 from datetime import datetime, timedelta
-from app.db import get_db
+from app.db import get_db, get_db_ctx
+from app.redis_pool import get_redis_history
 
 logger = logging.getLogger(__name__)
 
 # DB 1 — separate from Celery broker (DB 0)
-REDIS_HISTORY_URL = os.getenv("REDIS_HISTORY_URL", "redis://mail_ai_redis:6379/1")
 HISTORY_TTL       = 3600   # 1 hour sliding window
 MAX_MESSAGES      = 15     # last 15 messages kept in Redis
 
 # State expiry — after this, treat as verification_failed rather than no-state
 STATE_EXPIRY_HOURS = 2
 
-redis_client = redis.from_url(REDIS_HISTORY_URL, decode_responses=True)
+redis_client = get_redis_history()
 
 
 # ==============================
@@ -81,34 +81,28 @@ def upsert_ticket_history(
         logger.warning("⚠️ upsert_ticket_history called with no ticket_id — skipping")
         return
 
-    db = None
     try:
-        db = get_db()
-        cursor = db.cursor()
-        _ensure_table(cursor)
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                _ensure_table(cursor)
 
-        cursor.execute("""
-            INSERT INTO chat_history
-                (client_id, ticket_id, customer_email, summary, priority, status)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-                summary    = VALUES(summary),
-                priority   = VALUES(priority),
-                status     = VALUES(status),
-                updated_at = CURRENT_TIMESTAMP
-        """, (client_id, ticket_id, customer_email, summary, priority, status))
+                cursor.execute("""
+                    INSERT INTO chat_history
+                        (client_id, ticket_id, customer_email, summary, priority, status)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        summary    = VALUES(summary),
+                        priority   = VALUES(priority),
+                        status     = VALUES(status),
+                        updated_at = CURRENT_TIMESTAMP
+                """, (client_id, ticket_id, customer_email, summary, priority, status))
 
-        db.commit()
-        logger.info(
-            f"💾 chat_history upserted — client={client_id} ticket={ticket_id} status={status}"
-        )
+                db.commit()
+                logger.info(
+                    f"💾 chat_history upserted — client={client_id} ticket={ticket_id} status={status}"
+                )
     except Exception as e:
         logger.error(f"❌ chat_history upsert failed: {e}")
-        if db:
-            db.rollback()
-    finally:
-        if db:
-            db.close()
 
 
 # ==============================
@@ -123,39 +117,35 @@ def get_ticket_history(ticket_id: str) -> dict | None:
     if not ticket_id:
         return None
 
-    db = None
     try:
-        db = get_db()
-        cursor = db.cursor()
-        _ensure_table(cursor)
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                _ensure_table(cursor)
 
-        cursor.execute("""
-            SELECT client_id, ticket_id, customer_email, summary, priority, status, created_at, updated_at
-            FROM chat_history
-            WHERE ticket_id = %s
-            LIMIT 1
-        """, (ticket_id,))
-        row = cursor.fetchone()
+                cursor.execute("""
+                    SELECT client_id, ticket_id, customer_email, summary, priority, status, created_at, updated_at
+                    FROM chat_history
+                    WHERE ticket_id = %s
+                    LIMIT 1
+                """, (ticket_id,))
+                row = cursor.fetchone()
 
-        if not row:
-            return None
+                if not row:
+                    return None
 
-        return {
-            "client_id":      row[0],
-            "ticket_id":      row[1],
-            "customer_email": row[2],
-            "summary":        row[3] or "",
-            "priority":       row[4] or "Normal",
-            "status":         row[5] or "NEW",
-            "created_at":     row[6].isoformat() if row[6] else "",
-            "updated_at":     row[7].isoformat() if row[7] else ""
-        }
+                return {
+                    "client_id":      row[0],
+                    "ticket_id":      row[1],
+                    "customer_email": row[2],
+                    "summary":        row[3] or "",
+                    "priority":       row[4] or "Normal",
+                    "status":         row[5] or "NEW",
+                    "created_at":     row[6].isoformat() if row[6] else "",
+                    "updated_at":     row[7].isoformat() if row[7] else ""
+                }
     except Exception as e:
         logger.error(f"❌ chat_history fetch failed: {e}")
         return None
-    finally:
-        if db:
-            db.close()
 
 
 # ==============================

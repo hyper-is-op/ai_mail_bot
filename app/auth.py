@@ -171,8 +171,8 @@ def login_user(email, password):
 
 
 def _session_redis():
-    redis_url = os.getenv("REDIS_SESSION_URL", "redis://mail_ai_redis:6379/2")
-    return redis.from_url(redis_url, decode_responses=True)
+    from app.redis_pool import get_redis_sessions
+    return get_redis_sessions()
 
 
 def create_session(user_payload: dict, ttl_seconds: int = 86400) -> str:
@@ -408,17 +408,12 @@ def delete_client_account(client_id: str) -> dict:
                         pass
 
             # DB 0 — reset OTP
-            r_main = _redis_lib.from_url(
-                os.getenv("REDIS_SESSION_URL", "redis://mail_ai_redis:6379/0"),
-                decode_responses=True
-            )
+            from app.redis_pool import get_redis_main, get_redis_history
+            r_main = get_redis_main()
             r_main.delete(f"reset_otp:{email}")
 
             # DB 1 — chat history
-            r_history = _redis_lib.from_url(
-                os.getenv("REDIS_HISTORY_URL", "redis://mail_ai_redis:6379/1"),
-                decode_responses=True
-            )
+            r_history = get_redis_history()
             for key in r_history.scan_iter(f"chat_history:{client_id}:*"):
                 r_history.delete(key)
 

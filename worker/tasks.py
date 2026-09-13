@@ -65,12 +65,10 @@ def get_client_features(cursor, client_id: str) -> Dict[str, Any]:
 
 def publish_email_update(client_id: str):
     try:
-        import redis
-        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0") or "redis://localhost:6379/0"
-        r = redis.from_url(redis_url)
+        from app.redis_pool import get_redis_main
+        r = get_redis_main()
         r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": client_id}))
         logger.info(f"📡 Published real-time update to 'email_updates' channel for client {client_id}")
-        r.close()
     except Exception as e:
         logger.warning(f"⚠️ Failed to publish real-time notification: {e}")
 

@@ -24,14 +24,10 @@ class RedisRateLimiter:
 
     def _init_redis(self):
         try:
-            redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
-            # Parse fallback if local development or other environment uses standard redis
-            if not redis_url:
-                redis_url = "redis://localhost:6379/0"
-            self.redis_client = redis.from_url(redis_url, decode_responses=True)
-            # Test ping
+            from app.redis_pool import get_redis_main
+            self.redis_client = get_redis_main()
             self.redis_client.ping()
-            logger.info(f"🔌 Rate Limiter successfully connected to Redis: {redis_url}")
+            logger.info("🔌 Rate Limiter successfully connected to pooled Redis")
         except Exception as e:
             logger.warning(f"⚠️ Redis connection for Rate Limiter failed: {e}. Rate limiter is in fallback mode (passthrough).")
             self.redis_client = None
@@ -91,10 +87,8 @@ def check_sender_rate_limit(
     key = f"ratelimit:sender:{client_id}:{sender_clean}"
 
     try:
-        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
-        if not redis_url:
-            redis_url = "redis://localhost:6379/0"
-        r = redis.from_url(redis_url, decode_responses=True)
+        from app.redis_pool import get_redis_main
+        r = get_redis_main()
 
         current = r.get(key)
         if current is not None and int(current) >= limit:

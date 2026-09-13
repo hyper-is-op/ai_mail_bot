@@ -79,12 +79,10 @@ def is_message_duplicate(client_id: str, message_id: str) -> bool:
     if not message_id or not message_id.strip():
         return False
     try:
-        import redis
-        redis_url = os.getenv("REDIS_URL", "redis://mail_ai_redis:6379/0")
-        r = redis.from_url(redis_url, socket_timeout=3)
+        from app.redis_pool import get_redis_main
+        r = get_redis_main()
         key = f"imap_dedup:{client_id}:{message_id.strip()}"
         was_set = r.set(key, "1", nx=True, ex=86400)
-        r.close()
         return not bool(was_set)
     except Exception as e:
         logger.warning(f"⚠️ Redis deduplication check failed for {client_id}: {e} (proceeding without dedup)")
