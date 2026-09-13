@@ -445,12 +445,23 @@ def telemetry_create(*args, **kwargs):
                 extra["reasoning_format"] = "parsed"
                 kwargs["extra_body"] = extra
 
+        # Circuit breaker check
+        from app.llm_circuit_breaker import llm_circuit_breaker
+        if llm_circuit_breaker.is_open(provider):
+            raise RuntimeError(f"🔌 Circuit breaker is OPEN for provider '{provider}' — failing fast")
+
         target_client = get_dynamic_client(config.get("id", 0), config)
     except Exception as exc:
         logger.error(f"❌ LLM Config Resolution Failed: {exc}")
         raise exc
 
-    res = target_client.chat.completions.create(*args, **kwargs)
+    try:
+        res = target_client.chat.completions.create(*args, **kwargs)
+        llm_circuit_breaker.record_success(provider)
+    except Exception as call_err:
+        llm_circuit_breaker.record_failure(provider)
+        raise call_err
+
     latency_ms = (time.time() - start_time) * 1000
 
     try:

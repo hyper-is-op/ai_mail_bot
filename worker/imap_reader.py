@@ -6,6 +6,7 @@ import time
 import logging
 import sys
 import threading
+import signal
 from email.header import decode_header as _decode_header
 
 # Ensure /app is on sys.path when running the script directly
@@ -26,6 +27,13 @@ logger = logging.getLogger(__name__)
 # {client_id: {"thread": Thread, "stop_event": Event, "email": str, "password": str}}
 active_listeners = {}
 listeners_lock = threading.Lock()
+shutdown_event = threading.Event()
+
+
+def handle_shutdown(signum, frame):
+    sig_name = signal.Signals(signum).name if hasattr(signal, "Signals") else str(signum)
+    logger.info(f"🛑 Received {sig_name} ({signum}), initiating graceful shutdown...")
+    shutdown_event.set()
 
 
 def decode_subject(raw_subject: str) -> str:
@@ -229,11 +237,9 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
                                 num_str = num.decode() if isinstance(num, bytes) else str(num)
                                 logger.error(f"❌ [Client {client_id}] Error processing email #{num_str} (left UNSEEN for retry): {e}", exc_info=True)
 
-                    # Poll interval
-                    for _ in range(10):
-                        if stop_event.is_set():
-                            break
-                        time.sleep(1)
+                    # Poll interval (interruptible immediately if stop_event is set)
+                    if stop_event.wait(10):
+                        break
 
                 except Exception as e:
                     logger.error(f"Mail polling error for Client {client_id}: {e}", exc_info=True)
@@ -247,10 +253,8 @@ def poll_inbox(client_id, email_user, email_pass, stop_event):
 
         except Exception as e:
             logger.error(f"IMAP connection failed for Client {client_id}: {e}. Retrying in {retry_delay}s...", exc_info=True)
-            for _ in range(retry_delay):
-                if stop_event.is_set():
-                    break
-                time.sleep(1)
+            if stop_event.wait(retry_delay):
+                break
             retry_delay = min(retry_delay * 2, 60)
 
     logger.info(f"🛑 Thread stopped for Client: {client_id} ({email_user})")
@@ -269,7 +273,14 @@ def fetch_db_accounts():
         logger.error(f"Failed to fetch accounts from DB: {e}", exc_info=True)
         return {}
 
+
 def manage_listeners():
+    try:
+        signal.signal(signal.SIGTERM, handle_shutdown)
+        signal.signal(signal.SIGINT, handle_shutdown)
+    except (ValueError, AttributeError):
+        pass  # In case called from non-main thread
+
     logger.info("🚀 Starting Dynamic Email Listener Manager...")
     
     try:
@@ -282,7 +293,7 @@ def manage_listeners():
     except Exception as e:
         logger.warning(f"⚠️ Initial accounts table check warning: {e}")
 
-    while True:
+    while not shutdown_event.is_set():
         db_accounts = fetch_db_accounts()
         
         with listeners_lock:
@@ -304,7 +315,7 @@ def manage_listeners():
 
             # Start threads for new or updated accounts
             for client_id, db_info in db_accounts.items():
-                if client_id not in active_listeners:
+                if client_id not in active_listeners and not shutdown_event.is_set():
                     stop_event = threading.Event()
                     t = threading.Thread(
                         target=poll_inbox,
@@ -320,7 +331,20 @@ def manage_listeners():
                     }
                     logger.info(f"✅ Started new listener for Client {client_id}")
 
-        time.sleep(10)
+        shutdown_event.wait(10)
+
+    # Clean shutdown sequence
+    logger.info("🛑 Shutting down all active IMAP listener threads...")
+    with listeners_lock:
+        for client_id, active_info in list(active_listeners.items()):
+            active_info["stop_event"].set()
+        
+        for client_id, active_info in list(active_listeners.items()):
+            active_info["thread"].join(timeout=5)
+            logger.info(f"✅ Joined listener thread for Client {client_id}")
+        active_listeners.clear()
+    logger.info("👋 Graceful shutdown complete.")
+
 
 if __name__ == "__main__":
     manage_listeners()

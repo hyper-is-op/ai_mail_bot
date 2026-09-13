@@ -28,8 +28,8 @@ import os
 import json
 import logging
 import uuid
+import fcntl
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Kept as the same on-disk path/volume the old Chroma implementation used —
@@ -59,7 +59,11 @@ def load_fallback_db() -> dict:
     if os.path.exists(FALLBACK_DB_PATH):
         try:
             with open(FALLBACK_DB_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
+                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                try:
+                    return json.load(f)
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         except Exception as e:
             logger.error(f"❌ Failed to load fallback DB: {e}")
             return {}
@@ -67,11 +71,26 @@ def load_fallback_db() -> dict:
 
 
 def save_fallback_db(data: dict):
+    tmp_path = f"{FALLBACK_DB_PATH}.tmp.{os.getpid()}"
     try:
-        with open(FALLBACK_DB_PATH, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        dir_name = os.path.dirname(FALLBACK_DB_PATH)
+        os.makedirs(dir_name, exist_ok=True)
+        with open(tmp_path, 'w', encoding='utf-8') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        os.replace(tmp_path, FALLBACK_DB_PATH)
     except Exception as e:
         logger.error(f"❌ Failed to save fallback DB: {e}")
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
 
 
 def jaccard_similarity(text1: str, text2: str) -> float:
