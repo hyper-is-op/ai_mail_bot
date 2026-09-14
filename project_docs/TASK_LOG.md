@@ -233,6 +233,28 @@ All actions, code modifications, schema migrations, and recovery steps are logge
   - Complete platform test suite: **75/75 passed (0 failures, 0 errors)** in 5.89s.
 - **Status:** Complete and verified.
 
+---
+
+### [2026-09-14 17:50 IST] - Release Baseline v2.0.0 & Deep /health Dependency Probe
+- **Action Type:** Git Baseline Tagging & Production Orchestrator Probe Implementation
+- **Initiator:** Antigravity AI
+- **Modifications Applied:**
+  1. **Git Release Baseline:** Staged all 47 modified/new files across Milestones 1–4 and created annotated release tag `v2.0.0-production-hardened` (commit `cc2bd93`).
+  2. [`.env.example`](file:///home/hyper_is_op/.env.example): Fully documented all production configuration parameters (`INGESTION_API_KEY`, `QDRANT_HOST`, `QDRANT_PORT`, `QDRANT_COLLECTION`, `EMBED_SERVICE_URL`, `REDIS_SESSION_URL`, and system mailer variables).
+  3. [`app/main.py`](file:///home/hyper_is_op/mail_ai_automation/app/main.py): Implemented deep liveness and readiness probe `@app.get("/health")` verifying downstream connectivity for:
+     - MySQL connection pool (`SELECT 1`)
+     - Redis broker (`ping()`)
+     - Qdrant vector database (`GET /collections`)
+     - Embeddings microservice (`GET /health`)
+     - Returns HTTP 200 with component status when healthy, or HTTP 503 Service Unavailable when any dependency fails.
+  4. [`tests/test_api_endpoints.py`](file:///home/hyper_is_op/mail_ai_automation/tests/test_api_endpoints.py): Added `test_11_health_probe_endpoint` asserting HTTP 200 on all healthy components and HTTP 503 degraded state when database connectivity drops.
+- **Verification Results:**
+  - Live probe test: `curl -s http://localhost:8024/health` returned HTTP 200 with all 4 components healthy.
+  - Test suite: **76/76 unit/integration tests passed (0 failures, 0 errors)** in 5.70s.
+  - Committed probe changes as `86df136`.
+- **Status:** Complete and verified.
+
+
 
 
 
