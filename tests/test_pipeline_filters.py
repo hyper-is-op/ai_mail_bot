@@ -7,6 +7,15 @@ from app.keyword_filter import is_blocked
 
 class TestPipelineFilters(unittest.TestCase):
 
+    def setUp(self):
+        try:
+            from app.rate_limiter import get_redis_client
+            r = get_redis_client()
+            if r:
+                r.delete("ratelimit:sender:CLI-TEST:customer@example.com")
+        except Exception:
+            pass
+
     def test_01_bounce_sender_filtered(self):
         """Emails from mailer-daemon, postmaster, or noreply must be dropped without reply"""
         ctx = PipelineContext.from_task_data("test-task-bounce", {

@@ -13,6 +13,15 @@ run_task = process_email_task.run.__func__
 
 class TestWorkerTasks(unittest.TestCase):
 
+    def setUp(self):
+        try:
+            from app.rate_limiter import get_redis_client
+            r = get_redis_client()
+            if r:
+                r.delete("ratelimit:sender:CLI-TEST:customer@example.com")
+        except Exception:
+            pass
+
     def test_01_idempotent_task_skip(self):
         """Completed task in celery_task_log must exit immediately without executing agent"""
         mock_self = MagicMock()
