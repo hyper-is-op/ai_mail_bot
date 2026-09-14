@@ -3,6 +3,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(
@@ -153,6 +154,82 @@ async def detailed_error_logging_middleware(request: Request, call_next):
 @app.get("/")
 def home():
     return {"status": "mail_ai_automation running"}
+
+
+@app.get("/health")
+async def health_check():
+    """
+    Deep liveness and dependency readiness probe for container orchestrators.
+    Verifies MySQL pool, Redis broker, Qdrant vector DB, and Embeddings microservice.
+    Returns HTTP 200 if all dependencies are healthy, or HTTP 503 if any dependency fails.
+    """
+    components = {}
+    is_healthy = True
+
+    # 1. Database Connectivity
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cur:
+                cur.execute("SELECT 1")
+                cur.fetchone()
+        components["database"] = {"status": "healthy"}
+    except Exception as e:
+        is_healthy = False
+        components["database"] = {"status": "unhealthy", "error": str(e)}
+
+    # 2. Redis Broker Connectivity
+    try:
+        from app.redis_pool import get_redis_main
+        r = get_redis_main()
+        if r and r.ping():
+            components["redis"] = {"status": "healthy"}
+        else:
+            is_healthy = False
+            components["redis"] = {"status": "unhealthy", "error": "Redis ping returned False"}
+    except Exception as e:
+        is_healthy = False
+        components["redis"] = {"status": "unhealthy", "error": str(e)}
+
+    # 3. Qdrant Vector DB
+    try:
+        import httpx
+        q_host = os.getenv("QDRANT_HOST", "mail_ai_qdrant")
+        q_port = os.getenv("QDRANT_PORT", "6333")
+        q_url = f"http://{q_host}:{q_port}/collections"
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(q_url)
+            if resp.status_code == 200:
+                components["qdrant"] = {"status": "healthy"}
+            else:
+                is_healthy = False
+                components["qdrant"] = {"status": "unhealthy", "http_status": resp.status_code}
+    except Exception as e:
+        is_healthy = False
+        components["qdrant"] = {"status": "unhealthy", "error": str(e)}
+
+    # 4. Embeddings Microservice
+    try:
+        import httpx
+        emb_url = os.getenv("EMBED_SERVICE_URL", "http://mail_ai_embed_service:8500")
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            resp = await client.get(f"{emb_url}/health")
+            if resp.status_code == 200:
+                components["embed_service"] = {"status": "healthy"}
+            else:
+                is_healthy = False
+                components["embed_service"] = {"status": "unhealthy", "http_status": resp.status_code}
+    except Exception as e:
+        is_healthy = False
+        components["embed_service"] = {"status": "unhealthy", "error": str(e)}
+
+    payload = {
+        "status": "healthy" if is_healthy else "degraded",
+        "version": "2.0.0",
+        "components": components
+    }
+    return JSONResponse(status_code=200 if is_healthy else 503, content=payload)
+
 
 
 @app.websocket("/ws")

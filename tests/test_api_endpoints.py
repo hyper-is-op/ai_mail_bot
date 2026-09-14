@@ -212,6 +212,28 @@ class TestApiEndpoints(unittest.TestCase):
             self.assertEqual(res.status_code, 200)
             self.assertEqual(res.json().get("data", {}).get("ticket_status"), "Open")
 
+    def test_11_health_probe_endpoint(self):
+        """GET /health must probe dependencies and return structured health status"""
+        res = self.client.get("/health")
+        self.assertIn(res.status_code, [200, 503])
+        data = res.json()
+        self.assertIn("status", data)
+        self.assertIn("components", data)
+        components = data["components"]
+        self.assertIn("database", components)
+        self.assertIn("redis", components)
+        self.assertIn("qdrant", components)
+        self.assertIn("embed_service", components)
+
+        # Test degraded state handling when database fails
+        with patch("app.db.get_db_ctx", side_effect=RuntimeError("Database down")):
+            res_degraded = self.client.get("/health")
+            self.assertEqual(res_degraded.status_code, 503)
+            data_degraded = res_degraded.json()
+            self.assertEqual(data_degraded.get("status"), "degraded")
+            self.assertEqual(data_degraded["components"]["database"]["status"], "unhealthy")
+
 
 if __name__ == "__main__":
     unittest.main()
+
