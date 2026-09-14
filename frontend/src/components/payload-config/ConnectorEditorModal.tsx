@@ -174,6 +174,7 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
                   <option value="ticket_create" className="dark:bg-zinc-900">ticket_create (Ticket Generation)</option>
                   <option value="ticket_status" className="dark:bg-zinc-900">ticket_status (Ticket Status Tracking)</option>
                   <option value="order_status" className="dark:bg-zinc-900">order_status (Order Status Tracking)</option>
+                  <option value="payment_status" className="dark:bg-zinc-900">payment_status (Payment & Transaction Status)</option>
                   <option value="custom" className="dark:bg-zinc-900">Custom Trigger...</option>
                 </select>
               </div>
@@ -506,7 +507,8 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
                 Response Mapping (JSON)
                 <span className="font-normal text-muted-foreground ml-2">
                   {formData.trigger_type === 'ticket_create' && '(Requires "ticket_id" mapping)'}
-                  {formData.trigger_type === 'order_status' && '(Requires "docket_no" & "ticket_status" mappings)'}
+                  {(formData.trigger_type === 'order_status' || formData.trigger_type === 'ticket_status') && '(Requires "docket_no" & "ticket_status" mappings)'}
+                  {formData.trigger_type === 'payment_status' && '(Requires "payment_status" mapping)'}
                 </span>
               </label>
               <textarea

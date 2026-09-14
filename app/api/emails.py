@@ -7,7 +7,7 @@ from enum import Enum
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, EmailStr, field_validator
 
-from app.auth_deps import get_current_user, require_client_access
+from app.auth_deps import get_current_user, require_client_access, verify_ingestion_auth
 from app.rate_limiter import RedisRateLimiter
 from app.db import get_db_ctx
 from worker.tasks import process_email_task
@@ -72,7 +72,9 @@ class ApprovePendingReplyRequest(BaseModel):
 
 
 @router.post("/process-email", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
-def process_email(data: EmailRequest):
+def process_email(data: EmailRequest, auth_info: dict = Depends(verify_ingestion_auth)):
+    if auth_info.get("type") == "session":
+        require_client_access(data.client_id, auth_info["user"])
     process_email_task.delay(data.model_dump())
     return {"status": "queued"}
 

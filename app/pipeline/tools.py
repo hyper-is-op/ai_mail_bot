@@ -2,7 +2,12 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 from app.pipeline.context import PipelineContext
-from app.pipeline.enricher import fetch_crm_ticket_status, fetch_rag_context
+from app.pipeline.enricher import (
+    fetch_crm_ticket_status,
+    fetch_crm_order_status,
+    fetch_payment_status,
+    fetch_rag_context,
+)
 from app.pipeline.dispatcher import create_ticket_and_reply
 from app.connector_executor import format_mapped_data_for_prompt
 
@@ -16,8 +21,59 @@ SUPPORT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "lookup_order_status",
+            "description": "Look up real-time order status, fulfillment tracking, line items, and delivery details from the client store or ERP system.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The order ID or order number mentioned by the customer (e.g., '#1001', 'ORD10294', '10294')."
+                    }
+                },
+                "required": ["order_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_payment_status",
+            "description": "Look up payment transaction status, refund status, or invoice payment details from payment gateways (e.g. Stripe, Razorpay, Zoho Books).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "payment_id_or_order_id": {
+                        "type": "string",
+                        "description": "The transaction ID, payment reference, invoice ID, or order reference (e.g., 'pi_3MtwBwLkdCwBgZr20e', 'pay_29ashd81', 'INV-1092', 'ORD10294')."
+                    }
+                },
+                "required": ["payment_id_or_order_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lookup_ticket_status",
+            "description": "Look up the real-time status, agent assignment, and latest comments of an existing support ticket from the client CRM.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "ticket_id": {
+                        "type": "string",
+                        "description": "The exact ticket reference or support docket number mentioned by the customer (e.g., 'T-260526-00431', '275424000000446001')."
+                    }
+                },
+                "required": ["ticket_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "lookup_ticket_or_order_status",
-            "description": "Look up the real-time status, tracking details, and updates of an existing support ticket or order docket number from the client CRM.",
+            "description": "Legacy combined tool: Look up status of an existing ticket or order docket number from CRM or store.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -95,7 +151,73 @@ def execute_tool_call(
     ctx.log_step(f"Tool_Call:{tool_name}")
 
     try:
-        if tool_name == "lookup_ticket_or_order_status":
+        if tool_name == "lookup_order_status":
+            raw_order_id = arguments.get("order_id", "")
+            clean_order_id = str(raw_order_id).strip().lstrip("#")
+
+            res = fetch_crm_order_status(
+                client_id=ctx.client_id,
+                order_id=clean_order_id,
+                body=ctx.body,
+                history=ctx.history,
+                subject=ctx.subject,
+                from_email=ctx.from_email
+            )
+            if res.get("success"):
+                order_data = res.get("data") or {}
+                formatted_text = format_mapped_data_for_prompt(order_data)
+                ctx.context_data = order_data
+                ctx.log_step("CRM_Order_Found")
+                return {
+                    "status": "found",
+                    "order_id": clean_order_id,
+                    "details": order_data,
+                    "summary": formatted_text
+                }
+            else:
+                err_msg = res.get("error")
+                ctx.log_step("CRM_Order_Not_Found")
+                return {
+                    "status": "lookup_failed" if err_msg else "not_found",
+                    "order_id": clean_order_id,
+                    "message": err_msg or f"No active order record found for reference '{clean_order_id}'",
+                    "hint": "If record is not found, ask customer to verify the order number. If an error occurred, apologize for the technical delay."
+                }
+
+        elif tool_name == "lookup_payment_status":
+            raw_ref = arguments.get("payment_id_or_order_id", "")
+            clean_ref = str(raw_ref).strip()
+
+            res = fetch_payment_status(
+                client_id=ctx.client_id,
+                payment_id_or_order_id=clean_ref,
+                body=ctx.body,
+                history=ctx.history,
+                subject=ctx.subject,
+                from_email=ctx.from_email
+            )
+            if res.get("success"):
+                payment_data = res.get("data") or {}
+                formatted_text = format_mapped_data_for_prompt(payment_data)
+                ctx.context_data = payment_data
+                ctx.log_step("Payment_Status_Found")
+                return {
+                    "status": "found",
+                    "payment_reference": clean_ref,
+                    "details": payment_data,
+                    "summary": formatted_text
+                }
+            else:
+                err_msg = res.get("error")
+                ctx.log_step("Payment_Status_Not_Found")
+                return {
+                    "status": "lookup_failed" if err_msg else "not_found",
+                    "payment_reference": clean_ref,
+                    "message": err_msg or f"No active payment record found for reference '{clean_ref}'",
+                    "hint": "If record is not found, ask customer to confirm the payment reference or transaction ID."
+                }
+
+        elif tool_name == "lookup_ticket_status":
             raw_ticket_id = arguments.get("ticket_id", "")
             clean_ticket_id = str(raw_ticket_id).strip().lstrip("#")
 
@@ -107,6 +229,52 @@ def execute_tool_call(
                 subject=ctx.subject,
                 from_email=ctx.from_email
             )
+            if res.get("success"):
+                ticket_data = res.get("data") or {}
+                formatted_text = format_mapped_data_for_prompt(ticket_data)
+                ctx.ticket_id = clean_ticket_id
+                ctx.context_data = ticket_data
+                ctx.log_step("CRM_Status_Found")
+                return {
+                    "status": "found",
+                    "ticket_id": clean_ticket_id,
+                    "details": ticket_data,
+                    "summary": formatted_text
+                }
+            else:
+                err_msg = res.get("error")
+                ctx.log_step("CRM_Status_Not_Found")
+                return {
+                    "status": "lookup_failed" if err_msg else "not_found",
+                    "ticket_id": clean_ticket_id,
+                    "message": err_msg or f"No active record found in CRM for reference '{clean_ticket_id}'",
+                    "hint": "If record is not found, ask customer to verify the reference number or provide more context. If an error occurred, apologize for the technical delay and assure them support is investigating."
+                }
+
+        elif tool_name == "lookup_ticket_or_order_status":
+            raw_ticket_id = arguments.get("ticket_id", "")
+            clean_ticket_id = str(raw_ticket_id).strip().lstrip("#")
+
+            # Try order status first if prefixed with ORD or numeric-short, otherwise ticket status
+            res = fetch_crm_ticket_status(
+                client_id=ctx.client_id,
+                ticket_id=clean_ticket_id,
+                body=ctx.body,
+                history=ctx.history,
+                subject=ctx.subject,
+                from_email=ctx.from_email
+            )
+            if not res.get("success"):
+                # Secondary attempt with order status lookup
+                res = fetch_crm_order_status(
+                    client_id=ctx.client_id,
+                    order_id=clean_ticket_id,
+                    body=ctx.body,
+                    history=ctx.history,
+                    subject=ctx.subject,
+                    from_email=ctx.from_email
+                )
+
             if res.get("success"):
                 ticket_data = res.get("data") or {}
                 formatted_text = format_mapped_data_for_prompt(ticket_data)
@@ -154,6 +322,18 @@ def execute_tool_call(
         elif tool_name == "escalate_and_create_ticket":
             issue_summary = (arguments.get("issue_summary") or "").strip() or ctx.subject
             priority = arguments.get("priority", ctx.priority or "Medium")
+            remarks = (arguments.get("remarks") or "").strip()
+
+            troubleshooting_notes = ""
+            if ctx.history:
+                troubleshooting_notes = "\n\nTroubleshooting History:\n" + "\n".join(
+                    f"- {h.get('role', 'msg').title()}: {h.get('body', '')[:120]}" for h in ctx.history[-4:]
+                )
+            context_to_send = f"{issue_summary}"
+            if remarks:
+                context_to_send += f" | Remarks: {remarks}"
+            if troubleshooting_notes:
+                context_to_send += troubleshooting_notes
 
             task_data = ctx.to_task_data()
             if ctx.subject.lower() in ("support request", "(no subject)", "no subject") and issue_summary:
@@ -162,7 +342,7 @@ def execute_tool_call(
             reply, ticket_id, status = create_ticket_and_reply(
                 data=task_data,
                 client_id=ctx.client_id,
-                context=issue_summary,
+                context=context_to_send,
                 history=ctx.history,
                 cursor=cursor,
                 sentiment=ctx.sentiment,
@@ -195,7 +375,14 @@ def execute_tool_call(
             return {
                 "status": "unrecognized_tool",
                 "error": f"Tool '{tool_name}' is not recognized.",
-                "available_tools": ["lookup_ticket_or_order_status", "search_knowledge_base", "escalate_and_create_ticket"]
+                "available_tools": [
+                    "lookup_order_status",
+                    "lookup_payment_status",
+                    "lookup_ticket_status",
+                    "lookup_ticket_or_order_status",
+                    "search_knowledge_base",
+                    "escalate_and_create_ticket",
+                ]
             }
 
     except Exception as e:

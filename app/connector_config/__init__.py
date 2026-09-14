@@ -45,6 +45,8 @@ from app.connector_config.dispatch import (
     get_live_config,
     run_ticket_create,
     run_order_status_lookup,
+    run_ticket_status_lookup,
+    run_payment_status_lookup,
 )
 
 from app.connector_config.generator import (
@@ -86,6 +88,8 @@ __all__ = [
     "get_live_config",
     "run_ticket_create",
     "run_order_status_lookup",
+    "run_ticket_status_lookup",
+    "run_payment_status_lookup",
     # Generator
     "generate_connector_template",
 ]

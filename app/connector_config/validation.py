@@ -14,6 +14,7 @@ REQUIRED_RESPONSE_FIELDS = {
     "order_status": {"docket_no", "ticket_status"},
     "ticket_status": {"docket_no", "ticket_status"},
     "ticket_create": {"ticket_id"},
+    "payment_status": {"payment_status"},
 }
 
 

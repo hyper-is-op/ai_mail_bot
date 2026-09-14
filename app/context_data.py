@@ -21,6 +21,9 @@ class ContextData(TypedDict, total=False):
     body: str
     cleaned_body: str
     ticket_id: Optional[str]
+    order_id: Optional[str]
+    payment_id: Optional[str]
+    reference_id: Optional[str]
     intent: str
     sentiment: str
     priority: str
@@ -35,7 +38,8 @@ CONTEXT_DATA_KEYS = frozenset(ContextData.__annotations__.keys())
 
 CHEAP_KEYS = frozenset({
     "client_id", "from_email", "subject", "body", "cleaned_body",
-    "ticket_id", "intent", "sentiment", "priority", "customer_name",
+    "ticket_id", "order_id", "payment_id", "reference_id",
+    "intent", "sentiment", "priority", "customer_name",
     "conversation_history",
 })
 
@@ -114,11 +118,14 @@ def build_context_data_base(
     subject: str,
     body: str,
     cleaned_body: str,
-    ticket_id: Optional[str],
-    intent: str,
-    sentiment: str,
-    priority: str,
+    ticket_id: Optional[str] = None,
+    intent: str = "general_query",
+    sentiment: str = "Neutral",
+    priority: str = "Medium",
     history: Optional[list] = None,
+    order_id: Optional[str] = None,
+    payment_id: Optional[str] = None,
+    reference_id: Optional[str] = None,
 ) -> dict:
     """
     Cheap fields only — no LLM calls. Called once per email in
@@ -129,13 +136,21 @@ def build_context_data_base(
     from app.utils import normalize_subject
     clean_sub = normalize_subject(subject, cleaned_body or body or "")
 
+    ref_id = reference_id or order_id or payment_id or ticket_id
+    ord_id = order_id or ref_id or ticket_id
+    pay_id = payment_id or ref_id or ticket_id
+    tkt_id = ticket_id or ref_id or ord_id
+
     return {
         "client_id": client_id or "",
         "from_email": from_email or "",
         "subject": clean_sub,
         "body": body if body is not None else "",
         "cleaned_body": cleaned_body if cleaned_body is not None else (body or ""),
-        "ticket_id": ticket_id,
+        "ticket_id": tkt_id,
+        "order_id": ord_id,
+        "payment_id": pay_id,
+        "reference_id": ref_id,
         "intent": intent or "general_query",
         "sentiment": sentiment or "Neutral",
         "priority": priority or "Medium",

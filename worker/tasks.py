@@ -32,6 +32,78 @@ def generate_ticket_id() -> str:
     return f"T-{date_part}-{random_part}"
 
 
+def resolve_thread_id(client_id: str, from_email: str, subject: str, in_reply_to: str = "", references: str = "", cursor=None) -> tuple[str, int]:
+    """
+    Resolves or initiates a conversation thread and returns (thread_id, prior_step).
+    1. Matches via in_reply_to against message_id in email_logs.
+    2. Matches via references against message_id.
+    3. Fallback: Matches same sender + normalized subject within 7 days on active threads.
+    4. Default: Generates new thread_id 'th_' + uuid4().hex[:12].
+    """
+    def _do_lookup(cur):
+        # 1. Match via in_reply_to
+        if in_reply_to and in_reply_to.strip():
+            cur.execute("""
+                SELECT thread_id, troubleshooting_step 
+                FROM email_logs 
+                WHERE client_id = %s AND message_id = %s AND thread_id IS NOT NULL 
+                ORDER BY id DESC LIMIT 1
+            """, (client_id, in_reply_to.strip()))
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0], int(row[1] or 0)
+
+        # 2. Match via references
+        if references and references.strip():
+            ref_tokens = re.findall(r'<[^>]+>', references)
+            for ref in ref_tokens:
+                cur.execute("""
+                    SELECT thread_id, troubleshooting_step 
+                    FROM email_logs 
+                    WHERE client_id = %s AND message_id = %s AND thread_id IS NOT NULL 
+                    ORDER BY id DESC LIMIT 1
+                """, (client_id, ref))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return row[0], int(row[1] or 0)
+
+        # 3. Subject-based thread matching within 7 days
+        clean_subj = re.sub(r'^(re|fwd|fw):\s*', '', subject or '', flags=re.IGNORECASE).strip()
+        if clean_subj and clean_subj.lower() not in ("support request", "(no subject)", "no subject"):
+            cur.execute("""
+                SELECT thread_id, troubleshooting_step 
+                FROM email_logs 
+                WHERE client_id = %s AND from_email = %s 
+                  AND subject LIKE %s
+                  AND created_at >= NOW() - INTERVAL 7 DAY
+                  AND is_resolved = 0
+                  AND thread_id IS NOT NULL
+                ORDER BY id DESC LIMIT 1
+            """, (client_id, from_email, f"%{clean_subj[:50]}%"))
+            row = cur.fetchone()
+            if row and row[0]:
+                return row[0], int(row[1] or 0)
+
+        return None, 0
+
+    thread_id = None
+    prior_step = 0
+    try:
+        if cursor is not None:
+            thread_id, prior_step = _do_lookup(cursor)
+        else:
+            with get_db_ctx() as db:
+                with db.cursor() as cur:
+                    thread_id, prior_step = _do_lookup(cur)
+    except Exception as e:
+        logger.warning(f"⚠️ Thread resolution failed: {e}")
+
+    if not thread_id:
+        thread_id = f"th_{uuid.uuid4().hex[:12]}"
+
+    return thread_id, prior_step
+
+
 def get_client_features(cursor=None, client_id: str = "") -> Dict[str, Any]:
     defaults = {
         "feature_ticket_creation": True, "feature_auto_send": True,
@@ -166,9 +238,10 @@ def _finalize_task_and_log(ctx: PipelineContext, task_id: str, cursor=None, db=N
         cur.execute("""
             INSERT INTO email_logs (
                 client_id, from_email, subject, body, body_html, reply, score,
-                status, rag_id, sentiment, priority, execution_steps, summary
+                status, rag_id, sentiment, priority, execution_steps, summary,
+                message_id, in_reply_to, thread_id, troubleshooting_step, is_resolved
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """, (
             ctx.client_id,
             ctx.from_email,
@@ -182,7 +255,12 @@ def _finalize_task_and_log(ctx: PipelineContext, task_id: str, cursor=None, db=N
             ctx.sentiment,
             ctx.priority,
             json.dumps(ctx.execution_steps),
-            ctx.summary or ""
+            ctx.summary or "",
+            ctx.message_id or None,
+            ctx.in_reply_to or None,
+            ctx.thread_id or None,
+            ctx.troubleshooting_step or 0,
+            1 if ctx.is_resolved else 0
         ))
         log_id = cur.lastrowid
 
@@ -292,6 +370,19 @@ def process_email_task(self, data: Dict[str, Any]):
                 features = get_client_features(cursor, client_id)
                 ctx.features = features
 
+                # Resolve Thread ID and prior troubleshooting step
+                thread_id, prior_step = resolve_thread_id(
+                    client_id=client_id,
+                    from_email=from_email,
+                    subject=data.get("subject") or "",
+                    in_reply_to=data.get("in_reply_to") or "",
+                    references=data.get("references") or "",
+                    cursor=cursor
+                )
+                ctx.thread_id = thread_id
+                ctx.troubleshooting_step = prior_step
+                logger.info(f"🧵 [Thread Resolved] ID: {thread_id} | Prior Step: {prior_step}")
+
                 # Level 0 Fast Deterministic Gates
                 if apply_deterministic_filters(ctx, cursor):
                     _finalize_task_and_log(ctx, task_id=task_id, cursor=cursor, db=db)
@@ -349,9 +440,9 @@ def process_email_task(self, data: Dict[str, Any]):
         if ticket_ids:
             ctx.ticket_id = ticket_ids[0]
 
-        # Load Conversation History from Redis
-        ctx.history = get_history(client_id, ctx.from_email, last_n=10)
-        logger.info(f"📜 Loaded {len(ctx.history)} history messages")
+        # Load Conversation History from Redis (with SQL fallback)
+        ctx.history = get_history(client_id, ctx.from_email, last_n=10, thread_id=ctx.thread_id)
+        logger.info(f"📜 Loaded {len(ctx.history)} history messages (thread={ctx.thread_id}, step={ctx.troubleshooting_step})")
 
         # Autonomous Support Agent Loop (No DB held across 10-30s LLM / Tool execution)
         ctx = run_support_agent(ctx, cursor=None)
@@ -359,7 +450,7 @@ def process_email_task(self, data: Dict[str, Any]):
         # Post-Agent Dispatch & Outbox
         if ctx.status in ("ticket_created_and_sent", "ticket_created_draft_pending"):
             logger.info(f"🎫 Ticket escalation finalized by agent tool ({ctx.status})")
-        elif ctx.response_action == "create_ticket":
+        elif ctx.response_action == "create_ticket" and not ctx.is_resolved:
             logger.info("🎫 Evaluator decided to escalate and create ticket")
             reply, outgoing_ticket_id, status = create_ticket_and_reply(
                 data=ctx.to_task_data(),
@@ -394,7 +485,7 @@ def process_email_task(self, data: Dict[str, Any]):
                 reply_body=ctx.draft_reply,
                 features=ctx.features,
                 confidence_score=ctx.score,
-                intent=ctx.intent or "support_query",
+                intent=ctx.intent or ("issue_resolved" if ctx.is_resolved else "support_query"),
                 sentiment=ctx.sentiment,
                 priority=ctx.priority,
                 ticket_id=ctx.ticket_id,
@@ -407,9 +498,9 @@ def process_email_task(self, data: Dict[str, Any]):
             ctx.status = status
             if save_history:
                 push_message(client_id=client_id, from_email=ctx.from_email, role="customer",
-                             subject=ctx.subject, body=ctx.body, ticket_id=ctx.ticket_id or "")
+                             subject=ctx.subject, body=ctx.body, ticket_id=ctx.ticket_id or "", thread_id=ctx.thread_id)
                 push_message(client_id=client_id, from_email=ctx.from_email, role="support",
-                             subject="Re: " + ctx.subject, body=ctx.draft_reply, ticket_id=ctx.ticket_id or "")
+                             subject="Re: " + ctx.subject, body=ctx.draft_reply, ticket_id=ctx.ticket_id or "", thread_id=ctx.thread_id)
         else:
             logger.error("❌ Agent returned empty reply — holding for manual review")
             ctx.status = "pending_manual_review"

@@ -104,3 +104,13 @@ def check_sender_rate_limit(
     except Exception as e:
         logger.warning(f"⚠️ Redis rate limiter error for sender {from_email}: {e}. Allowing passthrough.")
         return True, 0
+
+
+def get_redis_client():
+    """Backward-compatible helper to retrieve main Redis client."""
+    try:
+        from app.redis_pool import get_redis_main
+        return get_redis_main()
+    except Exception:
+        return None
+

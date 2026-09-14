@@ -1,6 +1,7 @@
 import json
 import logging
 from typing import Dict, Any, List, Optional
+import re
 from app.pipeline.context import PipelineContext
 from app.pipeline.tools import SUPPORT_TOOLS, execute_tool_call
 from app.pipeline.drafter import append_client_disclaimers
@@ -8,6 +9,17 @@ from app.pipeline.evaluator import evaluate_draft_and_decide
 from app.llm import extract_name_from_email, get_llm_config_for_client, client
 
 logger = logging.getLogger(__name__)
+
+RESOLUTION_PATTERNS = [
+    r"\b((it|that|this)\s+(worked|works|is\s+working)|issue\s+(is\s+)?(fixed|resolved)|solved|problem\s+(is\s+)?(fixed|resolved)|all\s+good\s+now|working\s+(fine|now|again|properly)|that\s+helped|resolved\s+now)\b",
+    r"\b(thank\s+you\s+(so\s+much|very\s+much)?\s*[,.]?\s*(it\s+is\s+working|it\s+works|all\s+set|that\s+did\s+it))\b",
+]
+
+def check_customer_resolution(text: str) -> bool:
+    if not text:
+        return False
+    lower = text.lower()
+    return any(re.search(pat, lower) for pat in RESOLUTION_PATTERNS)
 
 
 def build_system_prompt(ctx: PipelineContext) -> str:
@@ -32,18 +44,43 @@ def build_system_prompt(ctx: PipelineContext) -> str:
         signoff_lines.append(f"Company: {company_name}")
     signoff_text = "\n".join(signoff_lines)
 
+    step_info = f"Current troubleshooting attempt: Step {ctx.troubleshooting_step + 1} of 3." if ctx.troubleshooting_step > 0 else ""
+
+    resolution_instruction = ""
+    if ctx.is_resolved:
+        resolution_instruction = """
+NOTE: The customer has indicated their problem is now RESOLVED.
+- Acknowledge this warmly, confirm the issue is resolved, and thank them.
+- DO NOT call 'escalate_and_create_ticket'.
+"""
+
     return f"""You are a professional, accurate customer support agent for {company_name or 'our support team'}.
 Customer Name: {customer_name}
+{step_info}
+{resolution_instruction}
 
 You have direct access to tools to:
-1. 'lookup_ticket_or_order_status': Look up status of an existing ticket or order ID in the CRM.
-2. 'search_knowledge_base': Search company policies, FAQs, manuals, and troubleshooting guides.
-3. 'escalate_and_create_ticket': Create a formal support ticket in the CRM if the issue cannot be solved with existing knowledge or if the user requests human agent assistance.
+1. 'lookup_order_status': Look up status of an order ID/number (e.g. #1001, ORD-9201) in the e-commerce/store system.
+2. 'lookup_payment_status': Look up payment transaction status, refund status, or invoice payment details (e.g. Stripe, Razorpay, Zoho Books).
+3. 'lookup_ticket_status': Look up status of an existing support ticket reference (e.g. T-260526-00431, 10294) in the CRM.
+4. 'lookup_ticket_or_order_status': Combined fallback lookup tool for ticket or order references.
+5. 'search_knowledge_base': Search company policies, FAQs, manuals, and troubleshooting guides.
+6. 'escalate_and_create_ticket': Create a formal support ticket in the CRM if the issue cannot be solved with existing knowledge, if 3 troubleshooting attempts have failed, or if the user requests human agent assistance.
 
 GUIDELINES & HARD CONSTRAINTS:
-- If the customer asks about or provides a ticket reference or order ID (e.g., #120, ORD10294, T-260505-00117), you MUST call 'lookup_ticket_or_order_status'.
-- If the customer asks how to do something, asks about return policies, or reports a general technical problem, you MUST search the knowledge base using 'search_knowledge_base'.
-- If the knowledge base does not contain the answer, or if the customer's problem requires manual technical investigation, call 'escalate_and_create_ticket'.
+- If the customer asks about or provides an order number/ID (e.g., #1001, ORD10294, 'where is my order'), you MUST call 'lookup_order_status'.
+- If the customer asks about payment, billing, charge, or transaction status (e.g., transaction ID, invoice ID, payment reference), you MUST call 'lookup_payment_status'.
+- If the customer asks about or provides an existing support ticket reference (e.g., T-260505-00117, ticket #4921), you MUST call 'lookup_ticket_status'.
+- If the customer reports a technical issue or problem:
+  1. Search the knowledge base using 'search_knowledge_base' for diagnostic guides and solutions.
+  2. If steps exist, guide the customer through ONE clear troubleshooting action and ask them to test it and reply back with what happens.
+  3. If previous steps failed (see conversation history), offer the next diagnostic step.
+  4. Only call 'escalate_and_create_ticket' if:
+     - All troubleshooting steps in the knowledge base have been exhausted, OR
+     - 3 troubleshooting turns have already occurred and the issue remains unresolved, OR
+     - The issue is a confirmed hardware/server failure or billing bug that self-troubleshooting cannot fix, OR
+     - The customer explicitly asks for human support / ticket creation.
+- If the customer states the issue is resolved or that a step worked, confirm resolution politely and DO NOT create a ticket.
 - NEVER invent facts, order statuses, turnaround times, or tracking links that were not returned by tools.
 - Address the customer politely: "Dear {customer_name},".
 - End your response with the standard sign-off:
@@ -59,6 +96,12 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
     """
     logger.info(f"🤖 [Agent Loop] Starting support agent execution for client={ctx.client_id}, sender={ctx.from_email}")
     ctx.log_step("Agent_Loop_Start")
+
+    # Detect if customer confirmed resolution from prior troubleshooting
+    if check_customer_resolution(ctx.body) and (ctx.history or ctx.troubleshooting_step > 0):
+        ctx.is_resolved = True
+        ctx.log_step("Customer_Confirmed_Resolved")
+        logger.info(f"✅ Customer confirmed resolution for client={ctx.client_id}, sender={ctx.from_email}")
 
     # 1. Resolve LLM client and configuration
     cfg = get_llm_config_for_client(ctx.client_id, "run_support_agent")
@@ -186,13 +229,20 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
         logger.info("ℹ️ [Agent Loop] Model answered directly without invoking external tools")
         final_draft = strip_reasoning_and_think_tags(msg.content or "")
 
+    # Increment troubleshooting step if diagnostic tool called and issue not resolved / escalated
+    tool_names_called = [tc.function.name for tc in (tool_calls or [])]
+    if "search_knowledge_base" in tool_names_called and not ticket_escalated and not ctx.is_resolved:
+        ctx.troubleshooting_step += 1
+        ctx.log_step(f"Troubleshooting_Step_{ctx.troubleshooting_step}")
+
     # 5. Post-Processing: Disclaimers and Evaluation
     final_draft = append_client_disclaimers(ctx.client_id, final_draft)
     score, decision = evaluate_draft_and_decide(
         client_id=ctx.client_id,
         reply=final_draft,
         query=user_query,
-        context_succeeded=bool(ctx.context_text or ctx.context_data or not tool_calls)
+        context_succeeded=bool(ctx.context_text or ctx.context_data or not tool_calls or ctx.is_resolved),
+        is_resolved=ctx.is_resolved
     )
 
     ctx.draft_reply = final_draft

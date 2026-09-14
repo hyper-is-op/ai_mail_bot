@@ -9,14 +9,14 @@ import json
 logger = logging.getLogger(__name__)
 
 
-def _decrypt_imap_password(stored: str) -> str:
+def _decrypt_imap_password(stored: str, client_id: str | None = None) -> str:
     """Decrypt IMAP password, handling both encrypted and legacy plaintext."""
     if not stored:
         return ""
     if stored.startswith("gAAAAA"):  # Fernet token prefix
         from app.secrets_crypto import decrypt_secret
         try:
-            return decrypt_secret(stored)
+            return decrypt_secret(stored, client_id=client_id)
         except Exception as e:
             logger.error(f"Failed to decrypt IMAP password: {e}")
             return stored
@@ -26,7 +26,7 @@ def _decrypt_imap_password(stored: str) -> str:
 def save_email_account(client_id: str, email: str, password: str, score_threshold: int = 80, response_tone: str = "Formal", agent_type: str = "customer_support"):
     logger.info(f"💾 Saving email account for client_id={client_id} email={email} score_threshold={score_threshold} response_tone={response_tone} agent_type={agent_type}")
     from app.secrets_crypto import encrypt_secret
-    encrypted_password = encrypt_secret(password) if password and not password.startswith("gAAAAA") else (password or "")
+    encrypted_password = encrypt_secret(password, client_id=client_id) if password and not password.startswith("gAAAAA") else (password or "")
     with get_db_ctx() as db:
         with db.cursor() as cursor:
             logger.info(f"📝 Checking duplicate records for client_id={client_id}")
@@ -88,7 +88,7 @@ def get_email_account(client_id: str) -> dict:
             return {
                 "client_id":       row[0],
                 "email":           row[1],
-                "password":        _decrypt_imap_password(row[2]),
+                "password":        _decrypt_imap_password(row[2], client_id=row[0]),
                 "score_threshold": row[3] if row[3] is not None else 80,
                 "response_tone":   row[4] if row[4] is not None else "Formal",
                 "agent_type":      row[5] if row[5] is not None else "customer_support_agent",

@@ -55,9 +55,16 @@ def backfill_client_ids():
                     priority VARCHAR(50) DEFAULT 'Medium',
                     execution_steps TEXT NULL,
                     summary VARCHAR(255) NULL,
+                    message_id VARCHAR(255) NULL,
+                    in_reply_to VARCHAR(255) NULL,
+                    thread_id VARCHAR(100) NULL,
+                    is_resolved TINYINT(1) DEFAULT 0,
+                    troubleshooting_step INT DEFAULT 0,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     INDEX idx_email_logs_client_created (client_id, created_at),
-                    INDEX idx_email_logs_client_status (client_id, status)
+                    INDEX idx_email_logs_client_status (client_id, status),
+                    INDEX idx_email_logs_msg_id (message_id),
+                    INDEX idx_email_logs_thread (client_id, thread_id)
                 )
                 """)
 
@@ -71,10 +78,29 @@ def backfill_client_ids():
                     ("execution_steps", "TEXT NULL"),
                     ("summary", "VARCHAR(255) NULL"),
                     ("body_html", "LONGTEXT NULL"),
+                    ("message_id", "VARCHAR(255) NULL"),
+                    ("in_reply_to", "VARCHAR(255) NULL"),
+                    ("thread_id", "VARCHAR(100) NULL"),
+                    ("is_resolved", "TINYINT(1) DEFAULT 0"),
+                    ("troubleshooting_step", "INT DEFAULT 0"),
                 ]
                 for col_name, col_def in missing_email_log_cols:
                     if col_name not in existing_cols:
                         cursor.execute(f"ALTER TABLE email_logs ADD COLUMN {col_name} {col_def}")
+                
+                # Check indexes
+                cursor.execute("SHOW INDEX FROM email_logs")
+                existing_indexes = {row[2] for row in cursor.fetchall()}
+                if "idx_email_logs_msg_id" not in existing_indexes:
+                    try:
+                        cursor.execute("ALTER TABLE email_logs ADD INDEX idx_email_logs_msg_id (message_id)")
+                    except Exception:
+                        pass
+                if "idx_email_logs_thread" not in existing_indexes:
+                    try:
+                        cursor.execute("ALTER TABLE email_logs ADD INDEX idx_email_logs_thread (client_id, thread_id)")
+                    except Exception:
+                        pass
                 
                 cursor.execute("SELECT id, rag_id FROM email_logs WHERE client_id IS NULL AND rag_id IS NOT NULL")
                 rows = cursor.fetchall()

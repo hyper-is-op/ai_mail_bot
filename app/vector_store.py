@@ -100,6 +100,16 @@ def ensure_collection() -> bool:
         return False
 
 
+def _validate_tenant_id(client_id: str, op_name: str) -> str:
+    """Enforce non-empty, non-wildcard client_id for strict multi-tenant isolation."""
+    if not client_id or not isinstance(client_id, str):
+        raise ValueError(f"Vector store operation '{op_name}' requires a valid client_id (got {client_id!r})")
+    clean_id = client_id.strip()
+    if not clean_id or clean_id.upper() == "ALL":
+        raise ValueError(f"Vector store operation '{op_name}' cannot be called with empty or 'ALL' client_id")
+    return clean_id
+
+
 def upsert_chunks(
     client_id: str,
     doc_id: str,
@@ -111,6 +121,7 @@ def upsert_chunks(
     Upserts one document's worth of chunks (+ their pre-computed embeddings)
     into the shared collection, tagged with client_id / doc_id metadata.
     """
+    client_id = _validate_tenant_id(client_id, "upsert_chunks")
     client = get_qdrant_client()
     if client is None:
         return False
@@ -152,6 +163,7 @@ def search(client_id: str, query_vector: list[float], top_k: int = 3) -> list[di
     [{"content": str, "title": str, "doc_id": str, "score": float, "id": str}, ...]
     Returns [] on any failure — callers treat that identically to "no matches".
     """
+    client_id = _validate_tenant_id(client_id, "search")
     client = get_qdrant_client()
     if client is None:
         return []
@@ -218,6 +230,7 @@ def get_client_documents(client_id: str) -> list[dict[str, Any]]:
     Scrolls all points for a client and groups them by doc_id, mirroring
     the old Chroma get_knowledge_base() grouping behaviour.
     """
+    client_id = _validate_tenant_id(client_id, "get_client_documents")
     client = get_qdrant_client()
     if client is None:
         return []
@@ -304,6 +317,7 @@ def get_all_documents() -> list[dict[str, Any]]:
 
 def delete_document(client_id: str, doc_id: str) -> bool:
     """Deletes all chunks for a given doc_id, scoped to client_id for safety."""
+    client_id = _validate_tenant_id(client_id, "delete_document")
     client = get_qdrant_client()
     if client is None:
         return False
@@ -328,6 +342,7 @@ def delete_document(client_id: str, doc_id: str) -> bool:
 
 def delete_client_data(client_id: str) -> bool:
     """Deletes ALL points for a client — used by delete_client_account()."""
+    client_id = _validate_tenant_id(client_id, "delete_client_data")
     client = get_qdrant_client()
     if client is None:
         return False

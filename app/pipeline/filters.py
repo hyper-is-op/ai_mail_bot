@@ -36,17 +36,7 @@ def apply_deterministic_filters(ctx: PipelineContext, cursor) -> bool:
         ctx.halt("system_bounce_dropped", "Automated bounce or daemon notification", "System_Bounce_Dropped")
         return True
 
-    # 0.1 Inbound Sender Rate Limiting Check (max 10 emails per hour per sender)
-    from app.rate_limiter import check_sender_rate_limit
-    allowed, count = check_sender_rate_limit(client_id, from_email, limit=10, window_seconds=3600)
-    if not allowed:
-        logger.warning(f"🚨 [Client {client_id}] Sender {from_email} exceeded hourly rate limit ({count}/10) — halting automated reply")
-        ctx.summary = f"Sender {from_email} exceeded rate limit ({count}/10 in 1hr). Held for review."
-        ctx.priority = "Low"
-        ctx.halt("rate_limited", f"Sender hourly rate limit exceeded ({count}/10)", f"Rate_Limited:{count}")
-        return True
-
-    # 1. Master Bot Switch
+    # 1. Master Bot Switch (Disabled by Administrator or Paused by Client)
     admin_bot_enabled = ctx.features.get("admin_bot_enabled", True)
     client_bot_enabled = ctx.features.get("client_bot_enabled", True)
     if not admin_bot_enabled or not client_bot_enabled:
@@ -54,6 +44,16 @@ def apply_deterministic_filters(ctx: PipelineContext, cursor) -> bool:
         logger.info(f"🛑 [Client {client_id}] Master Bot Switch is OFF ({reason}) — halting task")
         ctx.summary = f"Master automation switch is OFF ({reason}). Email flow halted."
         ctx.halt("automation_halted", reason, f"Master_Switch_Halt:{reason}")
+        return True
+
+    # 2. Inbound Sender Rate Limiting Check (max 10 emails per hour per sender)
+    from app.rate_limiter import check_sender_rate_limit
+    allowed, count = check_sender_rate_limit(client_id, from_email, limit=10, window_seconds=3600)
+    if not allowed:
+        logger.warning(f"🚨 [Client {client_id}] Sender {from_email} exceeded hourly rate limit ({count}/10) — halting automated reply")
+        ctx.summary = f"Sender {from_email} exceeded rate limit ({count}/10 in 1hr). Held for review."
+        ctx.priority = "Low"
+        ctx.halt("rate_limited", f"Sender hourly rate limit exceeded ({count}/10)", f"Rate_Limited:{count}")
         return True
 
     # 2. Check if Email is Paused

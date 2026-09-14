@@ -73,6 +73,16 @@ class OrderStatusRequest(BaseModel):
     order_id: str
 
 
+class PaymentStatusRequest(BaseModel):
+    client_id: str
+    payment_id: str
+
+
+class TicketStatusRequest(BaseModel):
+    client_id: str
+    ticket_id: str
+
+
 class PayloadRequest(BaseModel):
     client_id: str
     url: str
@@ -243,6 +253,43 @@ def order_status_endpoint(data: OrderStatusRequest, user: dict = Depends(get_cur
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@router.post("/payment-status")
+def payment_status_endpoint(data: PaymentStatusRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    try:
+        from app.connector_config import run_payment_status_lookup
+        res = run_payment_status_lookup(
+            client_id=data.client_id,
+            payment_id=data.payment_id,
+            order_id=data.payment_id
+        )
+        if not res.get("success"):
+            raise HTTPException(status_code=404, detail=res.get("error", "Payment record not found"))
+        return {"status": "success", "data": res.get("data", {})}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/ticket-status")
+def ticket_status_endpoint(data: TicketStatusRequest, user: dict = Depends(get_current_user)):
+    require_client_access(data.client_id, user)
+    try:
+        from app.connector_config import run_ticket_status_lookup
+        res = run_ticket_status_lookup(
+            client_id=data.client_id,
+            ticket_id=data.ticket_id
+        )
+        if not res.get("success"):
+            raise HTTPException(status_code=404, detail=res.get("error", "Ticket record not found"))
+        return {"status": "success", "data": res.get("data", {})}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/insert-create_payload_ticket")
 def create_payload_ticket_endpoint(data: PayloadRequest, user: dict = Depends(get_current_user)):
     require_client_access(data.client_id, user)
@@ -325,7 +372,7 @@ def create_connector_config_endpoint(data: ConnectorConfigCreateRequest, user: d
         "request_template": data.request_template,
         "response_mapping": data.response_mapping,
         "auth_type": data.auth_type,
-        "auth_secret_encrypted": encrypt_secret(data.auth_secret) if data.auth_secret else None,
+        "auth_secret_encrypted": encrypt_secret(data.auth_secret, client_id=data.client_id) if data.auth_secret else None,
         "auth_field_name": data.auth_field_name,
         "payload_encoding": data.payload_encoding,
         "base64_query_param_name": data.base64_query_param_name,
@@ -381,7 +428,7 @@ def list_connector_configs_endpoint(client_id: str, user: dict = Depends(get_cur
         auth_secret_enc = r[18]
         if auth_secret_enc and r[6] == "oauth2_client_credentials":
             try:
-                decrypted = decrypt_secret(auth_secret_enc)
+                decrypted = decrypt_secret(auth_secret_enc, client_id=r[1])
                 oauth_json = json.loads(decrypted)
                 oauth_meta = {
                     "oauth_token_url": oauth_json.get("token_url", ""),
@@ -606,7 +653,7 @@ def regenerate_connector_config_endpoint(data: ConnectorConfigEditRequest, user:
                             prev_row = cursor.fetchone()
                             if prev_row and prev_row[0]:
                                 try:
-                                    prev_plain = decrypt_secret(prev_row[0])
+                                    prev_plain = decrypt_secret(prev_row[0], client_id=data.client_id)
                                     prev_oauth = json.loads(prev_plain)
                                     if oauth_data.get("client_secret") == "__KEEP_EXISTING__":
                                         oauth_data["client_secret"] = prev_oauth.get("client_secret", "")
@@ -614,11 +661,11 @@ def regenerate_connector_config_endpoint(data: ConnectorConfigEditRequest, user:
                                         oauth_data["refresh_token"] = prev_oauth.get("refresh_token", "")
                                 except Exception:
                                     pass
-                auth_secret_enc = encrypt_secret(json.dumps(oauth_data))
+                auth_secret_enc = encrypt_secret(json.dumps(oauth_data), client_id=data.client_id)
             except Exception:
-                auth_secret_enc = encrypt_secret(data.auth_secret)
+                auth_secret_enc = encrypt_secret(data.auth_secret, client_id=data.client_id)
         else:
-            auth_secret_enc = encrypt_secret(data.auth_secret)
+            auth_secret_enc = encrypt_secret(data.auth_secret, client_id=data.client_id)
     else:
         with get_db_ctx() as db:
             with db.cursor() as cursor:

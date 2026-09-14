@@ -31,12 +31,18 @@ def evaluate_draft_and_decide(
     client_id: str,
     reply: str,
     query: str,
-    context_succeeded: bool = True
+    context_succeeded: bool = True,
+    is_resolved: bool = False
 ) -> Tuple[int, str]:
     """
     Evaluates reply quality against customer query and determines action.
     Returns (score: int, decision: 'auto_send' | 'create_ticket').
     """
+    # 0. If issue is confirmed resolved by customer, confirm closure without escalating
+    if is_resolved:
+        logger.info(f"✅ Issue resolved for client {client_id} — auto-sending resolution confirmation")
+        return 95, "auto_send"
+
     # 1. Hard floor: If context retrieval failed, immediate ticket escalation
     if not context_succeeded:
         logger.warning(f"⚠️ Context retrieval failed for client {client_id} — triggering hard floor ticket creation")

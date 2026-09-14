@@ -16,7 +16,13 @@ class PipelineContext:
     message_id: Optional[str] = None
     mail_id: Optional[str] = None
     in_reply_to: Optional[str] = None
+    references: Optional[str] = None
+    thread_id: Optional[str] = None
     sender_name: Optional[str] = None
+
+    # Troubleshooting & Resolution Tracking
+    troubleshooting_step: int = 0
+    is_resolved: bool = False
 
     # Configuration toggles
     features: Dict[str, Any] = field(default_factory=dict)
@@ -77,7 +83,12 @@ class PipelineContext:
             message_id=data.get("message_id"),
             mail_id=data.get("mail_id"),
             in_reply_to=data.get("in_reply_to"),
-            sender_name=data.get("sender_name")
+            references=data.get("references"),
+            thread_id=data.get("thread_id"),
+            troubleshooting_step=int(data.get("troubleshooting_step") or 0),
+            is_resolved=bool(data.get("is_resolved") or False),
+            sender_name=data.get("sender_name"),
+            history=list(data.get("history") or [])
         )
 
     def to_task_data(self) -> Dict[str, Any]:
@@ -91,6 +102,10 @@ class PipelineContext:
             "message_id": self.message_id,
             "mail_id": self.mail_id,
             "in_reply_to": self.in_reply_to,
+            "references": self.references,
+            "thread_id": self.thread_id,
+            "troubleshooting_step": self.troubleshooting_step,
+            "is_resolved": self.is_resolved,
             "sender_name": self.sender_name
         }
 

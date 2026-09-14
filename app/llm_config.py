@@ -122,7 +122,7 @@ def get_llm_config_for_client(client_id: str, caller_function: str) -> dict:
                         if c_provider and c_key:
                             from app.secrets_crypto import decrypt_secret
                             try:
-                                dec_c_key = decrypt_secret(c_key) if c_key and c_key.startswith("gAAAAA") else c_key
+                                dec_c_key = decrypt_secret(c_key, client_id=client_id) if c_key and c_key.startswith("gAAAAA") else c_key
                             except Exception:
                                 dec_c_key = c_key
                             return {

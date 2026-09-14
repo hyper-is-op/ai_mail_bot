@@ -360,7 +360,7 @@ def execute_connector(
                 f"it may have been removed from the allowlist since this config was approved."
             )
 
-        secret = decrypt_secret(config["auth_secret_encrypted"]) if config.get("auth_secret_encrypted") else None
+        secret = decrypt_secret(config["auth_secret_encrypted"], client_id=config.get("client_id")) if config.get("auth_secret_encrypted") else None
 
         request_kwargs = {"headers": dict(rendered_headers), "timeout": REQUEST_TIMEOUT_SECONDS}
         if secret:

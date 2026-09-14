@@ -182,8 +182,9 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
                     if raw_email is None:
                         continue
 
-                    msg = email.message_from_bytes(raw_email)
                     raw_message_id = msg.get("Message-ID", "")
+                    raw_in_reply_to = msg.get("In-Reply-To", "")
+                    raw_references = msg.get("References", "")
 
                     # Deduplication check: if seen within 24h, mark seen and skip
                     if raw_message_id and is_message_duplicate(client_id, raw_message_id):
@@ -238,7 +239,7 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
                             html_text = plain_text
                         plain_text = extract_clean_text_from_html(plain_text)
 
-                    logger.info(f"📧 [Client {client_id}] NEW EMAIL: From={from_email} Subject={subject} (HTML={bool(html_text)})")
+                    logger.info(f"📧 [Client {client_id}] NEW EMAIL: From={from_email} Subject={subject} (HTML={bool(html_text)}) [In-Reply-To={raw_in_reply_to}]")
 
                     # Enqueue task to Celery FIRST
                     task_result = process_email_task.delay({
@@ -247,7 +248,9 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
                         "subject": subject,
                         "body": plain_text or "",
                         "body_html": html_text or "",
-                        "message_id": raw_message_id
+                        "message_id": raw_message_id,
+                        "in_reply_to": raw_in_reply_to,
+                        "references": raw_references,
                     })
                     logger.info(f"✅ [Client {client_id}] Task queued: {task_result.id}")
 

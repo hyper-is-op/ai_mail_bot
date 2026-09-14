@@ -96,11 +96,67 @@ def run_ticket_create(
     }
 
 
-def run_order_status_lookup(
+def run_payment_status_lookup(
+    client_id: str,
+    payment_id: str = "",
+    order_id: str = "",
+    body: str = "",
+    history: list = None,
+    subject: str = "",
+    from_email: str = "",
+    old_summary: str = "",
+    intent: str = "payment_status",
+    sentiment: str = "Neutral",
+    priority: str = "Medium",
+) -> dict:
+    """
+    Executes real-time payment status lookup against payment gateways
+    (e.g., Stripe, Razorpay, Shopify Payments, Zoho Books).
+    """
+    from app.context_data import build_context_data_base
+    from app.connector_executor import execute_connector
+
+    cfg_payment = get_live_config(client_id, "payment_status")
+    if not cfg_payment:
+        return {
+            "success": False,
+            "error": f"No live payment_status connector config found for client_id={client_id}"
+        }
+
+    ref = str(payment_id or order_id or "").strip()
+    context_base = build_context_data_base(
+        client_id=client_id,
+        from_email=from_email,
+        subject=subject,
+        body=body,
+        cleaned_body=body,
+        ticket_id=ref,
+        order_id=order_id or ref,
+        payment_id=payment_id or ref,
+        reference_id=ref,
+        intent=intent,
+        sentiment=sentiment,
+        priority=priority,
+        history=history or [],
+    )
+
+    result = execute_connector(cfg_payment, context_base, body=body, history=history or [], old_summary=old_summary)
+    if not result.get("success"):
+        return {"success": False, "error": result.get("error", "Unknown payment connector failure")}
+
+    data = result.get("data", {})
+    has_record = any(data.get(k) for k in ("payment_status", "status", "transaction_id", "amount", "id"))
+    if not has_record:
+        return {"success": False, "error": f"No matching payment record found for reference '{ref}'"}
+
+    return {"success": True, "data": data}
+
+
+def run_ticket_status_lookup(
     client_id: str,
     ticket_id: str,
-    body: str,
-    history: list,
+    body: str = "",
+    history: list = None,
     subject: str = "",
     from_email: str = "",
     old_summary: str = "",
@@ -109,67 +165,95 @@ def run_order_status_lookup(
     priority: str = "Medium",
 ) -> dict:
     """
-    Drop-in replacement for app.request_handler.get_order_status.
-    Seamlessly supports both ticket_status (e.g. Zoho Desk) and
-    order_status (e.g. Shopify) connectors. If both are active, it queries
-    the most relevant one first and falls back to the other.
+    Specifically queries CRM ticket_status connectors (e.g. Zoho Desk, Freshdesk, Zendesk).
     """
     from app.context_data import build_context_data_base
     from app.connector_executor import execute_connector
 
     cfg_ticket = get_live_config(client_id, "ticket_status")
-    cfg_order = get_live_config(client_id, "order_status")
+    if not cfg_ticket:
+        # Fallback to order_status if client configured it under order_status
+        cfg_ticket = get_live_config(client_id, "order_status")
 
-    # Determine which connector applies based on inquiry content & ID format
-    text_corpus = f"{subject} {body}".lower()
-    is_order_inquiry = any(w in text_corpus for w in ("order", "ship", "shipped", "shipping", "deliver", "delivery", "track", "tracking", "package", "item", "purchase"))
-    is_ticket_inquiry = any(w in text_corpus for w in ("ticket", "case", "complaint", "issue", "billing", "escalat"))
+    if not cfg_ticket:
+        return {"success": False, "error": f"No live ticket_status connector config for client_id={client_id}"}
 
-    ticket_str = str(ticket_id or "").strip()
-    looks_like_crm_ticket = len(ticket_str) > 8 or ticket_str.upper().startswith(("T-", "INC", "CAS", "SR", "REQ"))
-
-    selected_config = None
-    if cfg_ticket and cfg_order:
-        if is_order_inquiry and not is_ticket_inquiry:
-            selected_config = cfg_order
-        elif is_ticket_inquiry and not is_order_inquiry:
-            selected_config = cfg_ticket
-        elif looks_like_crm_ticket:
-            selected_config = cfg_ticket
-        else:
-            selected_config = cfg_order
-    elif cfg_ticket:
-        selected_config = cfg_ticket
-    elif cfg_order:
-        selected_config = cfg_order
-    else:
-        return {"success": False, "error": f"No live ticket_status or order_status connector config for client_id={client_id}"}
-
+    clean_ticket_id = str(ticket_id or "").strip().lstrip("#")
     context_base = build_context_data_base(
         client_id=client_id, from_email=from_email, subject=subject,
-        body=body, cleaned_body=body, ticket_id=ticket_id,
+        body=body, cleaned_body=body, ticket_id=clean_ticket_id,
+        order_id=clean_ticket_id, reference_id=clean_ticket_id,
         intent=intent, sentiment=sentiment, priority=priority,
-        history=history,
+        history=history or [],
     )
 
-    result = execute_connector(selected_config, context_base, body=body, history=history, old_summary=old_summary)
+    result = execute_connector(cfg_ticket, context_base, body=body, history=history or [], old_summary=old_summary)
     if not result.get("success"):
         return {"success": False, "error": result.get("error", "Unknown executor failure")}
 
     data = result.get("data", {})
-    has_record = any(data.get(k) for k in ("docket_no", "ticket_status", "ticket_id"))
+    has_record = any(data.get(k) for k in ("docket_no", "ticket_status", "ticket_id", "status"))
+    if not has_record:
+        return {"success": False, "error": f"No matching ticket record found for '{ticket_id}'"}
+
+    return {"success": True, "data": data}
+
+
+def run_order_status_lookup(
+    client_id: str,
+    ticket_id: str = "",
+    body: str = "",
+    history: list = None,
+    subject: str = "",
+    from_email: str = "",
+    old_summary: str = "",
+    intent: str = "order_status",
+    sentiment: str = "Neutral",
+    priority: str = "Medium",
+    order_id: str = "",
+) -> dict:
+    """
+    Queries e-commerce/ERP order_status connectors (e.g. Shopify, Magento, ERP).
+    """
+    from app.context_data import build_context_data_base
+    from app.connector_executor import execute_connector
+
+    clean_order_id = str(order_id or ticket_id or "").strip()
+
+    cfg_order = get_live_config(client_id, "order_status")
+    cfg_ticket = get_live_config(client_id, "ticket_status")
+    selected_config = cfg_order or cfg_ticket
+
+    if not selected_config:
+        return {"success": False, "error": f"No live order_status connector config for client_id={client_id}"}
+
+    context_base = build_context_data_base(
+        client_id=client_id, from_email=from_email, subject=subject,
+        body=body, cleaned_body=body, ticket_id=clean_order_id,
+        order_id=clean_order_id, reference_id=clean_order_id,
+        intent=intent, sentiment=sentiment, priority=priority,
+        history=history or [],
+    )
+
+    result = execute_connector(selected_config, context_base, body=body, history=history or [], old_summary=old_summary)
+    if not result.get("success"):
+        return {"success": False, "error": result.get("error", "Unknown executor failure")}
+
+    data = result.get("data", {})
+    has_record = any(data.get(k) for k in ("docket_no", "ticket_status", "ticket_id", "status", "order_id"))
 
     # If an e-commerce order (like Shopify) wasn't found with plain '1001', retry with '%231001' (#1001)
-    if not has_record and selected_config.get("trigger_type") == "order_status" and ticket_id and not str(ticket_id).startswith("#"):
+    if not has_record and selected_config.get("trigger_type") == "order_status" and clean_order_id and not clean_order_id.startswith("#"):
         context_base_hash = dict(context_base)
-        context_base_hash["ticket_id"] = f"%23{ticket_id}"
-        result_hash = execute_connector(selected_config, context_base_hash, body=body, history=history, old_summary=old_summary)
+        context_base_hash["ticket_id"] = f"%23{clean_order_id}"
+        context_base_hash["order_id"] = f"%23{clean_order_id}"
+        result_hash = execute_connector(selected_config, context_base_hash, body=body, history=history or [], old_summary=old_summary)
         if result_hash.get("success"):
             data_hash = result_hash.get("data", {})
-            if any(data_hash.get(k) for k in ("docket_no", "ticket_status", "ticket_id")):
+            if any(data_hash.get(k) for k in ("docket_no", "ticket_status", "ticket_id", "status", "order_id")):
                 return {"success": True, "data": data_hash}
 
     if not has_record:
-        return {"success": False, "error": f"No matching record found in {selected_config.get('trigger_type')} system response"}
+        return {"success": False, "error": f"No matching record found for '{clean_order_id}' in {selected_config.get('trigger_type')} system response"}
 
     return {"success": True, "data": data}

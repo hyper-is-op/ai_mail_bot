@@ -142,7 +142,7 @@ export default function PayloadConfig() {
   const handleOpenEdit = (config: ConnectorConfig) => {
     setEditingId(config.id);
     setOauthTestResult(null);
-    const isStandard = ['ticket_create', 'ticket_status', 'order_status'].includes(config.trigger_type);
+    const isStandard = ['ticket_create', 'ticket_status', 'order_status', 'payment_status'].includes(config.trigger_type);
     setFormData({
       ...defaultFormData,
       client_id: config.client_id,

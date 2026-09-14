@@ -6,9 +6,12 @@ from app.pipeline.tools import SUPPORT_TOOLS, execute_tool_call
 class TestAgentTools(unittest.TestCase):
 
     def test_01_tool_schemas(self):
-        """SUPPORT_TOOLS must declare all 3 functional tools with valid JSON schemas"""
-        self.assertEqual(len(SUPPORT_TOOLS), 3)
+        """SUPPORT_TOOLS must declare all 6 functional tools with valid JSON schemas"""
+        self.assertEqual(len(SUPPORT_TOOLS), 6)
         tool_names = [t["function"]["name"] for t in SUPPORT_TOOLS]
+        self.assertIn("lookup_order_status", tool_names)
+        self.assertIn("lookup_payment_status", tool_names)
+        self.assertIn("lookup_ticket_status", tool_names)
         self.assertIn("lookup_ticket_or_order_status", tool_names)
         self.assertIn("search_knowledge_base", tool_names)
         self.assertIn("escalate_and_create_ticket", tool_names)

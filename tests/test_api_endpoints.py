@@ -1,5 +1,6 @@
 import os
 import unittest
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from app.main import app
 
@@ -124,9 +125,36 @@ class TestApiEndpoints(unittest.TestCase):
         self.assertIn("status", res.json())
 
     def test_08_process_email_validation(self):
-        """POST /process-email with empty body should return 422"""
-        res = self.client.post("/process-email", json={})
+        """POST /process-email with empty body and valid auth should return 422"""
+        headers = {"Authorization": f"Bearer {self.token}"} if self.token else {}
+        res = self.client.post("/process-email", json={}, headers=headers)
         self.assertEqual(res.status_code, 422)
+
+    def test_08b_process_email_unauthorized(self):
+        """POST /process-email without auth must return 401 Unauthorized"""
+        res = self.client.post("/process-email", json={
+            "client_id": self.test_client_id,
+            "from_email": "customer@example.com",
+            "subject": "Help",
+            "body": "Issue"
+        })
+        self.assertEqual(res.status_code, 401)
+
+    def test_08c_process_email_api_key(self):
+        """POST /process-email with valid X-API-Key must succeed with 200"""
+        api_key = os.getenv("INGESTION_API_KEY", "mail_ai_ingest_secret_token_dev")
+        res = self.client.post(
+            "/process-email",
+            json={
+                "client_id": self.test_client_id,
+                "from_email": "customer@example.com",
+                "subject": "Help",
+                "body": "Issue"
+            },
+            headers={"X-API-Key": api_key}
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.json().get("status"), "queued")
 
     def test_09_outbox_sweep_endpoint(self):
         """POST /admin/action-outbox/sweep should execute and return sweep metrics"""
@@ -139,6 +167,50 @@ class TestApiEndpoints(unittest.TestCase):
         data = res.json()
         self.assertEqual(data.get("status"), "success")
         self.assertIn("swept_count", data)
+
+    def test_10_status_lookup_endpoints(self):
+        """POST /order-status, /payment-status, and /ticket-status endpoints"""
+        if not self.token:
+            self.skipTest("Admin token unavailable")
+
+        headers = {"Authorization": f"Bearer {self.token}"}
+
+        # 1. POST /order-status unauthorized check
+        unauth = self.client.post("/order-status", json={"client_id": self.test_client_id, "order_id": "1001"})
+        self.assertEqual(unauth.status_code, 401)
+
+        # 2. POST /order-status with mock
+        with patch("app.api.connectors.get_order_by_id") as mock_get_order:
+            mock_get_order.return_value = {"order_id": "1001", "status": "Shipped"}
+            res = self.client.post(
+                "/order-status",
+                json={"client_id": self.test_client_id, "order_id": "1001"},
+                headers=headers
+            )
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json().get("data", {}).get("status"), "Shipped")
+
+        # 3. POST /payment-status with mock
+        with patch("app.connector_config.run_payment_status_lookup") as mock_pay:
+            mock_pay.return_value = {"success": True, "data": {"payment_status": "succeeded", "amount": "99.00"}}
+            res = self.client.post(
+                "/payment-status",
+                json={"client_id": self.test_client_id, "payment_id": "pi_123"},
+                headers=headers
+            )
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json().get("data", {}).get("payment_status"), "succeeded")
+
+        # 4. POST /ticket-status with mock
+        with patch("app.connector_config.run_ticket_status_lookup") as mock_ticket:
+            mock_ticket.return_value = {"success": True, "data": {"ticket_status": "Open", "ticket_id": "T-100"}}
+            res = self.client.post(
+                "/ticket-status",
+                json={"client_id": self.test_client_id, "ticket_id": "T-100"},
+                headers=headers
+            )
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json().get("data", {}).get("ticket_status"), "Open")
 
 
 if __name__ == "__main__":

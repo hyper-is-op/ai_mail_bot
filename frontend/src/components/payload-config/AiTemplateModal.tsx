@@ -59,7 +59,9 @@ export const AiTemplateModal: React.FC<AiTemplateModalProps> = ({
                 className="w-full p-2.5 rounded-xl border border-zinc-200 dark:border-white/10 bg-transparent outline-none"
               >
                 <option value="ticket_create" className="dark:bg-zinc-900">ticket_create (Ticket Generation)</option>
-                <option value="order_status" className="dark:bg-zinc-900">order_status (Status Lookup)</option>
+                <option value="ticket_status" className="dark:bg-zinc-900">ticket_status (Support Ticket Lookup)</option>
+                <option value="order_status" className="dark:bg-zinc-900">order_status (Order Status Tracking)</option>
+                <option value="payment_status" className="dark:bg-zinc-900">payment_status (Payment & Invoice Status)</option>
               </select>
             </div>
 

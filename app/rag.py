@@ -53,44 +53,134 @@ from app.embed_client import embed_passages, embed_query
 
 
 # ==========================================
-# 🛠️ FALLBACK JSON DATABASE (unchanged philosophy, now backs Qdrant-down)
+# 🛠️ FALLBACK JSON DATABASE (TENANT-PARTITIONED)
 # ==========================================
-def load_fallback_db() -> dict:
+def get_fallback_path(client_id: str) -> str:
+    """Returns the isolated file path for a client's fallback knowledge store."""
+    clean_id = "".join(c for c in client_id if c.isalnum() or c in ("-", "_")).lower()
+    if not clean_id:
+        clean_id = "default"
+    return os.path.join(CHROMA_PATH, f"fallback_{clean_id}.json")
+
+
+def load_fallback_db(client_id: str | None = None) -> list[dict] | dict:
+    """
+    If client_id is provided, loads documents strictly for that client_id from its isolated fallback file.
+    If client_id is None, loads the legacy fallback database dictionary (for backward compatibility).
+    """
+    if client_id is None:
+        if os.path.exists(FALLBACK_DB_PATH):
+            try:
+                with open(FALLBACK_DB_PATH, 'r', encoding='utf-8') as f:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                    try:
+                        return json.load(f)
+                    finally:
+                        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            except Exception as e:
+                logger.error(f"❌ Failed to load legacy fallback DB: {e}")
+                return {}
+        return {}
+
+    if not client_id or client_id == "ALL":
+        return []
+
+    path = get_fallback_path(client_id)
+    if os.path.exists(path):
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                try:
+                    data = json.load(f)
+                    return data if isinstance(data, list) else []
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        except Exception as e:
+            logger.error(f"❌ Failed to load fallback DB for client_id={client_id}: {e}")
+            return []
+
+    # One-time migration: check legacy fallback_db.json if it exists
     if os.path.exists(FALLBACK_DB_PATH):
         try:
             with open(FALLBACK_DB_PATH, 'r', encoding='utf-8') as f:
                 fcntl.flock(f.fileno(), fcntl.LOCK_SH)
                 try:
-                    return json.load(f)
+                    legacy_data = json.load(f)
                 finally:
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+            if isinstance(legacy_data, dict) and client_id in legacy_data:
+                client_docs = legacy_data[client_id]
+                if isinstance(client_docs, list):
+                    save_fallback_db(client_id, client_docs)
+                    return client_docs
         except Exception as e:
-            logger.error(f"❌ Failed to load fallback DB: {e}")
-            return {}
-    return {}
+            logger.error(f"❌ Legacy fallback migration check failed for client_id={client_id}: {e}")
+
+    return []
 
 
-def save_fallback_db(data: dict):
-    tmp_path = f"{FALLBACK_DB_PATH}.tmp.{os.getpid()}"
+def save_fallback_db(client_id_or_data, docs: list[dict] | None = None):
+    """
+    Saves fallback knowledge.
+    - If docs is provided: saves docs (list) for client_id into its isolated fallback_{client_id}.json.
+    - If docs is None and client_id_or_data is dict: saves dict into legacy FALLBACK_DB_PATH (for backward compatibility).
+    """
+    if docs is None and isinstance(client_id_or_data, dict):
+        target_path = FALLBACK_DB_PATH
+        data_to_write = client_id_or_data
+    else:
+        client_id = str(client_id_or_data)
+        if not client_id or client_id == "ALL":
+            raise ValueError(f"Cannot save fallback DB for client_id={client_id!r}")
+        target_path = get_fallback_path(client_id)
+        data_to_write = docs if docs is not None else []
+
+    tmp_path = f"{target_path}.tmp.{os.getpid()}"
     try:
-        dir_name = os.path.dirname(FALLBACK_DB_PATH)
-        os.makedirs(dir_name, exist_ok=True)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
         with open(tmp_path, 'w', encoding='utf-8') as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                json.dump(data_to_write, f, indent=2, ensure_ascii=False)
                 f.flush()
                 os.fsync(f.fileno())
             finally:
                 fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        os.replace(tmp_path, FALLBACK_DB_PATH)
+        os.replace(tmp_path, target_path)
     except Exception as e:
-        logger.error(f"❌ Failed to save fallback DB: {e}")
+        logger.error(f"❌ Failed to save fallback DB to {target_path}: {e}")
         if os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
+
+
+def load_all_fallback_docs() -> list[dict]:
+    """Admin-only helper: scans all fallback_*.json files across tenants."""
+    all_docs = []
+    try:
+        if os.path.exists(CHROMA_PATH):
+            for fname in os.listdir(CHROMA_PATH):
+                if fname.startswith("fallback_") and fname.endswith(".json") and fname != "fallback_db.json":
+                    fpath = os.path.join(CHROMA_PATH, fname)
+                    try:
+                        with open(fpath, 'r', encoding='utf-8') as f:
+                            docs = json.load(f)
+                            if isinstance(docs, list):
+                                cid = fname[len("fallback_"):-len(".json")]
+                                for d in docs:
+                                    all_docs.append({
+                                        "id": d.get("id"),
+                                        "title": f"[{cid}] {d.get('title', 'Untitled')}",
+                                        "content": d.get("content", ""),
+                                        "client_id": cid,
+                                    })
+                    except Exception:
+                        pass
+    except Exception as e:
+        logger.error(f"❌ Error loading all fallback docs: {e}")
+    return all_docs
 
 
 def jaccard_similarity(text1: str, text2: str) -> float:
@@ -181,12 +271,10 @@ def add_knowledge(client_id: str, title: str, content: str) -> str:
         logger.warning("⚠️ Embedding or Qdrant unavailable — falling back to JSON store")
 
     if not saved_successfully:
-        db = load_fallback_db()
-        if client_id not in db:
-            db[client_id] = []
-        db[client_id].append({"id": doc_id, "title": title, "content": content})
-        save_fallback_db(db)
-        logger.info("✅ Saved to Fallback JSON Database")
+        docs = load_fallback_db(client_id)
+        docs.append({"id": doc_id, "title": title, "content": content})
+        save_fallback_db(client_id, docs)
+        logger.info(f"✅ Saved to Fallback JSON Database for client_id={client_id}")
 
     _link_client_in_db(client_id)
     return doc_id
@@ -200,40 +288,52 @@ def get_knowledge_base(client_id: str) -> list[dict]:
         docs = qdrant_get_all_documents()
         if docs:
             return docs
-        # Fallback JSON
-        db = load_fallback_db()
-        fallback_docs = []
-        for cid, cdocs in db.items():
-            for doc in cdocs:
-                fallback_docs.append({
-                    "id": doc["id"], "title": f"[{cid}] {doc['title']}",
-                    "content": doc["content"], "client_id": cid
-                })
-        return fallback_docs
+        return load_all_fallback_docs()
 
     docs = qdrant_get_client_documents(client_id)
     if docs:
         return docs
 
-    db = load_fallback_db()
-    return db.get(client_id, [])
+    return load_fallback_db(client_id)
 
 
 def delete_knowledge(client_id: str, doc_id: str) -> bool:
     logger.info(f"Deleting knowledge for client_id={client_id}, doc_id={doc_id}")
 
-    deleted = qdrant_delete_document(client_id, doc_id)
-    if deleted:
-        return True
+    deleted_qdrant = qdrant_delete_document(client_id, doc_id)
 
-    db = load_fallback_db()
-    if client_id in db:
-        initial_len = len(db[client_id])
-        db[client_id] = [doc for doc in db[client_id] if doc["id"] != doc_id]
-        save_fallback_db(db)
-        logger.info("✅ Deleted from Fallback JSON successfully")
-        return len(db[client_id]) < initial_len
-    return False
+    deleted_fallback = False
+    docs = load_fallback_db(client_id)
+    initial_len = len(docs)
+    new_docs = [doc for doc in docs if doc.get("id") != doc_id]
+    if len(new_docs) < initial_len:
+        save_fallback_db(client_id, new_docs)
+        deleted_fallback = True
+        logger.info(f"✅ Deleted from Fallback JSON successfully for client_id={client_id}")
+
+    # Also ensure purged from legacy fallback_db.json if present
+    if os.path.exists(FALLBACK_DB_PATH):
+        try:
+            with open(FALLBACK_DB_PATH, 'r+', encoding='utf-8') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    legacy_data = json.load(f)
+                    if isinstance(legacy_data, dict) and client_id in legacy_data:
+                        legacy_docs = legacy_data[client_id]
+                        if isinstance(legacy_docs, list):
+                            new_legacy = [d for d in legacy_docs if d.get("id") != doc_id]
+                            if len(new_legacy) < len(legacy_docs):
+                                legacy_data[client_id] = new_legacy
+                                f.seek(0)
+                                json.dump(legacy_data, f, indent=2, ensure_ascii=False)
+                                f.truncate()
+                                deleted_fallback = True
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        except Exception as e:
+            logger.warning(f"⚠️ Could not purge doc {doc_id} from legacy fallback_db.json: {e}")
+
+    return deleted_qdrant or deleted_fallback
 
 
 def query_knowledge(client_id: str, query: str, top_k: int = 3) -> str:
@@ -242,6 +342,9 @@ def query_knowledge(client_id: str, query: str, top_k: int = 3) -> str:
     against the JSON store. Returns a single "\\n---\\n" joined context string,
     same contract as the old Chroma implementation.
     """
+    if not client_id or client_id == "ALL":
+        raise ValueError("query_knowledge() requires a specific, non-wildcard client_id")
+
     logger.info(f"Querying knowledge for client_id={client_id}, query={query[:100]}...")
 
     query_vector = embed_query(query)
@@ -257,8 +360,7 @@ def query_knowledge(client_id: str, query: str, top_k: int = 3) -> str:
         logger.warning("⚠️ embed_service unavailable — falling back to JSON")
 
     # Fallback Jaccard / Keyword matching
-    db = load_fallback_db()
-    docs = db.get(client_id, [])
+    docs = load_fallback_db(client_id)
     if not docs:
         return ""
 
@@ -271,9 +373,8 @@ def query_knowledge(client_id: str, query: str, top_k: int = 3) -> str:
         logger.info(f"✅ Fallback RAG retrieved context length: {len(context)}")
         return context
 
-    context = "\n---\n".join([doc["content"] for doc in docs[:2]])
-    logger.info(f"✅ Fallback Default RAG context length: {len(context)}")
-    return context
+    logger.info("ℹ️ Fallback RAG found no relevant matches with score > 0.0 (returning empty context)")
+    return ""
 
 
 def retrieve_knowledge(client_id: str, query: str, top_k: int = 3) -> list[dict]:
@@ -298,15 +399,15 @@ def retrieve_knowledge(client_id: str, query: str, top_k: int = 3) -> list[dict]
                     for r in results
                 ]
         # Fallback
-        db = load_fallback_db()
+        all_docs = load_all_fallback_docs()
         fallback_results = []
-        for cid, docs in db.items():
-            for doc in docs:
-                score = jaccard_similarity(query, doc["content"])
-                fallback_results.append({
-                    "id": doc["id"], "title": f"[{cid}] {doc['title']}", "doc_id": doc["id"],
-                    "content": doc["content"], "score": round(score, 3), "client_id": cid
-                })
+        for doc in all_docs:
+            cid = doc.get("client_id", "")
+            score = jaccard_similarity(query, doc.get("content", ""))
+            fallback_results.append({
+                "id": doc.get("id"), "title": doc.get("title", ""), "doc_id": doc.get("id"),
+                "content": doc.get("content", ""), "score": round(score, 3), "client_id": cid
+            })
         fallback_results.sort(key=lambda x: x["score"], reverse=True)
         return [r for r in fallback_results[:top_k] if r["score"] > 0.0]
 
@@ -316,8 +417,7 @@ def retrieve_knowledge(client_id: str, query: str, top_k: int = 3) -> list[dict]
             return results
 
     # Fallback JSON Jaccard Search
-    db = load_fallback_db()
-    docs = db.get(client_id, [])
+    docs = load_fallback_db(client_id)
     if not docs:
         return []
 

@@ -93,6 +93,8 @@ export const DraftFilterBar: React.FC<DraftFilterBarProps> = ({
           >
             <option value="ALL">All Intents</option>
             <option value="order_status">Order Status</option>
+            <option value="ticket_status">Ticket Status</option>
+            <option value="payment_status">Payment Status</option>
             <option value="general_query">General Query</option>
             <option value="ticket_created">Ticket Created</option>
             <option value="refund_request">Refund Request</option>

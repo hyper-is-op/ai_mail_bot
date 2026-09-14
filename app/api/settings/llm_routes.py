@@ -160,7 +160,7 @@ def refresh_client_llm_config(data: ClientLlmRefreshRequest, user: dict = Depend
                 """, (
                     data.client_id, data.caller_function, global_config_id,
                     data.provider if not global_config_id else None,
-                    _encrypt_key(data.api_key) if not global_config_id else None,
+                    _encrypt_key(data.api_key, client_id=data.client_id) if not global_config_id else None,
                     data.base_url if not global_config_id else None,
                     data.api_version if not global_config_id else None
                 ))

@@ -50,6 +50,24 @@ export const emailsApi = {
     return safeJson(res, 'Failed to fetch order status');
   },
 
+  async paymentStatus(clientId: string, paymentId: string) {
+    const res = await fetch(`${BASE_URL}/payment-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ client_id: clientId, payment_id: paymentId }),
+    });
+    return safeJson(res, 'Failed to fetch payment status');
+  },
+
+  async ticketStatus(clientId: string, ticketId: string) {
+    const res = await fetch(`${BASE_URL}/ticket-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify({ client_id: clientId, ticket_id: ticketId }),
+    });
+    return safeJson(res, 'Failed to fetch ticket status');
+  },
+
   async getEmails(clientId: string) {
     const res = await fetch(`${BASE_URL}/emails/${clientId}`, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch emails');
