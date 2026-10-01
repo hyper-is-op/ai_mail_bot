@@ -27,3 +27,4 @@
 - step-55-phase-2-dependency-and-dead-code-pruning: Removed dead LangGraph/MCP stack, trimmed 6 heavy Python packages from requirements.txt, pruned unused frontend component and zustand dependency, rebuilt Docker images, and passed all 83 production tests.
 - step-56-phase-3-fallback-storage-and-legacy-connector-teardown: Renamed chroma_db to knowledge_fallback across backend and compose mounts, deleted legacy request_handler, and removed obsolete payload endpoints/tables.
 - step-57-redis-thread-key-fix-git-commit-and-deployment-sync: Normalized Redis thread key prefixes, committed 84-test clean baseline to git, and synchronized pruned codebase to external deployment repositories.
+- step-58-update-docs-and-push-github: Overhauled README.md and client_side.md with complete system architecture and client guide, and synchronized all changes to remote GitHub origin.
