@@ -31,3 +31,4 @@
 - step-59-frontend-build-and-backend-deployment-commit: Rebuilt production frontend in Smart_Mail_Agent_FE, reclaimed root-owned git objects and committed synced changes in Smart_Mail_Agent_BE.
 - step-60-update-email-bot-flow-spec: Overhauled email_bot_flow.md with 4-stage agent pipeline Mermaid diagrams, dynamic connector specifications, and pruned dead generator scripts.
 - step-61-docs-reorganization-and-runbook: Established docs/ directory hub, authored production operations runbook and API reference, and reorganized architecture and operator guides.
+- step-62-schema-config-and-changelog-docs: Authored DATABASE_SCHEMA.md with ERD, CONFIGURATION.md tuning guide, and root CHANGELOG.md, and updated master README documentation hub.
