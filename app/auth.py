@@ -241,10 +241,18 @@ def create_client_atomic(name, phone_number, login_email, login_password, imap_e
                 from app.secrets_crypto import encrypt_secret
                 encrypted_imap = encrypt_secret(imap_password) if imap_password and not imap_password.startswith("gAAAAA") else (imap_password or "")
                 cursor.execute("""
-                    INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type, department_name, company_name, flag)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 1)
+                    INSERT INTO email_accounts (client_id, email, password, score_threshold, response_tone, agent_type, department_name, company_name)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON DUPLICATE KEY UPDATE
+                        email = VALUES(email),
+                        password = VALUES(password),
+                        score_threshold = VALUES(score_threshold),
+                        response_tone = VALUES(response_tone),
+                        agent_type = VALUES(agent_type),
+                        department_name = VALUES(department_name),
+                        company_name = VALUES(company_name)
                 """, (client_id, actual_imap, encrypted_imap, score_threshold, response_tone,
-                    agent_type, department_name, company_name)) 
+                    agent_type, department_name, company_name))
             conn.commit()
 
         try:

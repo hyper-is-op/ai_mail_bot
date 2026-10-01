@@ -1,0 +1,32 @@
+# Project Records Archive Index
+
+- step-01-remove-markdown-from-replies: Updated LLM prompts to prevent markdown formatting in email replies.
+- step-02-ingestion-rate-limiting: Hardened ingestion rate limiting with configurable SENDER_HOURLY_RATE_LIMIT env var.
+- step-03-rag-embedding-batching: Segmented RAG embedding requests into batches of 32 and aligned DB column to rag_id.
+- step-04-connector-oauth-cors-fixes: Added CORS whitelist support and auto-fallback OAuth handshake for connectors.
+- step-05-windows11-settings-fluent-ui: Implemented Windows 11 Settings Fluent UI with reusable primitives, Topbar/Sidebar shell, and Home dashboard layout.
+- step-06-settings-page-windows11-template-c: Adapted Settings page into Windows 11 Template C category expander stack with breadcrumbs and hero banner.
+- step-07-accounts-page-windows11-template-b: Transformed Mailbox Accounts page into Windows 11 Template B (Bluetooth & devices paired entity grid) with master daemon switch and expandable settings.
+- step-08-prune-ui-clutter: Pruned non-functional window controls, fake hardware/wallpaper widgets, unpersisted toggles, and deleted orphaned page files.
+- step-09-streamline-ui-navigation: Grouped sidebar navigation into Operations/Configuration/Admin, replaced hardcoded topbar titles with dynamic route titles, and consolidated duplicate draft polling into AppStateContext.
+- step-10-fix-navigation-theme-defects: Restored AI Pipeline Trace in navigation, synchronized light/dark theme between Topbar and Dashboard via AppStateContext, added interactive breadcrumbs, and removed browser alert from footer.
+- step-11-global-tenant-context-fluent-styling: Centralized multi-tenant client selection in AppStateContext and Topbar, pruned duplicate dropdowns across 6 pages, and standardized Windows 11 Fluent UI tokens.
+- step-12-authenticate-frontend-websocket: Attached user session token query parameter to Inbox WebSocket connection and prevented reconnect loops on code 4001 auth failure.
+- step-13-fix-inbox-selection-reset: Fixed selected conversation jumping back to top email during 3.5s background polling and live ingestion by isolating selection to exact thread key and tab transitions.
+- step-14-align-mailbox-single-tenant-ui: Clarified 1:1 client-to-mailbox constraints in EmailAccounts UI with client selector dropdown, clear replacement notices, and accurate connector labeling.
+- step-15-prune-mailbox-ui-clutter: Pruned non-functional placeholder rows (OAuth2 & Rate Limiting toast widgets) and unused icon imports from EmailAccounts.
+- step-16-remove-fake-mailbox-controls: Removed disconnected master daemon listener toggle, eliminated redundant card 3-dots button, and updated header to reflect functional mailbox credentials in EmailAccounts.
+- step-17-fix-dashboard-telemetry-chart: Fixed Home dashboard telemetry chart by resolving single-data-point zero-width collapse, differentiating Ingested vs AI Replied colors, and enabling visible data node dots.
+- step-18-remove-duplicate-home-theme-card: Removed redundant Appearance & Theme card, Paintbrush icon import, and setTheme hook from Dashboard.
+- step-19-consolidate-mailbox-accounts-view: Consolidated EmailAccounts by removing top duplicate cards and intermediate protocol row, moving "+ Connect Mailbox" to the page header and search input to the primary credentials card.
+- step-20-display-company-name-hero-cards: Replaced arbitrary TVT-A-EC prefix and client IDs with real company names across Home and Settings & Policies hero cards.
+- step-21-split-home-and-dashboard: Removed Settings label from sidebar header, split Home into a Configuration Hub portal and Dashboard into a unified analytics telemetry hub with tabs.
+- step-22-fix-dashboard-hook-order: Fixed black screen on /dashboard by lifting useSearchParams above conditional loading and scoping loader inside Email tab body.
+- step-23-streamline-dashboard-analytics: Removed redundant configuration shortcuts and policy actions from Dashboard; promoted live operational metrics into 5 KPI cards, an expanded timeline area chart, and a resolution funnel breakdown.
+- step-24-dashboard-live-feed-and-real-latency: Added auto-refresh polling intervals, dynamic model roundtrip latency, and a live inbound processing stream to Dashboard.
+- step-25-fix-dashboard-recent-emails-field-mapping: Aligned Dashboard Live Inbound Processing Stream table to read item.sender and item.time from backend payload, eliminating 'Unknown Sender'.
+- step-26-dashboard-deep-linking-and-heartbeat: Added Ingestion Daemon Heartbeat badge, category/sentiment tags to live stream rows, and deep-linking to open target threads in Mail Monitor.
+- step-27-fix-llm-metrics-api-route-alignment: Added /llm-metrics/{client_id} route alias in analytics.py and aligned frontend api call to /llm/metrics/${clientId}, resolving 404s.
+- step-28-fix-home-configuration-api-calls: Replaced non-existent api methods in Home.tsx with api.getEmailAccount, api.getClientFeatures, and api.getAllEmailAccounts, syncing real policy and mailbox readiness state.
+- step-29-dashboard-telemetry-and-triage-upgrade: Replaced false daemon heartbeat and naive keyword metrics with live Redis worker heartbeat, mailbox sync age, queue SLA duration, confidence bracket triage, escalation sentiment risk counter, and multi-tenant fleet performance breakdown.
+- step-30-policy-aligned-confidence-triage: Replaced static 85/70 brackets with dynamic policy threshold alignment (score >= threshold vs score < threshold) and a fixed objective hallucination risk floor (< 60).

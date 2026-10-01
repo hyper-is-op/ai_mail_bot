@@ -1,0 +1,29 @@
+# Project Records Index
+
+- steps 01-30 archived — see archive/index.md
+- step-31-fix-failed-category-classification-and-subfilters: Added ticket_creation_failed to backend Failed status mapping in emails.py and broadened Inbox sub-tab error classification across all LLM providers, auth errors, and worker fallbacks.
+- step-32-llm-telemetry-and-cost-architecture-upgrade: Added time-window aggregation (24h/7d/30d/all), thread/email attribution to llm_logs, 14-day daily burn-rate trend chart, monthly budget quota health gauge, and guardrail tax overhead analysis.
+- step-33-streamline-client-admin-ia-and-budget-controls: Reorganized sidebar navigation with client/admin role isolation, promoted LLM Telemetry to a dedicated route, added inline Monthly LLM Budget control to Admin Clients, and added Fleet Overview guidance to Settings.
+- step-34-remove-fake-live-indicator-from-topbar: Removed the unbacked cosmetic 'Live' badge from Topbar to eliminate misleading operational state.
+- step-35-consolidate-llm-telemetry-into-dashboard: Consolidated LLM Telemetry into the unified Dashboard tabs, removed the misclassified sidebar link, and redirected /llm-analytics to /dashboard?tab=llm.
+- step-36-reorganize-configuration-into-operations-and-admin: Reorganized IA by moving Knowledge Base into Operations, Mailbox Accounts into Administration, and Settings & Policies into the top-right user profile menu, eliminating the redundant Configuration section.
+- step-37-add-nested-dashboard-sub-menu-in-sidebar: Added collapsible nested sub-menu under Dashboard in Sidebar with direct deep-links to Email Traffic & Ingestion and LLM Tokens & Telemetry.
+- step-38-remove-redundant-in-page-dashboard-tabs: Removed duplicate in-page tab bar from Dashboard, giving Email Operations and LLM Telemetry separate dedicated views without redundant navigation.
+- step-39-unify-sidebar-visual-hierarchy: Unified sidebar design tokens, standardized section headers (Overview, Operations, Administration), aligned active state pills across top-level and nested tree items, and removed the duplicate gray profile box.
+- step-40-redesign-knowledge-base-workspace: Redesigned Knowledge Base into a modern AI SaaS workspace with top KPI strip, full-width searchable document directory, chunk inspection modal, interactive semantic retrieval sandbox, and drag-and-drop upload dialog.
+- step-41-flatten-overview-links-in-sidebar: Removed the asymmetric accordion dropdown under Dashboard, establishing two clean, 1-click flat links ('Email Operations' and 'LLM & AI Telemetry') under Overview for 100% sidebar consistency.
+- step-42-system-alert-center: Replaced the fake raw email mirror in Topbar with a real operational system alert engine (/notifications/{client_id}) covering LLM budget breaches, worker heartbeat stalls, review backlogs, and pipeline errors with tenant synchronization.
+- step-43-navigation-ia-alignment: Restructured sidebar into 4 distinct functional tiers (Overview, Operations, AI & Knowledge, and Administration/Management), restoring Configuration Hub (/home) to the profile dropdown and aligning search indexes.
+- step-44-remove-configuration-hub-home: Permanently deleted legacy Configuration Hub (Home.tsx), removed /home from routes, search indexes, and profile dropdown, redirecting /home to /dashboard.
+- step-45-refine-operations-and-knowledge-nav: Moved AI Pipeline Trace to the last position in Operations and renamed AI & Knowledge to Knowledge in the sidebar and search index.
+- step-46-embed-service-optimization: Constrained PyTorch CPU threads to 2 to eliminate worker thrashing, increased timeout to 25s, and implemented Redis query vector caching delivering sub-millisecond (0.7ms) cache hits.
+- step-47-fix-ticket-status-connector-mapping: Updated connector response mapping for CLI-4159FFCF to handle flat Zoho Desk ticket payloads and fixed monthly_budget column name in analytics notifications.
+- step-48-handle-not-found-clarification-without-ticket: Differentiated business not-found lookups from system errors, allowing clarification emails to reach customers without tripping ticket escalation.
+- step-49-sync-backend-to-czentrix: Synchronized backend application codebase to /Czentrix/apps/Smart_Mail_Agent_BE while preserving .git remotes and vector storage.
+- step-50-sync-frontend-to-smart-mail-agent-fe: Synchronized complete frontend codebase to /home/hyper_is_op/Smart_Mail_Agent_FE with verified zero diff.
+- step-51-test-and-verify-conversation-scenarios: Created dedicated back-and-forth scenario test suite, verified all 5 multi-turn dialogue patterns and loop-suppression guardrails, and fixed ContextVar leakage in process_email_task.
+- step-52-real-world-conversation-testing: Validated real-world execution across live Qdrant, live Groq LLM, live Redis, live MySQL, and live Zoho Desk OAuth2 APIs, passing all 5 production scenarios end-to-end.
+- step-54-phase-1-cleanup-and-test-alignment: Removed unreferenced scratchpad files and orphan UI components, aligned real-world scenario tests to automated runner, staged dead git deletions, and archived steps 01-30.
+- step-55-phase-2-dependency-and-dead-code-pruning: Removed dead LangGraph/MCP stack, trimmed 6 heavy Python packages from requirements.txt, pruned unused frontend component and zustand dependency, rebuilt Docker images, and passed all 83 production tests.
+- step-56-phase-3-fallback-storage-and-legacy-connector-teardown: Renamed chroma_db to knowledge_fallback across backend and compose mounts, deleted legacy request_handler, and removed obsolete payload endpoints/tables.
+- step-57-redis-thread-key-fix-git-commit-and-deployment-sync: Normalized Redis thread key prefixes, committed 84-test clean baseline to git, and synchronized pruned codebase to external deployment repositories.

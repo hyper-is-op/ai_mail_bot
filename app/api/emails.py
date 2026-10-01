@@ -138,7 +138,7 @@ def get_emails_logs_endpoint(client_id: str, user: dict = Depends(get_current_us
                     ui_status = "New"
                     if r[6] in ["sent", "ticket_created_and_sent"]:
                         ui_status = "Replied" if r[6] == "sent" else "Ticket_Generated"
-                    elif r[6] in ["send_failed", "ticket_created_send_failed"]:
+                    elif r[6] in ["failed", "send_failed", "ticket_created_send_failed", "ticket_creation_failed"]:
                         ui_status = "Failed"
                     elif r[6] == "pending":
                         ui_status = "Processing"
@@ -361,6 +361,7 @@ def get_marketing_senders_endpoint(client_id: str, user: dict = Depends(get_curr
 
 
 @router.get("/paused-email-history/{client_id}")
+@router.get("/paused-emails/{client_id}/history")
 def get_paused_email_history_endpoint(
     client_id: str,
     status: Optional[str] = None,
@@ -403,6 +404,7 @@ def get_paused_email_history_endpoint(
 
 
 @router.patch("/paused-email-history/{client_id}/{record_id}")
+@router.patch("/paused-emails/{client_id}/history/{record_id}")
 def update_paused_email_history_status_endpoint(
     client_id: str,
     record_id: int,

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { 
@@ -13,8 +14,12 @@ import { InboxSidebar } from '@/components/inbox/InboxSidebar';
 import { ThreadDetailView } from '@/components/inbox/ThreadDetailView';
 import { PausedDetailView } from '@/components/inbox/PausedDetailView';
 import { BlockedDetailView } from '@/components/inbox/BlockedDetailView';
+import { useAppState } from '@/context/AppStateContext';
 
 export default function Inbox() {
+  const [searchParams] = useSearchParams();
+  const directEmailId = searchParams.get('id');
+
   const [emailsList, setEmailsList] = useState<EmailItem[]>([]);
   const [blockedEmails, setBlockedEmails] = useState<BlockedEmailItem[]>([]);
   const [pausedHistory, setPausedHistory] = useState<PausedEmailItem[]>([]);
@@ -23,6 +28,7 @@ export default function Inbox() {
   const [selectedBlockedItem, setSelectedBlockedItem] = useState<BlockedEmailItem | null>(null);
   const [selectedPausedItem, setSelectedPausedItem] = useState<PausedEmailItem | null>(null);
   const [activeTab, setActiveTab] = useState<InboxTabType>('All');
+  const [failedSubTab, setFailedSubTab] = useState<'All' | 'Worker' | 'Auth' | 'Ticket' | 'LLM'>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [ticketLoadingId, setTicketLoadingId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -36,10 +42,7 @@ export default function Inbox() {
   const [replyText, setReplyText] = useState('');
   const [replyLoading, setReplyLoading] = useState(false);
 
-  const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const isAdmin = user?.role === 'admin';
-  const [selectedClientId, setSelectedClientId] = useState(isAdmin ? 'ALL' : (user?.client_id || ''));
-  const [clients, setClients] = useState<any[]>([]);
+  const { selectedClientId, setSelectedClientId, clients, isAdmin } = useAppState();
 
   // Fetch helpers
   const fetchEmails = async (silent = false, cid = selectedClientId) => {
@@ -104,13 +107,7 @@ export default function Inbox() {
     });
   };
 
-  useEffect(() => {
-    if (isAdmin) {
-      api.getAllEmailAccounts()
-        .then((data) => setClients(data || []))
-        .catch((err) => console.error("Failed to fetch clients for admin inbox:", err));
-    }
-  }, [isAdmin]);
+
 
   // Initial Load
   useEffect(() => {
@@ -127,8 +124,8 @@ export default function Inbox() {
   useEffect(() => {
     if (!selectedClientId) return;
 
-    const envWsUrl = import.meta.env.VITE_WS_URL as string | undefined;
-    const apiUrl = import.meta.env.VITE_API_URL as string | undefined;
+    const envWsUrl = (window as any).__APP_CONFIG__?.WS_URL || import.meta.env.VITE_WS_URL as string | undefined;
+    const apiUrl = (window as any).__APP_CONFIG__?.API_URL || import.meta.env.VITE_API_URL as string | undefined;
     let wsUrl: string;
     if (envWsUrl) {
       wsUrl = envWsUrl;
@@ -143,7 +140,22 @@ export default function Inbox() {
 
     const connectWS = () => {
       try {
-        ws = new WebSocket(wsUrl);
+        const rawUser = localStorage.getItem('user');
+        let token = '';
+        if (rawUser) {
+          try {
+            token = JSON.parse(rawUser)?.token || '';
+          } catch {
+            // ignore json parse error
+          }
+        }
+        if (!token) {
+          console.warn("WebSocket connection skipped: No active session token found");
+          return;
+        }
+
+        const authenticatedWsUrl = `${wsUrl}${wsUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+        ws = new WebSocket(authenticatedWsUrl);
         ws.onopen = () => {
           console.log("⚡ Real-time WebSocket connected for inbox sync");
         };
@@ -164,8 +176,15 @@ export default function Inbox() {
         ws.onerror = (err) => {
           console.warn("WebSocket error, falling back to live poll:", err);
         };
-        ws.onclose = () => {
-          reconnectTimeout = setTimeout(connectWS, 4000);
+        ws.onclose = (event) => {
+          // If closed due to authentication failure (4001) or normal closure (1000), do not loop reconnect
+          if (event.code === 4001) {
+            console.warn("WebSocket authentication failed (code 4001). Reconnect aborted.");
+            return;
+          }
+          if (event.code !== 1000) {
+            reconnectTimeout = setTimeout(connectWS, 4000);
+          }
         };
       } catch (err) {
         console.warn("WebSocket connection failed:", err);
@@ -241,11 +260,64 @@ export default function Inbox() {
       isSenderMarketing(thread.sender)
     );
 
+    let isFailedMatch = false;
+    if (activeTab === 'Failed' && latestStatus === 'failed') {
+      const errorSummary = (thread.latest_email.summary || '').toLowerCase();
+      const rawStatus = (thread.latest_email.raw_status || '').toLowerCase();
+
+      const isTicketError = 
+        rawStatus.includes('ticket') || 
+        errorSummary.includes('ticket') || 
+        errorSummary.includes('crm') || 
+        errorSummary.includes('connector') || 
+        errorSummary.includes('webhook');
+
+      const isAuthError = 
+        errorSummary.includes('authentication') || 
+        errorSummary.includes('credential') || 
+        errorSummary.includes('auth') || 
+        errorSummary.includes('login') || 
+        errorSummary.includes('535') || 
+        errorSummary.includes('unauthorized') || 
+        errorSummary.includes('oauth') || 
+        errorSummary.includes('token');
+
+      const isLlmError = 
+        errorSummary.includes('llm') || 
+        errorSummary.includes('timeout') || 
+        errorSummary.includes('openai') || 
+        errorSummary.includes('groq') || 
+        errorSummary.includes('anthropic') || 
+        errorSummary.includes('claude') || 
+        errorSummary.includes('gemini') || 
+        errorSummary.includes('deepseek') || 
+        errorSummary.includes('grok') || 
+        errorSummary.includes('rate limit') || 
+        errorSummary.includes('429') || 
+        errorSummary.includes('context length') || 
+        errorSummary.includes('validation');
+
+      const isWorkerError = 
+        errorSummary.includes('worker') || 
+        errorSummary.includes('celery') || 
+        errorSummary.includes('redis') || 
+        errorSummary.includes('unhandled') || 
+        errorSummary.includes('exception') || 
+        errorSummary.includes('connection refused') ||
+        (!isTicketError && !isAuthError && !isLlmError);
+
+      if (failedSubTab === 'All') isFailedMatch = true;
+      else if (failedSubTab === 'Worker') isFailedMatch = isWorkerError;
+      else if (failedSubTab === 'Auth') isFailedMatch = isAuthError;
+      else if (failedSubTab === 'Ticket') isFailedMatch = isTicketError;
+      else if (failedSubTab === 'LLM') isFailedMatch = isLlmError;
+    }
+
     const matchesTab = activeTab === 'All' || 
       (activeTab === 'Marketing' && isMarketing) ||
       (activeTab === 'Replied' && (latestStatus === 'replied' || latestStatus === 'ticket_generated')) ||
       (activeTab === 'Processing' && latestStatus === 'processing') ||
-      (activeTab === 'Failed' && (latestStatus === 'failed' || latestStatus === 'pending review')) ||
+      (activeTab === 'Failed' && isFailedMatch) ||
       (activeTab === 'Pending Review' && latestStatus === 'pending review');
     
     const query = searchQuery.toLowerCase();
@@ -280,6 +352,21 @@ export default function Inbox() {
       (item.matched_keyword || '').toLowerCase().includes(query);
   });
 
+  // Reset selection when switching tabs so the first item in the new view is selected
+  const handleTabChange = (tab: InboxTabType) => {
+    setActiveTab(tab);
+    setSelectedThread(null);
+    setSelectedPausedItem(null);
+    setSelectedBlockedItem(null);
+  };
+
+  useEffect(() => {
+    setSelectedThread(null);
+    setSelectedPausedItem(null);
+    setSelectedBlockedItem(null);
+  }, [selectedClientId]);
+
+  // Keep selected items synchronized with incoming data updates without jumping back to index 0
   useEffect(() => {
     if (activeTab === 'Blocked') {
       if (filteredBlockedEmails.length > 0) {
@@ -287,7 +374,11 @@ export default function Inbox() {
           setSelectedBlockedItem(filteredBlockedEmails[0]);
         } else {
           const updated = filteredBlockedEmails.find(b => b.id === selectedBlockedItem.id);
-          if (updated) setSelectedBlockedItem(updated);
+          if (updated) {
+            setSelectedBlockedItem(updated);
+          } else {
+            setSelectedBlockedItem(filteredBlockedEmails[0]);
+          }
         }
       } else {
         setSelectedBlockedItem(null);
@@ -298,17 +389,28 @@ export default function Inbox() {
           setSelectedPausedItem(filteredPausedHistory[0]);
         } else {
           const updated = filteredPausedHistory.find(p => p.id === selectedPausedItem.id);
-          if (updated) setSelectedPausedItem(updated);
+          if (updated) {
+            setSelectedPausedItem(updated);
+          } else {
+            setSelectedPausedItem(filteredPausedHistory[0]);
+          }
         }
       } else {
         setSelectedPausedItem(null);
       }
     } else {
       if (filteredThreads.length > 0) {
+        if (directEmailId) {
+          const directMatch = filteredThreads.find(t => t.emails.some(e => String(e.id) === directEmailId));
+          if (directMatch) {
+            setSelectedThread(directMatch);
+            return;
+          }
+        }
         if (!selectedThread) {
           setSelectedThread(filteredThreads[0]);
         } else {
-          const updated = filteredThreads.find(t => t.key === selectedThread.key || t.sender.toLowerCase() === selectedThread.sender?.toLowerCase());
+          const updated = filteredThreads.find(t => t.key === selectedThread.key);
           if (updated) {
             setSelectedThread(updated);
           } else {
@@ -319,7 +421,7 @@ export default function Inbox() {
         setSelectedThread(null);
       }
     }
-  }, [emailsList, blockedEmails, pausedHistory, activeTab]);
+  }, [emailsList, blockedEmails, pausedHistory, activeTab, directEmailId]);
 
   const showToast = (msg: string) => {
     setToastMsg(msg);
@@ -506,7 +608,7 @@ export default function Inbox() {
   const marketingCount = groupedThreads.filter(t => t.latest_email.category === 'Marketing / Promo' || (t.latest_email.status || '').toLowerCase() === 'no action needed' || t.latest_email.raw_status === 'no_action_needed' || isSenderMarketing(t.sender)).length;
   const failedCount = groupedThreads.filter(t => {
     const st = (t.latest_email.status || '').toLowerCase();
-    return st === 'failed' || st === 'pending review';
+    return st === 'failed';
   }).length;
   const pendingReviewCount = groupedThreads.filter(t => (t.latest_email.status || '').toLowerCase() === 'pending review').length;
 
@@ -535,7 +637,9 @@ export default function Inbox() {
           fetchMarketingSenders(selectedClientId);
         }}
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={handleTabChange}
+        failedSubTab={failedSubTab}
+        setFailedSubTab={setFailedSubTab}
         searchQuery={searchQuery}
         setSearchQuery={setSearchQuery}
         groupedThreads={groupedThreads}

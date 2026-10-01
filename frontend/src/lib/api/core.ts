@@ -1,4 +1,4 @@
-export const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, '') || '/api';
+export const BASE_URL = ((window as any).__APP_CONFIG__?.API_URL || import.meta.env.VITE_API_URL as string | undefined)?.replace(/\/+$/, '') || '/api';
 
 export function authHeaders(): Record<string, string> {
   const raw = localStorage.getItem('user');

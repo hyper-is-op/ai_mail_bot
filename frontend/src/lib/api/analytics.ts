@@ -10,7 +10,7 @@ export const analyticsApi = {
   },
 
   async uploadRagData(data: { client_id: string; title: string; content: string }) {
-    const res = await fetch(`${BASE_URL}/upload-rag`, {
+    const res = await fetch(`${BASE_URL}/rag/upload`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(data),
@@ -19,12 +19,12 @@ export const analyticsApi = {
   },
 
   async getRagDocuments(clientId: string) {
-    const res = await fetch(`${BASE_URL}/rag-documents/${clientId}`, { headers: authHeaders() });
+    const res = await fetch(`${BASE_URL}/rag/documents/${clientId}`, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch RAG documents');
   },
 
   async deleteRagDocument(clientId: string, docId: string) {
-    const res = await fetch(`${BASE_URL}/rag-documents/${clientId}/${docId}`, {
+    const res = await fetch(`${BASE_URL}/rag/documents/${clientId}/${docId}`, {
       method: 'DELETE',
       headers: authHeaders(),
     });
@@ -32,7 +32,7 @@ export const analyticsApi = {
   },
 
   async queryRag(data: { client_id: string; query: string }) {
-    const res = await fetch(`${BASE_URL}/query-rag`, {
+    const res = await fetch(`${BASE_URL}/rag/query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(data),
@@ -41,7 +41,7 @@ export const analyticsApi = {
   },
 
   async retrieveRag(data: { client_id: string; query: string; top_k?: number }) {
-    const res = await fetch(`${BASE_URL}/retrieve-rag`, {
+    const res = await fetch(`${BASE_URL}/rag/retrieve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(data),
@@ -53,7 +53,7 @@ export const analyticsApi = {
     const formData = new FormData();
     formData.append('file', file);
     formData.append('client_id', clientId);
-    const res = await fetch(`${BASE_URL}/upload-rag-file`, {
+    const res = await fetch(`${BASE_URL}/rag/upload-file`, {
       method: 'POST',
       headers: authHeaders(),
       body: formData,
@@ -65,4 +65,10 @@ export const analyticsApi = {
     const res = await fetch(`${BASE_URL}/admin/knowledge-stats`, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch knowledge stats');
   },
+
+  async getNotifications(clientId: string) {
+    const res = await fetch(`${BASE_URL}/notifications/${clientId}`, { headers: authHeaders() });
+    return safeJson(res, 'Failed to fetch notifications');
+  },
 };
+

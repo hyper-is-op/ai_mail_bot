@@ -279,16 +279,23 @@ export default function AiProcessing() {
                         "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold",
                         log.raw_status === 'sent' ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" :
                         log.raw_status === 'ticket_created_and_sent' ? "bg-purple-500/10 text-purple-400 border border-purple-500/20" :
+                        (log.raw_status === 'pending_manual_review' || log.raw_status === 'draft_created' || log.raw_status === 'ticket_created_draft_pending') ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" :
+                        log.raw_status === 'clarification_sent' ? "bg-blue-500/10 text-blue-400 border border-blue-500/20" :
                         "bg-rose-500/10 text-rose-400 border border-rose-500/20"
                       )}>
                         <span className={cn(
                           "w-1.5 h-1.5 rounded-full",
                           log.raw_status === 'sent' ? "bg-emerald-400" :
                           log.raw_status === 'ticket_created_and_sent' ? "bg-purple-400" :
+                          (log.raw_status === 'pending_manual_review' || log.raw_status === 'draft_created' || log.raw_status === 'ticket_created_draft_pending') ? "bg-amber-400" :
+                          log.raw_status === 'clarification_sent' ? "bg-blue-400" :
                           "bg-rose-400"
                         )} />
                         {log.raw_status === 'sent' ? "Auto-Sent" :
                          log.raw_status === 'ticket_created_and_sent' ? "Ticket Triaged" : 
+                         (log.raw_status === 'pending_manual_review' || log.raw_status === 'ticket_created_draft_pending') ? "Pending Review" :
+                         log.raw_status === 'draft_created' ? "Draft Created" :
+                         log.raw_status === 'clarification_sent' ? "Clarification" :
                          "Failed"}
                       </span>
                     </td>
@@ -361,7 +368,7 @@ export default function AiProcessing() {
               </div>
 
               {/* Drawer Tabs */}
-              <div className="flex border-b border-white/10 px-5 bg-black/30">
+              <div className="flex border-b border-zinc-200 dark:border-white/10 px-5 bg-zinc-100/70 dark:bg-black/30">
                 {[
                   { id: 'pipeline', label: 'Pipeline Steps' },
                   { id: 'payload', label: 'Input & Reply' },
@@ -371,9 +378,9 @@ export default function AiProcessing() {
                     key={t.id}
                     onClick={() => setDrawerTab(t.id as any)}
                     className={cn(
-                      "px-4 py-3 text-xs font-semibold border-b-2 transition-all",
+                      "px-4 py-3 text-xs font-semibold border-b-2 transition-all cursor-pointer",
                       drawerTab === t.id
-                        ? "border-primary text-foreground"
+                        ? "border-primary text-primary dark:text-foreground font-bold"
                         : "border-transparent text-muted-foreground hover:text-foreground"
                     )}
                   >
@@ -390,42 +397,42 @@ export default function AiProcessing() {
                   <div className="space-y-5">
                     {/* Summary Card */}
                     <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-white/5 border border-white/10 rounded-xl p-3.5">
+                      <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3.5 shadow-2xs">
                         <span className="text-[10px] uppercase font-bold text-muted-foreground">Customer Sentiment</span>
                         <div className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-foreground">
-                          {selectedLog.sentiment === 'Angry' ? <Frown className="w-3.5 h-3.5 text-rose-400" /> :
-                           selectedLog.sentiment === 'Happy' ? <Smile className="w-3.5 h-3.5 text-emerald-400" /> :
+                          {selectedLog.sentiment === 'Angry' ? <Frown className="w-3.5 h-3.5 text-rose-500" /> :
+                           selectedLog.sentiment === 'Happy' ? <Smile className="w-3.5 h-3.5 text-emerald-500" /> :
                            <Meh className="w-3.5 h-3.5 text-zinc-400" />}
                           {selectedLog.sentiment || 'Neutral'}
                         </div>
                       </div>
-                      <div className="bg-white/5 border border-white/10 rounded-xl p-3.5">
+                      <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3.5 shadow-2xs">
                         <span className="text-[10px] uppercase font-bold text-muted-foreground">Confidence Score</span>
                         <div className="text-sm font-bold text-primary mt-0.5">{selectedLog.score || 0}%</div>
                       </div>
                     </div>
 
                     {/* Step-by-Step Flow */}
-                    <div className="relative border-l-2 border-white/10 ml-3 pl-5 space-y-6">
+                    <div className="relative border-l-2 border-zinc-200 dark:border-white/10 ml-3 pl-5 space-y-6">
                       
                       {/* Step 1: Ingestion */}
                       <div className="relative">
-                        <div className="absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-zinc-950" />
+                        <div className="absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 shadow-2xs" />
                         <h5 className="text-xs font-bold text-foreground flex items-center gap-1.5">
                           1. Email Ingestion & Header Parsing
-                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                         </h5>
                         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                          Parsed email payload from <span className="text-zinc-200">{selectedLog.sender}</span>. Subject: <span className="text-zinc-200">"{selectedLog.subject}"</span>.
+                          Parsed email payload from <span className="text-foreground font-medium">{selectedLog.sender}</span>. Subject: <span className="text-foreground font-medium">"{selectedLog.subject}"</span>.
                         </p>
                       </div>
 
                       {/* Step 2: Knowledge Base Check */}
                       <div className="relative">
-                        <div className="absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-zinc-950" />
+                        <div className="absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 shadow-2xs" />
                         <h5 className="text-xs font-bold text-foreground flex items-center gap-1.5">
                           2. Knowledge Base Retrieval
-                          <Database className="w-3.5 h-3.5 text-emerald-400" />
+                          <Database className="w-3.5 h-3.5 text-emerald-500" />
                         </h5>
                         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
                           Queried vector store with semantic embeddings. Relevant documents and business policies retrieved.
@@ -434,10 +441,10 @@ export default function AiProcessing() {
 
                       {/* Step 3: LLM Generation */}
                       <div className="relative">
-                        <div className="absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-zinc-950" />
+                        <div className="absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 shadow-2xs" />
                         <h5 className="text-xs font-bold text-foreground flex items-center gap-1.5">
                           3. Model Synthesis & Persona Framing
-                          <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                          <Sparkles className="w-3.5 h-3.5 text-emerald-500" />
                         </h5>
                         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
                           Generated response adhering to configured tone guidelines and department persona.
@@ -446,10 +453,10 @@ export default function AiProcessing() {
 
                       {/* Step 4: Quality & Confidence Guard */}
                       <div className="relative">
-                        <div className="absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-zinc-950" />
+                        <div className="absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full bg-emerald-500 border-2 border-white dark:border-zinc-950 shadow-2xs" />
                         <h5 className="text-xs font-bold text-foreground flex items-center gap-1.5">
                           4. Self-Evaluation Guard
-                          <Award className="w-3.5 h-3.5 text-emerald-400" />
+                          <Award className="w-3.5 h-3.5 text-emerald-500" />
                         </h5>
                         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
                           Confidence evaluation output: <span className="font-bold text-primary">{selectedLog.score || 0}%</span>. Target threshold for auto-dispatch is 80%.
@@ -459,8 +466,12 @@ export default function AiProcessing() {
                       {/* Step 5: Routing Decision */}
                       <div className="relative">
                         <div className={cn(
-                          "absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full border-2 border-zinc-950",
-                          selectedLog.raw_status === 'sent' ? "bg-emerald-500" : "bg-purple-500"
+                          "absolute -left-[27px] top-0.5 w-3.5 h-3.5 rounded-full border-2 border-white dark:border-zinc-950 shadow-2xs",
+                          selectedLog.raw_status === 'sent' ? "bg-emerald-500" : 
+                          selectedLog.raw_status === 'ticket_created_and_sent' ? "bg-purple-500" : 
+                          (selectedLog.raw_status === 'pending_manual_review' || selectedLog.raw_status === 'draft_created' || selectedLog.raw_status === 'ticket_created_draft_pending') ? "bg-amber-500" :
+                          selectedLog.raw_status === 'clarification_sent' ? "bg-blue-500" :
+                          "bg-rose-500"
                         )} />
                         <h5 className="text-xs font-bold text-foreground flex items-center gap-1.5">
                           5. Routing & Dispatch
@@ -468,12 +479,28 @@ export default function AiProcessing() {
                         </h5>
                         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
                           {selectedLog.raw_status === 'sent' ? (
-                            <span className="text-emerald-400 font-medium">
+                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
                               Quality score met auto-send threshold (≥ 80%). Resolution email dispatched to customer via SMTP.
                             </span>
+                          ) : selectedLog.raw_status === 'ticket_created_and_sent' ? (
+                            <span className="text-purple-600 dark:text-purple-400 font-semibold">
+                              Confidence below threshold. Created ticket reference in database and sent acknowledgment update to customer.
+                            </span>
+                          ) : (selectedLog.raw_status === 'pending_manual_review' || selectedLog.raw_status === 'ticket_created_draft_pending') ? (
+                            <span className="text-amber-600 dark:text-amber-400 font-semibold">
+                              Confidence below threshold. Sent to manual review queue for agent approval.
+                            </span>
+                          ) : selectedLog.raw_status === 'draft_created' ? (
+                            <span className="text-amber-600 dark:text-amber-400 font-semibold">
+                              Draft saved successfully for manual review.
+                            </span>
+                          ) : selectedLog.raw_status === 'clarification_sent' ? (
+                            <span className="text-blue-600 dark:text-blue-400 font-semibold">
+                              Clarification email dispatched to customer.
+                            </span>
                           ) : (
-                            <span className="text-purple-400 font-medium">
-                              Quality score falls below threshold (&lt; 80%). Created ticket reference in database and sent acknowledgment update to customer.
+                            <span className="text-rose-600 dark:text-rose-400 font-semibold">
+                              Action failed or encountered an error.
                             </span>
                           )}
                         </p>
@@ -492,13 +519,13 @@ export default function AiProcessing() {
                         <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Customer Input</span>
                         <button
                           onClick={() => copyToClipboard(selectedLog.preview || '', 'input')}
-                          className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                          className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                         >
-                          {copiedId === 'input' ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                          {copiedId === 'input' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                           {copiedId === 'input' ? 'Copied' : 'Copy'}
                         </button>
                       </div>
-                      <div className="bg-black/50 border border-white/10 rounded-xl p-3.5 text-xs text-zinc-300 font-mono leading-relaxed max-h-[300px] overflow-y-auto">
+                      <div className="bg-zinc-50 dark:bg-black/50 border border-zinc-200 dark:border-white/10 rounded-xl p-3.5 text-xs text-zinc-800 dark:text-zinc-200 font-mono leading-relaxed max-h-[300px] overflow-y-auto shadow-2xs">
                         <EmailBodyWithDisclaimer content={selectedLog.preview || 'No input content.'} />
                       </div>
                     </div>
@@ -510,14 +537,14 @@ export default function AiProcessing() {
                         {selectedLog.reply && (
                           <button
                             onClick={() => copyToClipboard(selectedLog.reply, 'reply')}
-                            className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                            className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                           >
-                            {copiedId === 'reply' ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                            {copiedId === 'reply' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                             {copiedId === 'reply' ? 'Copied' : 'Copy'}
                           </button>
                         )}
                       </div>
-                      <div className="bg-black/50 border border-white/10 rounded-xl p-3.5 text-xs text-zinc-300 font-mono whitespace-pre-wrap leading-relaxed max-h-[280px] overflow-y-auto">
+                      <div className="bg-zinc-50 dark:bg-black/50 border border-zinc-200 dark:border-white/10 rounded-xl p-3.5 text-xs text-zinc-800 dark:text-zinc-200 font-mono whitespace-pre-wrap leading-relaxed max-h-[280px] overflow-y-auto shadow-2xs">
                         {selectedLog.reply || 'No reply generated (Failed or triaged before generation).'}
                       </div>
                     </div>
@@ -531,13 +558,13 @@ export default function AiProcessing() {
                       <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">Raw Database Record</span>
                       <button
                         onClick={() => copyToClipboard(JSON.stringify(selectedLog, null, 2), 'json')}
-                        className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                        className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                       >
-                        {copiedId === 'json' ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3" />}
+                        {copiedId === 'json' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
                         {copiedId === 'json' ? 'Copied' : 'Copy JSON'}
                       </button>
                     </div>
-                    <pre className="p-4 bg-black/60 border border-white/10 rounded-xl text-[11px] font-mono text-zinc-400 overflow-x-auto max-h-[460px]">
+                    <pre className="p-4 bg-zinc-50 dark:bg-black/60 border border-zinc-200 dark:border-white/10 rounded-xl text-[11px] font-mono text-zinc-800 dark:text-zinc-300 overflow-x-auto max-h-[460px] shadow-2xs">
                       {JSON.stringify(selectedLog, null, 2)}
                     </pre>
                   </div>

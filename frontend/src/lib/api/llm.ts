@@ -1,8 +1,9 @@
 import { BASE_URL, authHeaders, safeJson } from './core';
 
 export const llmApi = {
-  async getLlmMetrics(clientId: string) {
-    const res = await fetch(`${BASE_URL}/llm-metrics/${clientId}`, { headers: authHeaders() });
+  async getLlmMetrics(clientId: string, timeWindow?: string) {
+    const q = timeWindow && timeWindow !== 'all' ? `?time_window=${encodeURIComponent(timeWindow)}` : '';
+    const res = await fetch(`${BASE_URL}/llm/metrics/${clientId}${q}`, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch LLM metrics');
   },
 

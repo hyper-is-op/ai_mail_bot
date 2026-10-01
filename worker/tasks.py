@@ -68,8 +68,16 @@ def resolve_thread_id(client_id: str, from_email: str, subject: str, in_reply_to
                     return row[0], int(row[1] or 0)
 
         # 3. Subject-based thread matching within 7 days
+        # Only apply if the incoming email is an explicit reply/forward (e.g. Re: / Fwd:)
+        # and has a descriptive, non-generic subject. Freshly composed emails must start a new thread.
+        is_reply_subject = bool(re.match(r'^(re|fwd|fw):\s*', subject or '', flags=re.IGNORECASE))
         clean_subj = re.sub(r'^(re|fwd|fw):\s*', '', subject or '', flags=re.IGNORECASE).strip()
-        if clean_subj and clean_subj.lower() not in ("support request", "(no subject)", "no subject"):
+        GENERIC_SUBJECTS = {
+            "support request", "no subject", "(no subject)", "facing problem",
+            "problem", "issue", "help", "query", "question", "urgent",
+            "support", "error", "trouble", "assistance", "request", "bug"
+        }
+        if is_reply_subject and clean_subj and clean_subj.lower() not in GENERIC_SUBJECTS:
             cur.execute("""
                 SELECT thread_id, troubleshooting_step 
                 FROM email_logs 
@@ -545,6 +553,10 @@ def process_email_task(self, data: Dict[str, Any]):
         else:
             raise self.retry(exc=e, countdown=10)
     finally:
+        try:
+            current_client_id.reset(ctx_token)
+        except Exception:
+            pass
         publish_email_update(client_id)
 
 

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Dict, Any, List, Optional
 from app.pipeline.context import PipelineContext
 from app.pipeline.enricher import (
@@ -12,6 +13,51 @@ from app.pipeline.dispatcher import create_ticket_and_reply
 from app.connector_executor import format_mapped_data_for_prompt
 
 logger = logging.getLogger(__name__)
+
+
+def clean_rag_query(raw_text: str) -> str:
+    """
+    Sanitizes raw email bodies or queries for RAG dense embedding search.
+    Strips email headers, greetings, signatures, quoted history, and legal footers.
+    """
+    if not raw_text:
+        return ""
+    text = str(raw_text).strip()
+
+    # Remove email quoted history: "On ... wrote:" or lines starting with ">"
+    text = re.split(r"(?i)\n\s*on\s+.*?\s+wrote\s*:\s*\n", text)[0]
+    text = re.split(r"(?i)\n\s*---+\s*original message\s*---+\s*", text)[0]
+    lines = [line for line in text.splitlines() if not line.strip().startswith(">")]
+    text = "\n".join(lines)
+
+    # Remove common greeting lines at the start
+    greeting_pattern = r"(?i)^(hi|hello|dear|hey|good\s+(morning|afternoon|evening))\s*[^,\n]*[,!:]*\s*\n*"
+    text = re.sub(greeting_pattern, "", text.strip())
+
+    # Remove signatures at the bottom
+    sig_patterns = [
+        r"(?i)\n\s*(thanks|thank you|regards|best regards|warm regards|sincerely|cheers|yours truly)[\s,].*",
+        r"(?i)\n\s*sent from my (iphone|android|galaxy|ipad|device).*",
+        r"(?i)\n\s*disclaimer:?.*",
+        r"(?i)\n\s*this email and any files transmitted.*"
+    ]
+    for sp in sig_patterns:
+        text = re.sub(sp, "", text, flags=re.DOTALL)
+
+    cleaned = " ".join(text.split()).strip()
+    # Keep query focused: if it's over 400 characters, extract first 2-3 substantive sentences
+    if len(cleaned) > 400:
+        sentences = re.split(r"(?<=[.?!])\s+", cleaned)
+        shortened = ""
+        for s in sentences:
+            if len(shortened) + len(s) < 350:
+                shortened = f"{shortened} {s}".strip()
+            else:
+                break
+        if shortened:
+            cleaned = shortened
+
+    return cleaned or raw_text[:300].strip()
 
 # ==========================================
 # 🛠️ DECLARATIVE OPENAI FUNCTION SCHEMAS
@@ -176,13 +222,29 @@ def execute_tool_call(
                 }
             else:
                 err_msg = res.get("error")
-                ctx.log_step("CRM_Order_Not_Found")
-                return {
-                    "status": "lookup_failed" if err_msg else "not_found",
-                    "order_id": clean_order_id,
-                    "message": err_msg or f"No active order record found for reference '{clean_order_id}'",
-                    "hint": "If record is not found, ask customer to verify the order number. If an error occurred, apologize for the technical delay."
-                }
+                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404
+                if is_not_found:
+                    ctx.log_step("CRM_Order_Not_Found")
+                    ctx.context_data = {
+                        "status": "not_found",
+                        "type": "order",
+                        "reference_id": clean_order_id,
+                        "message": f"Order #{clean_order_id} not found in store/ERP records."
+                    }
+                    return {
+                        "status": "not_found",
+                        "order_id": clean_order_id,
+                        "message": f"No active order record found for reference '{clean_order_id}'",
+                        "hint": "The order was NOT found in the system. Politely inform the customer that order number was not found, and ask them to verify or reply with the correct order ID. Do NOT call 'escalate_and_create_ticket' simply because the order was not found."
+                    }
+                else:
+                    ctx.log_step("CRM_Order_Lookup_Error")
+                    return {
+                        "status": "lookup_failed",
+                        "order_id": clean_order_id,
+                        "message": err_msg or f"Failed to connect to store for order '{clean_order_id}'",
+                        "hint": "A system error occurred while querying the order. Apologize for the technical delay and assure them support is investigating."
+                    }
 
         elif tool_name == "lookup_payment_status":
             raw_ref = arguments.get("payment_id_or_order_id", "")
@@ -209,13 +271,29 @@ def execute_tool_call(
                 }
             else:
                 err_msg = res.get("error")
-                ctx.log_step("Payment_Status_Not_Found")
-                return {
-                    "status": "lookup_failed" if err_msg else "not_found",
-                    "payment_reference": clean_ref,
-                    "message": err_msg or f"No active payment record found for reference '{clean_ref}'",
-                    "hint": "If record is not found, ask customer to confirm the payment reference or transaction ID."
-                }
+                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404
+                if is_not_found:
+                    ctx.log_step("Payment_Status_Not_Found")
+                    ctx.context_data = {
+                        "status": "not_found",
+                        "type": "payment",
+                        "reference_id": clean_ref,
+                        "message": f"Payment record for reference '{clean_ref}' not found."
+                    }
+                    return {
+                        "status": "not_found",
+                        "payment_reference": clean_ref,
+                        "message": f"No active payment record found for reference '{clean_ref}'",
+                        "hint": "The payment record was NOT found. Politely inform the customer that the transaction reference was not found, and ask them to verify or provide the correct transaction ID."
+                    }
+                else:
+                    ctx.log_step("Payment_Status_Lookup_Error")
+                    return {
+                        "status": "lookup_failed",
+                        "payment_reference": clean_ref,
+                        "message": err_msg or f"Failed to connect to payment gateway for reference '{clean_ref}'",
+                        "hint": "A system error occurred while querying payment records."
+                    }
 
         elif tool_name == "lookup_ticket_status":
             raw_ticket_id = arguments.get("ticket_id", "")
@@ -243,13 +321,29 @@ def execute_tool_call(
                 }
             else:
                 err_msg = res.get("error")
-                ctx.log_step("CRM_Status_Not_Found")
-                return {
-                    "status": "lookup_failed" if err_msg else "not_found",
-                    "ticket_id": clean_ticket_id,
-                    "message": err_msg or f"No active record found in CRM for reference '{clean_ticket_id}'",
-                    "hint": "If record is not found, ask customer to verify the reference number or provide more context. If an error occurred, apologize for the technical delay and assure them support is investigating."
-                }
+                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404
+                if is_not_found:
+                    ctx.log_step("CRM_Status_Not_Found")
+                    ctx.context_data = {
+                        "status": "not_found",
+                        "type": "ticket",
+                        "reference_id": clean_ticket_id,
+                        "message": f"Ticket #{clean_ticket_id} not found in CRM."
+                    }
+                    return {
+                        "status": "not_found",
+                        "ticket_id": clean_ticket_id,
+                        "message": f"No active record found in CRM for reference '{clean_ticket_id}'",
+                        "hint": "The ticket was NOT found in the CRM. Inform the customer politely that ticket ID was not found, and ask them to verify or reply with the correct reference number. Do NOT call 'escalate_and_create_ticket' simply because the ticket was not found."
+                    }
+                else:
+                    ctx.log_step("CRM_Status_Lookup_Error")
+                    return {
+                        "status": "lookup_failed",
+                        "ticket_id": clean_ticket_id,
+                        "message": err_msg or f"Failed to connect to CRM for reference '{clean_ticket_id}'",
+                        "hint": "A system error occurred while connecting to the CRM. Apologize for the delay and assure them support is investigating."
+                    }
 
         elif tool_name == "lookup_ticket_or_order_status":
             raw_ticket_id = arguments.get("ticket_id", "")
@@ -289,16 +383,35 @@ def execute_tool_call(
                 }
             else:
                 err_msg = res.get("error")
-                ctx.log_step("CRM_Status_Not_Found")
-                return {
-                    "status": "lookup_failed" if err_msg else "not_found",
-                    "ticket_id": clean_ticket_id,
-                    "message": err_msg or f"No active record found in CRM for reference '{clean_ticket_id}'",
-                    "hint": "If record is not found, ask customer to verify the reference number or provide more context. If an error occurred, apologize for the technical delay and assure them support is investigating."
-                }
+                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404
+                if is_not_found:
+                    ctx.log_step("CRM_Status_Not_Found")
+                    ctx.context_data = {
+                        "status": "not_found",
+                        "type": "ticket_or_order",
+                        "reference_id": clean_ticket_id,
+                        "message": f"Reference #{clean_ticket_id} not found in CRM or store records."
+                    }
+                    return {
+                        "status": "not_found",
+                        "ticket_id": clean_ticket_id,
+                        "message": f"No active record found in CRM or store for reference '{clean_ticket_id}'",
+                        "hint": "The reference was NOT found. Politely inform the customer that the ticket/order number was not found, and ask them to verify or reply with the correct reference number. Do NOT call 'escalate_and_create_ticket' simply because the reference was not found."
+                    }
+                else:
+                    ctx.log_step("CRM_Status_Lookup_Error")
+                    return {
+                        "status": "lookup_failed",
+                        "ticket_id": clean_ticket_id,
+                        "message": err_msg or f"Failed to connect to system for reference '{clean_ticket_id}'",
+                        "hint": "A system error occurred while connecting to backend systems. Apologize for the delay and assure them support is investigating."
+                    }
 
         elif tool_name == "search_knowledge_base":
-            query = arguments.get("query", ctx.body)
+            raw_query = (arguments.get("query") or "").strip()
+            if not raw_query:
+                raw_query = ctx.body or ctx.subject
+            query = clean_rag_query(raw_query)
             context_text, succeeded, rag_id = fetch_rag_context(ctx.client_id, query)
             ctx.rag_id = rag_id
             ctx.context_text = context_text

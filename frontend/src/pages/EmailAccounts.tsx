@@ -1,10 +1,13 @@
 import { useState, useEffect } from 'react';
 import { 
-  Mail, CheckCircle, XCircle, Loader2, Info, 
-  Eye, EyeOff, RefreshCw, KeyRound, 
-  Search, ChevronDown, Check
+  CheckCircle, XCircle, Loader2, 
+  Eye, EyeOff, RefreshCw, 
+  Search, Check, Plus, 
+  Inbox
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { SettingsCard, SettingsRow } from '@/components/fluent';
+import { cn } from '@/lib/utils';
 
 export default function EmailAccounts() {
   const user = JSON.parse(localStorage.getItem('user') || '{}');
@@ -14,15 +17,22 @@ export default function EmailAccounts() {
   const [fetchLoading, setFetchLoading] = useState(true);
   const [msg, setMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [expandedClientId, setExpandedClientId] = useState<string | null>(null);
 
-  // Per-client editing state for expandable cards
+  // Per-client editing state
   const [editState, setEditState] = useState<Record<string, {
     email: string;
     password: string;
     saving?: boolean;
   }>>({});
   const [showPassword, setShowPassword] = useState<Record<string, boolean>>({});
+
+  // New account modal / card state
+  const [showNewAccountModal, setShowNewAccountModal] = useState(false);
+  const [newClientId, setNewClientId] = useState('');
+  const [newEmail, setNewEmail] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [creatingAccount, setCreatingAccount] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -42,7 +52,6 @@ export default function EmailAccounts() {
             setAllAccounts([res]);
           }
         } catch {
-          // If not configured yet, create placeholder
           setAllAccounts([{ client_id: user.client_id, email: '', password: '' }]);
         }
       }
@@ -53,12 +62,12 @@ export default function EmailAccounts() {
     }
   };
 
-  const toggleExpand = (clientId: string) => {
-    if (expanded === clientId) {
-      setExpanded(null);
+  const openEditDrawer = (clientId: string) => {
+    if (expandedClientId === clientId) {
+      setExpandedClientId(null);
       return;
     }
-    setExpanded(clientId);
+    setExpandedClientId(clientId);
     if (!editState[clientId]) {
       const acc = allAccounts.find((a) => a.client_id === clientId) || {};
       setEditState((prev) => ({
@@ -86,7 +95,7 @@ export default function EmailAccounts() {
         email: s.email.trim(),
         password: s.password.trim(),
       });
-      setMsg({ type: 'success', text: `Mailbox connection saved & verified for ${clientId}!` });
+      setMsg({ type: 'success', text: `Mailbox connection verified & saved for ${clientId}!` });
       await fetchData();
     } catch (err: any) {
       setMsg({ type: 'error', text: err.message || 'Failed to save mailbox connection' });
@@ -95,17 +104,35 @@ export default function EmailAccounts() {
     }
   };
 
-  const togglePasswordVisibility = (key: string) => {
-    setShowPassword((prev) => ({ ...prev, [key]: !prev[key] }));
+  const handleCreateNewAccount = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newClientId.trim() || !newEmail.trim() || !newPassword.trim()) {
+      setMsg({ type: 'error', text: 'Please complete all required fields.' });
+      return;
+    }
+    setCreatingAccount(true);
+    setMsg(null);
+    try {
+      await api.acceptEmail({
+        client_id: newClientId.trim().toLowerCase(),
+        email: newEmail.trim(),
+        password: newPassword.trim(),
+      });
+      setMsg({ type: 'success', text: `Mailbox successfully connected and saved for client ${newClientId}!` });
+      setShowNewAccountModal(false);
+      setNewClientId('');
+      setNewEmail('');
+      setNewPassword('');
+      await fetchData();
+    } catch (err: any) {
+      setMsg({ type: 'error', text: err.message || 'Failed to save client mailbox connection' });
+    } finally {
+      setCreatingAccount(false);
+    }
   };
 
-  const getInitials = (name?: string, id?: string) => {
-    const target = name || id || 'MB';
-    const parts = target.trim().split(/\s+/);
-    if (parts.length >= 2) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
-    return target.slice(0, 2).toUpperCase();
+  const togglePasswordVisibility = (key: string) => {
+    setShowPassword((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   const filteredAccounts = allAccounts.filter((acc) => {
@@ -119,247 +146,328 @@ export default function EmailAccounts() {
   });
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-4">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 rounded-2xl bg-primary/10 text-primary border border-primary/20">
-            <Mail className="w-7 h-7" />
-          </div>
-          <div>
-            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight bg-gradient-to-r from-foreground to-foreground/70 bg-clip-text text-transparent">
-              Mailbox Accounts & Processing
-            </h2>
-            <p className="text-muted-foreground text-xs sm:text-sm mt-0.5">
-              Configure and connect incoming IMAP/Gmail mailboxes monitored and automated by the AI daemon.
-            </p>
-          </div>
+    <div className="space-y-4 sm:space-y-5 select-none pb-12 max-w-7xl mx-auto">
+      {/* Windows 11 Header */}
+      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+        <div>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+            Client Mailboxes
+          </h1>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Configure primary incoming IMAP mailboxes and credentials for clients.
+          </p>
         </div>
 
-        <button
-          onClick={fetchData}
-          className="self-start sm:self-auto flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold rounded-xl border border-zinc-200 dark:border-white/10 hover:bg-zinc-100 dark:hover:bg-white/5 transition-all text-muted-foreground hover:text-foreground cursor-pointer"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          Refresh
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setShowNewAccountModal(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-all cursor-pointer shadow-2xs"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>Connect Mailbox</span>
+          </button>
+          <button
+            onClick={fetchData}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md win11-card hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-foreground transition-all cursor-pointer shadow-2xs"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
 
-      {/* Notification Alert */}
+      {/* Notification Banner */}
       {msg && (
-        <div className={`p-4 rounded-2xl border flex items-center justify-between gap-3 animate-in fade-in duration-200 ${
-          msg.type === 'error' 
-            ? 'bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400' 
-            : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
-        }`}>
-          <div className="flex items-center gap-2.5">
-            {msg.type === 'error' ? <XCircle className="w-5 h-5 shrink-0" /> : <CheckCircle className="w-5 h-5 shrink-0" />}
-            <span className="text-sm font-medium">{msg.text}</span>
+        <div
+          className={cn(
+            'p-3 rounded-lg border flex items-center justify-between gap-3 text-xs font-medium',
+            msg.type === 'error'
+              ? 'bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400'
+              : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-600 dark:text-emerald-400'
+          )}
+        >
+          <div className="flex items-center gap-2">
+            {msg.type === 'error' ? <XCircle className="w-4 h-4 shrink-0" /> : <CheckCircle className="w-4 h-4 shrink-0" />}
+            <span>{msg.text}</span>
           </div>
-          <button onClick={() => setMsg(null)} className="text-xs opacity-70 hover:opacity-100 font-bold cursor-pointer">Dismiss</button>
+          <button onClick={() => setMsg(null)} className="font-bold opacity-70 hover:opacity-100 cursor-pointer">
+            Dismiss
+          </button>
         </div>
       )}
 
-      {/* Info Card */}
-      <div className="bg-primary/5 border border-primary/15 rounded-2xl p-5 flex flex-col md:flex-row gap-4 items-start md:items-center">
-        <div className="h-10 w-10 bg-primary/10 rounded-xl flex items-center justify-center text-primary border border-primary/20 shrink-0">
-          <Info className="w-5 h-5" />
-        </div>
-        <div className="space-y-0.5">
-          <h4 className="text-sm font-bold text-foreground">How Incoming Mailbox Processing Operates</h4>
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            The AI background daemon reads incoming messages from each client's linked IMAP/Gmail mailbox in real-time. Inquiries are parsed, scored against the knowledge base, and automatically replied to or escalated into helpdesk tickets based on your policy settings.
-          </p>
-        </div>
-      </div>
-
-      {/* Main Mailbox Directory & Expandable Management */}
-      <div className="glass-panel p-6 rounded-2xl border border-zinc-200 dark:border-white/10 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 pb-4 border-b border-zinc-100 dark:border-white/5">
-          <div>
-            <h3 className="text-base font-bold text-zinc-900 dark:text-white">
-              {isAdmin ? `Registered Client Mailboxes (${allAccounts.length})` : 'Connected Mailbox'}
-            </h3>
-            <p className="text-xs text-muted-foreground">
-              {isAdmin ? 'Click on any client card to configure or update their IMAP mailbox credentials.' : 'Manage your IMAP support mailbox credentials.'}
-            </p>
-          </div>
-
-          {/* Search Filter (Admin) */}
-          {isAdmin && (
-            <div className="relative w-full sm:w-72">
-              <Search className="w-4 h-4 text-muted-foreground absolute left-3 top-1/2 -translate-y-1/2" />
+      {/* Directory of Expandable Mailbox Rows */}
+      <SettingsCard
+        title="Configured Mailbox Credentials"
+        description="Click on any mailbox row to update IMAP addresses and passwords"
+        headerAction={
+          isAdmin ? (
+            <div className="relative w-48 sm:w-64">
+              <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
-                placeholder="Filter by Client ID, email, company..."
+                placeholder="Filter mailboxes..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl pl-9 pr-3.5 py-2 text-xs font-medium focus:outline-none focus:ring-2 focus:ring-primary/20"
+                className="w-full bg-black/[0.03] dark:bg-white/[0.04] border border-black/[0.08] dark:border-white/[0.08] rounded-md pl-8 pr-2.5 py-1 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary"
               />
             </div>
-          )}
-        </div>
-
+          ) : undefined
+        }
+      >
         {fetchLoading ? (
-          <div className="flex items-center justify-center p-16">
+          <div className="p-12 flex flex-col items-center justify-center space-y-3">
             <Loader2 className="w-8 h-8 text-primary animate-spin" />
+            <span className="text-xs text-muted-foreground">Loading mailbox configurations...</span>
           </div>
         ) : filteredAccounts.length === 0 ? (
-          <div className="text-center py-12 text-muted-foreground text-xs">
-            No client mailboxes found matching your search.
+          <div className="p-8 text-center text-xs text-muted-foreground">
+            No matching client mailboxes found.
           </div>
         ) : (
-          <div className="space-y-3">
-            {filteredAccounts.map((acc) => {
-              const isExp = expanded === acc.client_id;
-              const hasConfig = Boolean(acc.email && acc.email.trim());
-              const s = editState[acc.client_id] || {
-                email: acc.email || '',
-                password: acc.password || '',
-              };
+          filteredAccounts.map((acc) => {
+            const isExp = expandedClientId === acc.client_id;
+            const hasConfig = Boolean(acc.email && acc.email.trim());
+            const s = editState[acc.client_id] || {
+              email: acc.email || '',
+              password: acc.password || '',
+            };
 
-              return (
-                <div
-                  key={acc.client_id}
-                  className={`border rounded-2xl overflow-hidden transition-all duration-200 ${
-                    isExp
-                      ? 'border-primary/40 bg-zinc-50/50 dark:bg-white/[0.02] shadow-md ring-1 ring-primary/20'
-                      : 'border-zinc-200 dark:border-white/10 bg-white/40 dark:bg-white/5 hover:border-zinc-300 dark:hover:border-white/20'
-                  }`}
-                >
-                  {/* Mailbox Header Row */}
-                  <div className="flex flex-col sm:flex-row justify-between sm:items-center p-4 gap-3">
-                    <div className="flex items-center gap-3.5">
-                      <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-500 to-indigo-600 flex items-center justify-center text-white font-black text-xs shadow-sm ring-1 ring-white/20 shrink-0">
-                        {getInitials(acc.name || acc.company_name, acc.client_id)}
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-bold text-xs text-primary">{acc.client_id}</span>
-                          {acc.company_name && (
-                            <span className="text-xs font-bold text-foreground">
-                              · {acc.company_name}
-                            </span>
-                          )}
-                          {acc.name && (
-                            <span className="text-[11px] text-muted-foreground font-medium">
-                              ({acc.name})
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-xs text-muted-foreground font-mono mt-0.5 flex items-center gap-2">
-                          <Mail className="w-3 h-3 text-muted-foreground" />
-                          <span>{acc.email || 'No IMAP mailbox connected'}</span>
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2.5 self-end sm:self-auto">
-                      {/* Connection Status Badge */}
-                      <span className={`px-2.5 py-1 rounded-full text-[10px] font-bold border flex items-center gap-1.5 ${
-                        hasConfig
-                          ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
-                          : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
-                      }`}>
-                        <span className={`w-1.5 h-1.5 rounded-full ${hasConfig ? 'bg-emerald-500 animate-pulse' : 'bg-amber-500'}`}></span>
-                        {hasConfig ? 'CONNECTED' : 'NOT CONFIGURED'}
-                      </span>
-
-                      {/* Dropdown Expand Toggle Button */}
-                      <button
-                        onClick={() => toggleExpand(acc.client_id)}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all cursor-pointer border ${
-                          isExp
-                            ? 'bg-primary text-primary-foreground border-primary'
-                            : 'bg-zinc-100 dark:bg-white/10 hover:bg-zinc-200 dark:hover:bg-white/20 text-foreground border-zinc-200 dark:border-white/10'
-                        }`}
-                      >
-                        <span>{isExp ? 'Close' : 'Configure Mailbox'}</span>
-                        <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isExp ? 'rotate-180' : ''}`} />
-                      </button>
-                    </div>
+            return (
+              <SettingsRow
+                key={acc.client_id}
+                icon={Inbox}
+                title={
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-primary font-bold">{acc.client_id}</span>
+                    {acc.company_name && <span>· {acc.company_name}</span>}
                   </div>
+                }
+                description={acc.email || 'No IMAP mailbox connected'}
+                expandable
+                expanded={isExp}
+                onToggleExpand={() => openEditDrawer(acc.client_id)}
+                action={
+                  <span
+                    className={cn(
+                      'px-2 py-0.5 rounded-full text-[10px] font-bold border',
+                      hasConfig
+                        ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20'
+                        : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
+                    )}
+                  >
+                    {hasConfig ? 'Connected' : 'Unconfigured'}
+                  </span>
+                }
+              >
+                {/* Expandable Credential Editor Form */}
+                <div className="space-y-3 pt-1">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-muted-foreground">
+                        IMAP / Gmail Address <span className="text-rose-500">*</span>
+                      </label>
+                      <input
+                        type="email"
+                        required
+                        placeholder="support@company.com"
+                        value={s.email}
+                        onChange={(e) =>
+                          setEditState((prev) => ({
+                            ...prev,
+                            [acc.client_id]: { ...prev[acc.client_id], email: e.target.value },
+                          }))
+                        }
+                        className="w-full bg-white dark:bg-[#202020] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary font-mono shadow-2xs"
+                      />
+                    </div>
 
-                  {/* Expanded Dropdown Edit Panel for this Client */}
-                  {isExp && (
-                    <div className="p-5 border-t border-zinc-200 dark:border-white/10 bg-white/60 dark:bg-black/20 space-y-4 animate-in fade-in duration-200">
-                      <div className="flex items-center gap-2">
-                        <KeyRound className="w-4 h-4 text-primary" />
-                        <h4 className="text-xs font-bold text-zinc-900 dark:text-white uppercase tracking-wider">
-                          IMAP Connection Credentials for {acc.client_id}
-                        </h4>
-                      </div>
-
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        {/* IMAP Email Address */}
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                            IMAP / Gmail Address <span className="text-rose-500">*</span>
-                          </label>
-                          <input
-                            type="email"
-                            required
-                            placeholder="support@company.com"
-                            value={s.email}
-                            onChange={(e) => setEditState((prev) => ({
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-muted-foreground">
+                        IMAP App Password <span className="text-rose-500">*</span>
+                      </label>
+                      <div className="relative">
+                        <input
+                          type={showPassword[acc.client_id] ? 'text' : 'password'}
+                          required
+                          minLength={8}
+                          placeholder="Gmail 16-character App Password"
+                          value={s.password}
+                          onChange={(e) =>
+                            setEditState((prev) => ({
                               ...prev,
-                              [acc.client_id]: { ...prev[acc.client_id], email: e.target.value }
-                            }))}
-                            className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl px-3.5 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
-                          />
-                        </div>
-
-                        {/* IMAP App Password */}
-                        <div className="space-y-1.5">
-                          <label className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                            IMAP App Password / Token <span className="text-rose-500">*</span>
-                          </label>
-                          <div className="relative">
-                            <input
-                              type={showPassword[acc.client_id] ? 'text' : 'password'}
-                              required
-                              minLength={8}
-                              placeholder="Gmail 16-character App Password"
-                              value={s.password}
-                              onChange={(e) => setEditState((prev) => ({
-                                ...prev,
-                                [acc.client_id]: { ...prev[acc.client_id], password: e.target.value }
-                              }))}
-                              className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl pl-3.5 pr-10 py-2 text-xs font-medium font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => togglePasswordVisibility(acc.client_id)}
-                              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
-                            >
-                              {showPassword[acc.client_id] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 pt-2">
-                        <p className="text-[11px] text-muted-foreground">
-                          For Google Workspace/Gmail, generate an App Password from your Google Security console.
-                        </p>
-
+                              [acc.client_id]: { ...prev[acc.client_id], password: e.target.value },
+                            }))
+                          }
+                          className="w-full bg-white dark:bg-[#202020] border border-black/[0.08] dark:border-white/[0.08] rounded-md pl-3 pr-8 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary shadow-2xs"
+                        />
                         <button
-                          disabled={s.saving || !s.email || !s.password}
-                          onClick={() => handleSaveConnection(acc.client_id)}
-                          className="flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl bg-primary text-primary-foreground text-xs font-semibold hover:bg-primary/90 transition-all shadow-sm cursor-pointer disabled:opacity-50 shrink-0 self-start sm:self-auto"
+                          type="button"
+                          tabIndex={-1}
+                          onClick={() => togglePasswordVisibility(acc.client_id)}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground cursor-pointer"
                         >
-                          {s.saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
-                          <span>Save Mailbox Connection</span>
+                          {showPassword[acc.client_id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                         </button>
                       </div>
                     </div>
+                  </div>
+
+                  <div className="flex justify-between items-center pt-2">
+                    <span className="text-[11px] text-muted-foreground">
+                      Use standard SSL/TLS port 993 with OAuth2 or an App Password.
+                    </span>
+                    <button
+                      type="button"
+                      disabled={s.saving || !s.email || !s.password}
+                      onClick={() => handleSaveConnection(acc.client_id)}
+                      className="px-4 py-1.5 bg-primary text-primary-foreground text-xs font-semibold rounded-md shadow-2xs hover:opacity-90 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {s.saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                      <span>Save Mailbox</span>
+                    </button>
+                  </div>
+                </div>
+              </SettingsRow>
+            );
+          })
+        )}
+      </SettingsCard>
+
+      {/* =========================================================================
+          CONNECT CLIENT MAILBOX FLYOUT MODAL (Windows 11 Dialog Style)
+          ========================================================================= */}
+      {showNewAccountModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-150">
+          <div className="win11-card rounded-lg p-5 max-w-md w-full border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-[#2C2C2C] shadow-2xl space-y-4">
+            <div>
+              <h3 className="text-base font-bold text-foreground">
+                Connect Client Mailbox
+              </h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Each client account connects to a single primary IMAP mailbox.
+              </p>
+            </div>
+
+            <div className="p-2.5 rounded-md bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-[11px] leading-relaxed">
+              💡 <strong>1:1 Account Architecture:</strong> Connecting an email address to a Client ID configures the monitored mailbox for that client. Setting a new mailbox on an existing client replaces its credentials.
+            </div>
+
+            <form onSubmit={handleCreateNewAccount} className="space-y-3">
+              <div className="space-y-1">
+                <div className="flex justify-between items-center">
+                  <label className="text-xs font-semibold text-foreground">
+                    Target Client ID <span className="text-rose-500">*</span>
+                  </label>
+                  {isAdmin && (
+                    <a
+                      href="/admin/clients"
+                      className="text-[11px] text-primary hover:underline"
+                    >
+                      Manage Clients &rarr;
+                    </a>
                   )}
                 </div>
-              );
-            })}
+                {allAccounts.length > 0 ? (
+                  <div className="space-y-1.5">
+                    <select
+                      value={newClientId}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setNewClientId(val);
+                        const match = allAccounts.find((a) => a.client_id === val);
+                        if (match && match.email) {
+                          setNewEmail(match.email);
+                        }
+                      }}
+                      className="w-full bg-black/[0.03] dark:bg-white/[0.04] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary font-mono"
+                    >
+                      <option value="">-- Select an existing client --</option>
+                      {allAccounts.map((a) => (
+                        <option key={a.client_id} value={a.client_id}>
+                          {a.client_id} {a.company_name ? `(${a.company_name})` : ''} {a.email ? `[Has Mailbox: ${a.email}]` : '[No Mailbox]'}
+                        </option>
+                      ))}
+                      <option value="__custom__">+ Enter custom Client ID...</option>
+                    </select>
+
+                    {newClientId === '__custom__' && (
+                      <input
+                        type="text"
+                        required
+                        placeholder="Enter Client ID (e.g. CLI-ABCD1234)"
+                        onChange={(e) => setNewClientId(e.target.value)}
+                        className="w-full bg-black/[0.03] dark:bg-white/[0.04] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary font-mono mt-1"
+                      />
+                    )}
+                  </div>
+                ) : (
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. CLI-12345678"
+                    value={newClientId}
+                    onChange={(e) => setNewClientId(e.target.value)}
+                    className="w-full bg-black/[0.03] dark:bg-white/[0.04] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary font-mono"
+                  />
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-foreground">
+                  IMAP / Gmail Address <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="email"
+                  required
+                  placeholder="support@client.com"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  className="w-full bg-black/[0.03] dark:bg-white/[0.04] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-xs font-semibold text-foreground">
+                  IMAP App Password <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={8}
+                  placeholder="16-character App Password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  className="w-full bg-black/[0.03] dark:bg-white/[0.04] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-3 py-1.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary font-mono"
+                />
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2 border-t border-black/[0.06] dark:border-white/[0.06]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowNewAccountModal(false);
+                    setNewClientId('');
+                    setNewEmail('');
+                    setNewPassword('');
+                  }}
+                  className="px-3.5 py-1.5 rounded-md border border-black/[0.08] dark:border-white/[0.08] text-xs font-semibold text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingAccount}
+                  className="px-4 py-1.5 bg-primary text-primary-foreground text-xs font-semibold rounded-md shadow-2xs hover:opacity-90 transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                >
+                  {creatingAccount ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                  <span>Save Mailbox</span>
+                </button>
+              </div>
+            </form>
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

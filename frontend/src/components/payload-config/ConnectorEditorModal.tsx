@@ -86,15 +86,15 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
                       ...formData,
                       trigger_type: 'ticket_create',
                       http_method: 'POST',
-                      url: 'https://desk.zoho.com/api/v1/tickets',
+                      url: 'https://desk.zoho.in/api/v1/tickets',
                       auth_type: 'oauth2_client_credentials',
                       oauth_grant_type: 'refresh_token',
                       oauth_header_prefix: 'Zoho-oauthtoken',
-                      oauth_token_url: 'https://accounts.zoho.com/oauth/v2/token',
+                      oauth_token_url: 'https://accounts.zoho.in/oauth/v2/token',
                       oauth_scope: 'Desk.tickets.CREATE,Desk.tickets.READ',
-                      headers_template: '{\n  "orgId": "YOUR_ZOHO_ORG_ID",\n  "Content-Type": "application/json"\n}',
-                      request_template: '{\n  "subject": "{{subject}}",\n  "description": "{{body}}",\n  "departmentId": "YOUR_DEPARTMENT_ID",\n  "contact": {\n    "email": "{{from_email}}"\n  },\n  "priority": "{{priority}}"\n}',
-                      response_mapping: '{\n  "fields": [\n    {\n      "field": "ticket_id",\n      "path": "id",\n      "extract_regex": null\n    }\n  ]\n}',
+                      headers_template: '{\n  "orgId": "60085497089",\n  "Content-Type": "application/json"\n}',
+                      request_template: '{\n  "subject": "{{subject}}",\n  "description": "{{conversation_history}}",\n  "departmentId": "275424000000010772",\n  "contact": {\n    "email": "{{from_email}}",\n    "lastName": "{{customer_name}}"\n  }\n}',
+                      response_mapping: '{\n  "ticket_id": "id",\n  "ticket_status": "status",\n  "priority_name": "priority"\n}',
                     });
                   }}
                   className="px-2.5 py-1 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400 border border-orange-500/30 text-xs font-medium cursor-pointer transition-colors"
@@ -301,7 +301,8 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
                         className="w-full p-2 rounded-lg border border-zinc-200 dark:border-white/10 bg-transparent outline-none text-xs"
                       >
                         <option value="client_credentials" className="dark:bg-zinc-900">client_credentials (Standard)</option>
-                        <option value="refresh_token" className="dark:bg-zinc-900">refresh_token (Zoho Desk / Zoho CRM)</option>
+                        <option value="refresh_token" className="dark:bg-zinc-900">refresh_token (Permanent Token / Zoho Desk)</option>
+                        <option value="authorization_code" className="dark:bg-zinc-900">authorization_code (Zoho Self-Client Grant Token)</option>
                       </select>
                     </div>
 
@@ -317,12 +318,39 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
                     </div>
 
                     <div>
-                      <label className="text-[11px] text-muted-foreground block mb-1">Token Endpoint URL *</label>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-[11px] text-muted-foreground">Token Endpoint URL *</label>
+                        <div className="flex gap-1 text-[10px]">
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, oauth_token_url: 'https://accounts.zoho.in/oauth/v2/token' })}
+                            className="text-primary hover:underline"
+                          >
+                            .in
+                          </button>
+                          <span className="text-zinc-400">|</span>
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, oauth_token_url: 'https://accounts.zoho.com/oauth/v2/token' })}
+                            className="text-primary hover:underline"
+                          >
+                            .com
+                          </button>
+                          <span className="text-zinc-400">|</span>
+                          <button
+                            type="button"
+                            onClick={() => setFormData({ ...formData, oauth_token_url: 'https://accounts.zoho.eu/oauth/v2/token' })}
+                            className="text-primary hover:underline"
+                          >
+                            .eu
+                          </button>
+                        </div>
+                      </div>
                       <input
                         type="url"
                         value={formData.oauth_token_url}
                         onChange={(e) => setFormData({ ...formData, oauth_token_url: e.target.value })}
-                        placeholder="https://accounts.zoho.com/oauth/v2/token"
+                        placeholder="https://accounts.zoho.in/oauth/v2/token"
                         className="w-full p-2 rounded-lg border border-zinc-200 dark:border-white/10 bg-transparent outline-none text-xs font-mono"
                       />
                     </div>
@@ -359,6 +387,22 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
                           placeholder="1000.xxxx.xxxx"
                           className="w-full p-2 rounded-lg border border-zinc-200 dark:border-white/10 bg-transparent outline-none text-xs font-mono"
                         />
+                      </div>
+                    )}
+
+                    {formData.oauth_grant_type === 'authorization_code' && (
+                      <div>
+                        <label className="text-[11px] text-muted-foreground block mb-1">Zoho Self-Client Grant Token * (10-min temporary code)</label>
+                        <input
+                          type="password"
+                          value={formData.oauth_refresh_token}
+                          onChange={(e) => setFormData({ ...formData, oauth_refresh_token: e.target.value })}
+                          placeholder="Paste Grant Token (1000.xxxx...)"
+                          className="w-full p-2 rounded-lg border border-zinc-200 dark:border-white/10 bg-transparent outline-none text-xs font-mono"
+                        />
+                        <p className="text-[10px] text-zinc-500 mt-0.5">
+                          Click "Test Token Handshake" below to automatically exchange this code for a permanent refresh token.
+                        </p>
                       </div>
                     )}
 
@@ -428,9 +472,18 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
                           )}
                         </div>
                         <div className="text-[11px] leading-relaxed">
-                          {oauthTestResult.success
-                            ? `Token received successfully! Expires in ${oauthTestResult.expires_in || 3600}s. Tokens will be cached in Redis.`
-                            : oauthTestResult.error}
+                          {oauthTestResult.success ? (
+                            <>
+                              <div>{oauthTestResult.message || `Token received successfully! Expires in ${oauthTestResult.expires_in || 3600}s.`}</div>
+                              {oauthTestResult.refresh_token && (
+                                <div className="mt-1 font-mono font-medium text-emerald-700 dark:text-emerald-300">
+                                  ✓ Permanent Refresh Token retrieved and automatically populated into form.
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            oauthTestResult.error
+                          )}
                         </div>
                       </div>
                     </div>

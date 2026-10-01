@@ -1,0 +1,8 @@
+# Step 47: Fix Ticket Status Connector Mapping & Notification Budget Column
+
+- **2026-09-29 12:22:00 UTC**: Investigated log trace where inquiring about existing Zoho Desk ticket `275424000000524001` resulted in hard-floor fallback and duplicate ticket creation `#155`. Identified that `connector_configs` response_mapping for `CLI-4159FFCF` (`ticket_status`) had invalid JMESPath paths (`data[0].ticketNumber`, `data[0].status`) instead of matching Zoho Desk's single-ticket JSON response structure.
+- **2026-09-29 12:22:30 UTC**: Also identified MySQL OperationalError 1054 in `mail_ai_api` analytics notification budget check where `monthly_budget` was queried instead of `monthly_budget_usd`.
+- **2026-09-29 12:23:15 UTC**: Replaced `monthly_budget` with `monthly_budget_usd` in `app/api/analytics.py:748`. Verified that periodic `/notifications/ALL` polls in `mail_ai_api` now return HTTP 200 without OperationalError 1054.
+- **2026-09-29 12:24:56 UTC**: Updated `connector_configs.response_mapping` for client `CLI-4159FFCF` and `ticket_status` to use resilient JMESPath expressions (`ticketNumber || data[0].ticketNumber`, `status || data[0].status`, `subject || data[0].subject`, `assignee.name || data[0].assignee.name`).
+- **2026-09-29 12:25:44 UTC**: Verified CRM status lookup against live Zoho ticket `275424000000524001` via `fetch_crm_ticket_status` and `execute_tool_call`. Confirmed extracted payload `{'docket_no': '154', 'ticket_status': 'Open', 'subject': 'Re: i am unable to login to CZ Missed Call Solution.'}` and verified `ctx.context_data` populates properly.
+- **2026-09-29 12:26:22 UTC**: Ran test suite (`python3 -m unittest tests/test_agent_tools.py tests/test_end_to_end_scenarios.py`) with 10 passing tests.

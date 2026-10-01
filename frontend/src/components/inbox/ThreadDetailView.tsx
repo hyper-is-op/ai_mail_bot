@@ -185,7 +185,25 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
       )}
 
       {/* Pending Review / Failed Alert Callout */}
-      {(selectedThread.status === 'Pending Review' || selectedThread.status === 'Failed') && (
+      {selectedThread.status === 'Failed' && (
+        <div className="mx-6 mt-4 p-3.5 rounded-xl border border-rose-500/30 bg-rose-500/10 flex items-center justify-between text-xs">
+          <div className="flex items-center gap-2 text-rose-800 dark:text-rose-300">
+            <AlertCircle className="w-4 h-4 text-rose-500 shrink-0" />
+            <span>
+              <strong>Execution Failed:</strong> Automated pipeline crashed or encountered an error. Check the execution trace below or send a manual reply.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsReplying(true)}
+            className="px-3 py-1 bg-rose-500 hover:bg-rose-600 text-white rounded-lg font-semibold transition-all text-xs shrink-0 ml-3"
+          >
+            Reply Now
+          </button>
+        </div>
+      )}
+
+      {selectedThread.status === 'Pending Review' && (
         <div className="mx-6 mt-4 p-3.5 rounded-xl border border-amber-500/30 bg-amber-500/10 flex items-center justify-between text-xs">
           <div className="flex items-center gap-2 text-amber-800 dark:text-amber-300">
             <AlertCircle className="w-4 h-4 text-amber-500 shrink-0" />
@@ -219,7 +237,8 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
       {/* Messages Stream */}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {selectedThread.emails.map((email, index) => {
-          const isTraceOpen = showTraceFor === email.id;
+          const isFailed = (email.status || '').toLowerCase() === 'failed';
+          const isTraceOpen = showTraceFor === email.id || isFailed;
           const hasReply = !!email.reply;
 
           const bodyText = (email.body || email.preview || '');
@@ -357,16 +376,29 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
                   </button>
                 </div>
 
-                {/* Execution Steps Drawer */}
-                {isTraceOpen && email.execution_steps && (
-                  <div className="p-3 rounded-xl bg-zinc-100 dark:bg-black/30 border border-zinc-200 dark:border-white/5 space-y-2 text-[11px]">
-                    <span className="font-semibold text-muted-foreground text-[10px] uppercase">Bot Decision Path</span>
+                {/* Execution Steps / Failure Path Drawer */}
+                {isTraceOpen && (email.execution_steps || isFailed) && (
+                  <div className={cn(
+                    "p-3 rounded-xl border space-y-2 text-[11px]",
+                    isFailed ? "bg-rose-500/5 border-rose-500/20" : "bg-zinc-100 dark:bg-black/30 border-zinc-200 dark:border-white/5"
+                  )}>
+                    <span className={cn(
+                      "font-semibold text-[10px] uppercase",
+                      isFailed ? "text-rose-600 dark:text-rose-400" : "text-muted-foreground"
+                    )}>
+                      {isFailed ? 'Execution Trace & Failure Point' : 'Bot Decision Path'}
+                    </span>
                     <div className="flex flex-wrap gap-1.5">
-                      {email.execution_steps.map((step: string, sIdx: number) => (
-                        <span key={sIdx} className="px-2 py-0.5 rounded-md bg-zinc-200 dark:bg-white/10 font-mono text-[10px]">
-                          {sIdx + 1}. {step}
+                      {email.execution_steps?.map((step: string, sIdx: number) => (
+                        <span key={sIdx} className="px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-mono text-[10px] flex items-center gap-1">
+                          ✅ {step}
                         </span>
                       ))}
+                      {isFailed && email.summary && (
+                        <span className="px-2 py-0.5 rounded-md bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20 font-mono text-[10px] flex items-center gap-1">
+                          ❌ Failed: {email.summary}
+                        </span>
+                      )}
                     </div>
                   </div>
                 )}

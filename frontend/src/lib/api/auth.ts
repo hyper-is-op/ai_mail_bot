@@ -112,6 +112,7 @@ export const authApi = {
     agent_type?: string; 
     department_name?: string; 
     company_name?: string;
+    cost_multiplier?: number;
   }) {
     const res = await fetch(`${BASE_URL}/admin/client-profile`, {
       method: 'POST',

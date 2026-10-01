@@ -158,10 +158,9 @@ class TestConnectorsPaymentAndRouting(unittest.TestCase):
         self.assertEqual(res.get("payment_reference"), "ch_98124")
         self.assertEqual(ctx.context_data.get("payment_status"), "Captured")
 
-    @patch("app.order_routes.get_order_status")
     @patch("app.connector_config.run_order_status_lookup")
-    def test_07_split_brain_bridge_priority(self, mock_dyn_order, mock_legacy_order):
-        """get_order_by_id prefers dynamic connector, falling back to legacy request_handler."""
+    def test_07_dynamic_connector_lookup(self, mock_dyn_order):
+        """get_order_by_id uses dynamic connector engine."""
         # 1. Dynamic connector success
         mock_dyn_order.return_value = {
             "success": True,
@@ -170,18 +169,11 @@ class TestConnectorsPaymentAndRouting(unittest.TestCase):
         order = get_order_by_id("CLI-BRIDGE", "ORD-501")
         self.assertIsNotNone(order)
         self.assertEqual(order.get("status"), "Delivered")
-        mock_legacy_order.assert_not_called()
 
-        # 2. Dynamic connector fails / not configured -> fallback to legacy
-        mock_dyn_order.return_value = {"success": False, "error": "No config"}
-        mock_legacy_order.return_value = {
-            "success": True,
-            "data": {"order_id": "ORD-501", "status": "Legacy Shipped"}
-        }
-        legacy_order = get_order_by_id("CLI-BRIDGE", "ORD-501")
-        self.assertIsNotNone(legacy_order)
-        self.assertEqual(legacy_order.get("status"), "Legacy Shipped")
-        mock_legacy_order.assert_called_once_with("CLI-BRIDGE", "ORD-501")
+        # 2. Dynamic connector not found / failure
+        mock_dyn_order.return_value = {"success": False, "error": "Order not found"}
+        not_found_order = get_order_by_id("CLI-BRIDGE", "ORD-501")
+        self.assertIsNone(not_found_order)
 
 
 if __name__ == "__main__":

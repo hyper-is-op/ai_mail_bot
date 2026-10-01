@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { 
-  Sliders, 
   Loader2, 
   AlertCircle, 
   Building2, 
@@ -9,7 +8,10 @@ import {
   Sparkles,
   Gauge,
   FileSignature,
-  FileText
+  FileText,
+  ArrowLeft,
+  Bot,
+  Power
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import {
@@ -27,6 +29,7 @@ import {
   ConfirmAutoSendModal,
   ConfirmKillSwitchModal,
 } from '@/components/settings';
+import { FluentHeroCard, SettingsCard, SettingsRow } from '@/components/fluent';
 
 export default function Settings() {
   const [threshold, setThreshold] = useState(80);
@@ -41,7 +44,13 @@ export default function Settings() {
   const [error, setError] = useState('');
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<'general' | 'pause_draft' | 'features' | 'signoff' | 'moderation' | 'disclaimers'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'pause_draft' | 'features' | 'signoff' | 'moderation' | 'disclaimers' | null>(() => {
+    const tabParam = new URLSearchParams(window.location.search).get('tab');
+    if (tabParam && ['general', 'pause_draft', 'features', 'signoff', 'moderation', 'disclaimers'].includes(tabParam)) {
+      return tabParam as any;
+    }
+    return null;
+  });
   
   // Feature Flags States
   const [features, setFeatures] = useState<FeaturesState>({
@@ -102,6 +111,8 @@ export default function Settings() {
     const tabParam = searchParams.get('tab');
     if (tabParam && ['general', 'pause_draft', 'features', 'signoff', 'moderation', 'disclaimers'].includes(tabParam)) {
       setActiveTab(tabParam as any);
+    } else if (!tabParam) {
+      setActiveTab(null);
     }
   }, [searchParams]);
 
@@ -117,8 +128,11 @@ export default function Settings() {
     ? selectedClientId 
     : (isAdmin ? 'ALL' : (user?.client_id || 'SYSTEM'));
 
+  const currentClient = clients.find((c: any) => c.client_id === targetClientId);
+  const resolvedCompanyName = companyName || currentClient?.company_name || currentClient?.name || user?.company_name || user?.name;
+
   useEffect(() => {
-    if (selectedClientId === 'ALL' && activeTab !== 'general') {
+    if (selectedClientId === 'ALL' && activeTab && !['general', 'moderation', 'disclaimers'].includes(activeTab)) {
       setActiveTab('general');
       setSearchParams({ tab: 'general' });
     }
@@ -178,26 +192,30 @@ export default function Settings() {
         });
       }
     } catch (err) {
-      console.error("Failed to load features:", err);
+      console.error("Failed to load feature flags:", err);
     }
   };
 
   const handleToggleStripDisclaimers = async () => {
     if (!targetClientId || targetClientId === 'ALL') return;
-    const nextVal = !features.feature_strip_disclaimers;
+    const newVal = !features.feature_strip_disclaimers;
     setStripDisclaimerToggling(true);
     setError('');
     try {
       await api.setClientFeatures({
-        ...features,
         client_id: targetClientId,
-        feature_strip_disclaimers: nextVal,
+        feature_ticket_creation: features.feature_ticket_creation,
+        feature_auto_send: features.feature_auto_send,
+        feature_rag: features.feature_rag,
+        feature_order_tracking: features.feature_order_tracking,
+        feature_manual_reply: features.feature_manual_reply,
+        feature_strip_disclaimers: newVal,
       });
-      setFeatures(prev => ({ ...prev, feature_strip_disclaimers: nextVal }));
+      setFeatures(prev => ({ ...prev, feature_strip_disclaimers: newVal }));
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) {
-      setError(err.message || 'Failed to update disclaimer stripping toggle');
+      setError(err.message || 'Failed to update disclaimer stripping flag');
     } finally {
       setStripDisclaimerToggling(false);
     }
@@ -206,18 +224,24 @@ export default function Settings() {
   const loadSettings = async () => {
     setLoading(true);
     try {
-      const data = await api.getEmailAccount(targetClientId);
-      if (data) {
-        setThreshold(data.score_threshold !== undefined ? data.score_threshold : 80);
-        if (targetClientId !== 'ALL') {
-          setTone(data.response_tone || 'Formal');
-          setAgentType(data.agent_type || 'customer_support');
-          setCompanyName(data.company_name || '');
-          setDepartmentName(data.department_name || '');
+      if (targetClientId === 'ALL') {
+        setThreshold(80);
+        setTone('Formal');
+        setAgentType('customer_support');
+        setCompanyName('');
+        setDepartmentName('');
+      } else {
+        const client = await api.getEmailAccount(targetClientId);
+        if (client) {
+          setThreshold(client.score_threshold || 80);
+          setTone(client.response_tone || 'Formal');
+          setAgentType(client.agent_type || 'customer_support');
+          setCompanyName(client.company_name || '');
+          setDepartmentName(client.department_name || '');
         }
       }
-    } catch (err) {
-      console.error("Failed to load settings:", err);
+    } catch (err: any) {
+      setError(err.message || 'Failed to load settings');
     } finally {
       setLoading(false);
     }
@@ -226,18 +250,18 @@ export default function Settings() {
   const loadModerationData = async () => {
     if (!targetClientId || targetClientId === 'ALL') return;
     try {
-      const kwRes = await api.getBlockedKeywords(targetClientId);
-      setKeywords(kwRes.keywords || []);
+      const data = await api.getBlockedKeywords(targetClientId);
+      setKeywords(data.keywords || []);
     } catch (err) {
-      console.error("Failed to load moderation settings:", err);
+      console.error("Failed to load keywords:", err);
     }
   };
 
   const loadDisclaimersData = async () => {
-    if (!targetClientId || targetClientId === 'ALL') return;
     setDisclaimerLoading(true);
     try {
-      const data = await api.getEmailDisclaimers(targetClientId);
+      const clientToQuery = targetClientId === 'ALL' ? undefined : targetClientId;
+      const data = await api.getEmailDisclaimers(clientToQuery);
       setDisclaimers(Array.isArray(data) ? data : []);
     } catch (err) {
       console.error("Failed to load email disclaimers:", err);
@@ -503,251 +527,442 @@ export default function Settings() {
     }
   };
 
+  const categoryTitles: Record<string, string> = {
+    general: 'System Configuration & Flow Control',
+    features: 'AI Automation Features & Modules',
+    pause_draft: 'Pause & Draft Safety Controls',
+    signoff: 'Organization Sign-Off & Persona',
+    moderation: 'Keyword Moderation & Sender Rules',
+    disclaimers: 'Email Disclaimers & Boilerplates',
+  };
+
   if (loading) {
     return (
-      <div className="min-h-[60vh] flex flex-col items-center justify-center space-y-4">
-        <Loader2 className="w-10 h-10 text-primary animate-spin" />
-        <p className="text-sm text-zinc-400 font-medium">Fetching client configuration credentials...</p>
+      <div className="min-h-[60vh] flex flex-col items-center justify-center space-y-4 select-none">
+        <Loader2 className="w-9 h-9 text-primary animate-spin" />
+        <p className="text-xs text-muted-foreground font-medium">Fetching Windows 11 system policies...</p>
       </div>
     );
   }
 
   return (
-    <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in-50 duration-500 pb-16">
-      {/* Settings Top Header */}
-      <div className="space-y-4 border-b border-zinc-200 dark:border-white/10 pb-6">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div>
-            <h2 className="text-3xl font-black tracking-tight text-zinc-900 dark:text-white flex items-center gap-3">
-              <Sliders className="w-8 h-8 text-primary" /> Settings & Policies
-            </h2>
-            <p className="text-sm text-zinc-500 dark:text-zinc-400 mt-1">
-              Fine-tune AI confidence thresholds, agent personas, response tones, organization sign-off, blocked keywords, and email disclaimers.
-            </p>
-          </div>
-
-          {/* Client Switcher (Admin) */}
-          {isAdmin && clients.length > 0 && (
-            <div className="flex items-center gap-2.5 bg-zinc-100 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl px-3.5 py-2 shrink-0 self-start sm:self-auto">
-              <span className="text-xs text-muted-foreground font-medium">Client Scope:</span>
-              <select
-                value={selectedClientId}
-                onChange={(e) => setSelectedClientId(e.target.value)}
-                className="bg-transparent text-xs text-foreground focus:outline-none cursor-pointer font-semibold"
+    <div className="space-y-4 sm:space-y-5 select-none pb-12">
+      {/* Windows 11 Settings Header */}
+      <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
+        <div>
+          {activeTab ? (
+            <div className="flex items-center gap-2 mb-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setActiveTab(null);
+                  setSearchParams({});
+                }}
+                className="flex items-center gap-1.5 text-xs text-primary font-semibold hover:underline cursor-pointer"
               >
-                <option value="ALL" className="bg-zinc-900 text-foreground">ALL Clients (Global)</option>
-                {clients.map((c) => (
-                  <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
-                    {c.client_id} ({c.email})
-                  </option>
-                ))}
-              </select>
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Settings</span>
+              </button>
+              <span className="text-xs text-muted-foreground">/</span>
+              <span className="text-xs font-semibold text-foreground truncate max-w-xs">
+                {categoryTitles[activeTab]}
+              </span>
             </div>
+          ) : (
+            <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">
+              Settings &amp; Policies
+            </h1>
           )}
+          <p className="text-xs text-muted-foreground">
+            {activeTab
+              ? `Configuring ${categoryTitles[activeTab]} for ${targetClientId}`
+              : 'Configure bot personas, confidence levels, safety gates, and integration modules.'}
+          </p>
         </div>
 
-        {/* Full-width Tab Switcher */}
-        <div className="flex flex-wrap items-center gap-1.5 bg-zinc-100 dark:bg-zinc-900/80 p-1.5 rounded-2xl border border-zinc-200 dark:border-white/10">
-          <button
-            onClick={() => {
-              setActiveTab('general');
-              setSearchParams({ tab: 'general' });
-            }}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-              activeTab === 'general'
-                ? 'bg-primary text-primary-foreground shadow-sm'
-                : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
-            }`}
-          >
-            <Gauge className="w-4 h-4" />
-            <span>System Configuration</span>
-          </button>
-
-          {/* Pause & Draft Sub-section/Tab */}
-          {selectedClientId !== 'ALL' && (
-            <button
-              onClick={() => {
-                setActiveTab('pause_draft');
-                setSearchParams({ tab: 'pause_draft' });
-              }}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'pause_draft'
-                  ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
-              }`}
+        {/* Client Scope Switcher (Admin) */}
+        {isAdmin && clients.length > 0 && (
+          <div className="flex items-center gap-2 bg-white dark:bg-[#2C2C2C] border border-black/[0.08] dark:border-white/[0.08] px-3 py-1.5 rounded-md shadow-2xs self-start sm:self-auto">
+            <span className="text-xs text-muted-foreground font-medium">Scope:</span>
+            <select
+              value={selectedClientId}
+              onChange={(e) => setSelectedClientId(e.target.value)}
+              className="bg-transparent text-xs text-foreground font-semibold focus:outline-none cursor-pointer"
             >
-              <FileText className="w-4 h-4" />
-              <span>Pause &amp; Draft</span>
-            </button>
-          )}
-
-          {/* AI Features & Modules */}
-          {selectedClientId !== 'ALL' && (
-            <button
-              onClick={() => {
-                setActiveTab('features');
-                setSearchParams({ tab: 'features' });
-              }}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                activeTab === 'features'
-                  ? 'bg-primary text-primary-foreground shadow-sm'
-                  : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
-              }`}
-            >
-              <Sparkles className="w-4 h-4" />
-              <span>AI Features &amp; Modules</span>
-            </button>
-          )}
-
-          {selectedClientId !== 'ALL' && (
-            <>
-              <button
-                onClick={() => {
-                  setActiveTab('signoff');
-                  setSearchParams({ tab: 'signoff' });
-                }}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                  activeTab === 'signoff'
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
-                }`}
-              >
-                <Building2 className="w-4 h-4" />
-                <span>Organization &amp; Sign-Off</span>
-              </button>
-              <button
-                onClick={() => {
-                  setActiveTab('moderation');
-                  setSearchParams({ tab: 'moderation' });
-                }}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                  activeTab === 'moderation'
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
-                }`}
-              >
-                <ShieldAlert className="w-4 h-4" />
-                <span>Blocked Keywords</span>
-              </button>
-              <button
-                onClick={() => {
-                  setActiveTab('disclaimers');
-                  setSearchParams({ tab: 'disclaimers' });
-                }}
-                className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold transition-all cursor-pointer ${
-                  activeTab === 'disclaimers'
-                    ? 'bg-primary text-primary-foreground shadow-sm'
-                    : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-white'
-                }`}
-              >
-                <FileSignature className="w-4 h-4" />
-                <span>Email Disclaimers</span>
-              </button>
-            </>
-          )}
-        </div>
+              <option value="ALL" className="bg-card text-foreground">ALL Clients (Global)</option>
+              {clients.map((c) => (
+                <option key={c.client_id} value={c.client_id} className="bg-card text-foreground">
+                  {c.client_id} ({c.email})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
       {error && (
-        <div className="p-4 rounded-xl border border-rose-500/20 bg-rose-500/10 text-rose-400 text-sm flex items-center gap-3">
-          <AlertCircle className="w-5 h-5 flex-shrink-0" />
+        <div className="p-3 rounded-lg border bg-rose-500/10 border-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center gap-2 text-xs font-medium">
+          <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{error}</span>
         </div>
       )}
 
-      {/* 1. GENERAL SETTINGS TAB */}
-      {activeTab === 'general' && (
-        <GeneralTab
-          selectedClientId={selectedClientId}
-          threshold={threshold}
-          setThreshold={setThreshold}
-          tone={tone}
-          setTone={setTone}
-          agentType={agentType}
-          setAgentType={setAgentType}
-          masterBotStatus={masterBotStatus}
-          masterBotLoading={masterBotLoading}
-          masterBotToggling={masterBotToggling}
-          isAdmin={isAdmin}
-          requestKillSwitchToggle={requestKillSwitchToggle}
-          handleSave={handleSave}
-          saving={saving}
-          success={success}
-        />
+      {/* Global Fleet Mode Guidance Banner */}
+      {selectedClientId === 'ALL' && (
+        <div className="p-4 rounded-xl border border-primary/20 bg-primary/5 text-primary flex items-start gap-3 shadow-2xs">
+          <Building2 className="w-5 h-5 shrink-0 mt-0.5 text-primary" />
+          <div className="text-xs space-y-0.5">
+            <p className="font-semibold text-foreground">Global Fleet Overview Mode</p>
+            <p className="text-muted-foreground">
+              You are currently viewing global defaults. To configure and save tenant-specific AI confidence thresholds, auto-send dispatch modes, or custom signoffs, select a specific client from the scope dropdown above.
+            </p>
+          </div>
+        </div>
       )}
 
-      {/* 2. PAUSE & DRAFT TAB */}
-      {selectedClientId !== 'ALL' && activeTab === 'pause_draft' && (
-        <PauseDraftTab
-          targetClientId={targetClientId}
-          autoSendEnabled={features.feature_auto_send}
-          onToggleAutoSend={(targetVal) => setPendingAutoSendTarget(targetVal)}
-        />
+      {/* Top Hero Status Banner */}
+      <FluentHeroCard
+        title={
+          selectedClientId === 'ALL'
+            ? 'Global Automation Engine (All Clients)'
+            : (resolvedCompanyName || `Client ${targetClientId}`)
+        }
+        subtitle={
+          selectedClientId === 'ALL'
+            ? `Scope: Global Default Policies | Flow: ${masterBotStatus.is_effective_enabled ? 'Active' : 'Halted'}`
+            : `Client ID: ${targetClientId} | Flow: ${masterBotStatus.is_effective_enabled ? 'Active' : 'Halted'}`
+        }
+        actionLabel={activeTab ? "Back to All Settings" : "Configure Flow"}
+        onActionClick={() => {
+          if (activeTab) {
+            setActiveTab(null);
+            setSearchParams({});
+          } else {
+            setActiveTab('general');
+            setSearchParams({ tab: 'general' });
+          }
+        }}
+        status1={{
+          icon: Power,
+          title: 'Master Kill Switch',
+          subtitle: masterBotStatus.is_effective_enabled ? 'Operational (Online)' : 'Halted (Stopped)',
+        }}
+        status2={{
+          icon: Bot,
+          title: 'Dispatch Safety Gate',
+          subtitle: features.feature_auto_send ? 'Direct Auto-Send' : 'Hold in Drafts',
+        }}
+      />
+
+      {/* ===================== VIEW 1: TEMPLATE C CATEGORY EXPANDER LIST ===================== */}
+      {!activeTab && (
+        <div className="space-y-3">
+          <SettingsCard
+            title="System & Automation Categories"
+            description="Select a category to view and adjust operational parameters"
+          >
+            {/* 1. General Settings & Kill Switch */}
+            <SettingsRow
+              icon={Gauge}
+              title="System Configuration & Bot Persona"
+              description={`Agent persona (${agentType}), tone (${tone}), confidence threshold (${threshold}%), and master emergency kill switch`}
+              action={
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                  masterBotStatus.is_effective_enabled
+                    ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                    : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+                }`}>
+                  {masterBotStatus.is_effective_enabled ? 'Active' : 'Halted'}
+                </span>
+              }
+              onClick={() => {
+                setActiveTab('general');
+                setSearchParams({ tab: 'general' });
+              }}
+            />
+
+            {/* 2. AI Features & Modules */}
+            {selectedClientId !== 'ALL' && (
+              <SettingsRow
+                icon={Sparkles}
+                title="AI Automation Features & Modules"
+                description="Ticket creation, RAG knowledge lookup, system connector webhooks, and manual reply override"
+                action={
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20">
+                    6 Modules
+                  </span>
+                }
+                onClick={() => {
+                  setActiveTab('features');
+                  setSearchParams({ tab: 'features' });
+                }}
+              />
+            )}
+
+            {/* 3. Pause & Draft Safety Controls */}
+            {selectedClientId !== 'ALL' && (
+              <SettingsRow
+                icon={FileText}
+                title="Pause & Draft Safety Mode"
+                description="Autonomous direct email dispatch vs supervisor review staging queue"
+                action={
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                    features.feature_auto_send
+                      ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                      : 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
+                  }`}>
+                    {features.feature_auto_send ? 'Auto-Send' : 'Draft Mode'}
+                  </span>
+                }
+                onClick={() => {
+                  setActiveTab('pause_draft');
+                  setSearchParams({ tab: 'pause_draft' });
+                }}
+              />
+            )}
+
+            {/* 4. Organization Sign-Off */}
+            {selectedClientId !== 'ALL' && (
+              <SettingsRow
+                icon={FileSignature}
+                title="Organization Sign-Off & Brand Persona"
+                description={`Company signature name (${companyName || 'C-Zentrix'}), department (${departmentName || 'Support'}), and signoff templates`}
+                onClick={() => {
+                  setActiveTab('signoff');
+                  setSearchParams({ tab: 'signoff' });
+                }}
+              />
+            )}
+
+            {/* 5. Keyword Moderation */}
+            <SettingsRow
+              icon={ShieldAlert}
+              title="Keyword Moderation & Sender Rules"
+              description={`Blocked sensitive keywords (${keywords.length} active), spam defense, and marketing email ignore filters`}
+              action={
+                keywords.length > 0 ? (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-black/[0.04] dark:bg-white/[0.08] text-foreground border border-black/[0.08] dark:border-white/[0.08]">
+                    {keywords.length} Blocked
+                  </span>
+                ) : undefined
+              }
+              onClick={() => {
+                setActiveTab('moderation');
+                setSearchParams({ tab: 'moderation' });
+              }}
+            />
+
+            {/* 6. Email Disclaimers */}
+            <SettingsRow
+              icon={Building2}
+              title="Email Disclaimers & Boilerplate Cleaning"
+              description={`Legal disclaimer rules (${disclaimers.length} active) and automatic token-saver phrase stripping`}
+              action={
+                disclaimers.length > 0 ? (
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-black/[0.04] dark:bg-white/[0.08] text-foreground border border-black/[0.08] dark:border-white/[0.08]">
+                    {disclaimers.length} Active
+                  </span>
+                ) : undefined
+              }
+              onClick={() => {
+                setActiveTab('disclaimers');
+                setSearchParams({ tab: 'disclaimers' });
+              }}
+            />
+          </SettingsCard>
+        </div>
       )}
 
-      {/* 3. AI FEATURES & MODULES TAB */}
-      {selectedClientId !== 'ALL' && activeTab === 'features' && (
-        <FeaturesTab
-          targetClientId={targetClientId}
-          features={features}
-          setFeatures={setFeatures}
-          handleSaveFeatures={handleSaveFeatures}
-          featuresSaving={featuresSaving}
-          success={success}
-        />
+      {/* ===================== VIEW 2: CATEGORY DETAIL VIEW ===================== */}
+      {activeTab && (
+        <div className="space-y-4">
+          {/* Windows 11 Horizontal Tab Navigation Pill Bar */}
+          <div className="flex flex-wrap items-center gap-1 bg-black/[0.03] dark:bg-white/[0.04] p-1 rounded-lg border border-black/[0.06] dark:border-white/[0.08]">
+            <button
+              onClick={() => {
+                setActiveTab('general');
+                setSearchParams({ tab: 'general' });
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'general'
+                  ? 'bg-primary text-primary-foreground shadow-2xs'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <Gauge className="w-3.5 h-3.5" />
+              <span>General</span>
+            </button>
+
+            {selectedClientId !== 'ALL' && (
+              <>
+                <button
+                  onClick={() => {
+                    setActiveTab('features');
+                    setSearchParams({ tab: 'features' });
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                    activeTab === 'features'
+                      ? 'bg-primary text-primary-foreground shadow-2xs'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>AI Features</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('pause_draft');
+                    setSearchParams({ tab: 'pause_draft' });
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                    activeTab === 'pause_draft'
+                      ? 'bg-primary text-primary-foreground shadow-2xs'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5" />
+                  <span>Pause &amp; Draft</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    setActiveTab('signoff');
+                    setSearchParams({ tab: 'signoff' });
+                  }}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                    activeTab === 'signoff'
+                      ? 'bg-primary text-primary-foreground shadow-2xs'
+                      : 'text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+                  }`}
+                >
+                  <FileSignature className="w-3.5 h-3.5" />
+                  <span>Sign-Off</span>
+                </button>
+              </>
+            )}
+
+            <button
+              onClick={() => {
+                setActiveTab('moderation');
+                setSearchParams({ tab: 'moderation' });
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'moderation'
+                  ? 'bg-primary text-primary-foreground shadow-2xs'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <ShieldAlert className="w-3.5 h-3.5" />
+              <span>Moderation</span>
+            </button>
+
+            <button
+              onClick={() => {
+                setActiveTab('disclaimers');
+                setSearchParams({ tab: 'disclaimers' });
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'disclaimers'
+                  ? 'bg-primary text-primary-foreground shadow-2xs'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <Building2 className="w-3.5 h-3.5" />
+              <span>Disclaimers</span>
+            </button>
+          </div>
+
+          {/* Tab Renderers */}
+          {activeTab === 'general' && (
+            <GeneralTab
+              selectedClientId={selectedClientId}
+              threshold={threshold}
+              setThreshold={setThreshold}
+              tone={tone}
+              setTone={setTone}
+              agentType={agentType}
+              setAgentType={setAgentType}
+              masterBotStatus={masterBotStatus}
+              masterBotLoading={masterBotLoading}
+              masterBotToggling={masterBotToggling}
+              isAdmin={isAdmin}
+              requestKillSwitchToggle={requestKillSwitchToggle}
+              handleSave={handleSave}
+              saving={saving}
+              success={success}
+            />
+          )}
+
+          {selectedClientId !== 'ALL' && activeTab === 'pause_draft' && (
+            <PauseDraftTab
+              targetClientId={targetClientId}
+              autoSendEnabled={features.feature_auto_send}
+              onToggleAutoSend={(targetVal) => setPendingAutoSendTarget(targetVal)}
+            />
+          )}
+
+          {selectedClientId !== 'ALL' && activeTab === 'features' && (
+            <FeaturesTab
+              targetClientId={targetClientId}
+              features={features}
+              setFeatures={setFeatures}
+              handleSaveFeatures={handleSaveFeatures}
+              featuresSaving={featuresSaving}
+              success={success}
+            />
+          )}
+
+          {selectedClientId !== 'ALL' && activeTab === 'signoff' && (
+            <SignoffTab
+              companyName={companyName}
+              setCompanyName={setCompanyName}
+              departmentName={departmentName}
+              setDepartmentName={setDepartmentName}
+              handleSave={handleSave}
+              saving={saving}
+              success={success}
+            />
+          )}
+
+          {activeTab === 'moderation' && (
+            <ModerationTab
+              keywords={keywords}
+              newKeyword={newKeyword}
+              setNewKeyword={setNewKeyword}
+              keywordSaving={keywordSaving}
+              handleAddKeyword={handleAddKeyword}
+              handleDeleteKeyword={handleDeleteKeyword}
+              marketingSenders={marketingSenders}
+              newMarketingSender={newMarketingSender}
+              setNewMarketingSender={setNewMarketingSender}
+              marketingLoading={marketingLoading}
+              marketingSaving={marketingSaving}
+              handleAddMarketingSender={handleAddMarketingSender}
+              handleDeleteMarketingSender={handleDeleteMarketingSender}
+            />
+          )}
+
+          {activeTab === 'disclaimers' && (
+            <DisclaimersTab
+              targetClientId={targetClientId}
+              features={features}
+              stripDisclaimerToggling={stripDisclaimerToggling}
+              handleToggleStripDisclaimers={handleToggleStripDisclaimers}
+              newDisclaimerText={newDisclaimerText}
+              setNewDisclaimerText={setNewDisclaimerText}
+              disclaimerSaving={disclaimerSaving}
+              handleAddDisclaimer={handleAddDisclaimer}
+              disclaimerLoading={disclaimerLoading}
+              disclaimers={disclaimers}
+              handleToggleDisclaimer={handleToggleDisclaimer}
+              handleDeleteDisclaimer={handleDeleteDisclaimer}
+            />
+          )}
+        </div>
       )}
 
-      {/* 4. ORGANIZATION & SIGN-OFF TAB */}
-      {selectedClientId !== 'ALL' && activeTab === 'signoff' && (
-        <SignoffTab
-          companyName={companyName}
-          setCompanyName={setCompanyName}
-          departmentName={departmentName}
-          setDepartmentName={setDepartmentName}
-          handleSave={handleSave}
-          saving={saving}
-          success={success}
-        />
-      )}
-
-      {/* 5. MODERATION SETTINGS TAB */}
-      {activeTab === 'moderation' && (
-        <ModerationTab
-          keywords={keywords}
-          newKeyword={newKeyword}
-          setNewKeyword={setNewKeyword}
-          keywordSaving={keywordSaving}
-          handleAddKeyword={handleAddKeyword}
-          handleDeleteKeyword={handleDeleteKeyword}
-          marketingSenders={marketingSenders}
-          newMarketingSender={newMarketingSender}
-          setNewMarketingSender={setNewMarketingSender}
-          marketingLoading={marketingLoading}
-          marketingSaving={marketingSaving}
-          handleAddMarketingSender={handleAddMarketingSender}
-          handleDeleteMarketingSender={handleDeleteMarketingSender}
-        />
-      )}
-
-      {/* 6. EMAIL DISCLAIMERS TAB */}
-      {activeTab === 'disclaimers' && (
-        <DisclaimersTab
-          targetClientId={targetClientId}
-          features={features}
-          stripDisclaimerToggling={stripDisclaimerToggling}
-          handleToggleStripDisclaimers={handleToggleStripDisclaimers}
-          newDisclaimerText={newDisclaimerText}
-          setNewDisclaimerText={setNewDisclaimerText}
-          disclaimerSaving={disclaimerSaving}
-          handleAddDisclaimer={handleAddDisclaimer}
-          disclaimerLoading={disclaimerLoading}
-          disclaimers={disclaimers}
-          handleToggleDisclaimer={handleToggleDisclaimer}
-          handleDeleteDisclaimer={handleDeleteDisclaimer}
-        />
-      )}
-
-      {/* Global Setting Change Warning & Confirmation Modal */}
+      {/* Confirmation Modals */}
       <ConfirmGlobalModal
         isOpen={showGlobalWarningModal}
         threshold={threshold}
@@ -756,7 +971,6 @@ export default function Settings() {
         onCancel={() => setShowGlobalWarningModal(false)}
       />
 
-      {/* Pause & Draft / Direct Auto-Send Mode Warning & Confirmation Modal */}
       <ConfirmAutoSendModal
         isOpen={pendingAutoSendTarget !== null}
         pendingTarget={pendingAutoSendTarget}
@@ -767,7 +981,6 @@ export default function Settings() {
         onCancel={() => setPendingAutoSendTarget(null)}
       />
 
-      {/* Master Kill Switch Double Warning & Confirmation Modal */}
       <ConfirmKillSwitchModal
         isOpen={pendingKillSwitchAction !== null}
         pendingAction={pendingKillSwitchAction}

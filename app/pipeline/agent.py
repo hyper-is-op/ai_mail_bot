@@ -22,6 +22,51 @@ def check_customer_resolution(text: str) -> bool:
     return any(re.search(pat, lower) for pat in RESOLUTION_PATTERNS)
 
 
+class ParsedFunction:
+    def __init__(self, name: str, arguments: str):
+        self.name = name
+        self.arguments = arguments
+
+
+class ParsedToolCall:
+    def __init__(self, tool_id: str, name: str, arguments: str):
+        self.id = tool_id
+        self.type = "function"
+        self.function = ParsedFunction(name, arguments)
+
+
+def extract_text_tool_calls(content: str) -> List[Any]:
+    """Fallback parser for models that emit tool calls as text markup instead of message.tool_calls."""
+    if not content or not isinstance(content, str):
+        return []
+
+    calls = []
+    raw_blocks = re.findall(r"<tool_call>(.*?)</tool_call>", content, flags=re.DOTALL | re.IGNORECASE)
+    for idx, block in enumerate(raw_blocks):
+        block = block.strip()
+        try:
+            parsed = json.loads(block)
+            if isinstance(parsed, dict):
+                name = parsed.get("name") or parsed.get("tool") or parsed.get("function")
+                args = parsed.get("arguments") or parsed.get("parameters") or parsed.get("args") or {}
+                if name:
+                    arg_str = json.dumps(args) if isinstance(args, dict) else str(args)
+                    calls.append(ParsedToolCall(f"call_text_{idx}", name, arg_str))
+                    continue
+        except Exception:
+            pass
+
+        fn_match = re.search(r"<function=([a-zA-Z0-9_-]+)>(.*?)(?:</function>|$)", block, flags=re.DOTALL | re.IGNORECASE)
+        if fn_match:
+            fn_name = fn_match.group(1).strip()
+            fn_body = fn_match.group(2)
+            param_matches = re.findall(r"<parameter=([a-zA-Z0-9_-]+)>(.*?)</parameter>", fn_body, flags=re.DOTALL | re.IGNORECASE)
+            params = {p_name.strip(): p_val.strip() for p_name, p_val in param_matches}
+            calls.append(ParsedToolCall(f"call_text_{idx}", fn_name, json.dumps(params)))
+
+    return calls
+
+
 def build_system_prompt(ctx: PipelineContext) -> str:
     """Constructs a grounded, instruction-guided system prompt for the customer support agent."""
     customer_name = extract_name_from_email(ctx.from_email)
@@ -71,15 +116,16 @@ GUIDELINES & HARD CONSTRAINTS:
 - If the customer asks about or provides an order number/ID (e.g., #1001, ORD10294, 'where is my order'), you MUST call 'lookup_order_status'.
 - If the customer asks about payment, billing, charge, or transaction status (e.g., transaction ID, invoice ID, payment reference), you MUST call 'lookup_payment_status'.
 - If the customer asks about or provides an existing support ticket reference (e.g., T-260505-00117, ticket #4921), you MUST call 'lookup_ticket_status'.
+- If any lookup tool ('lookup_ticket_status', 'lookup_order_status', 'lookup_payment_status', 'lookup_ticket_or_order_status') returns that the record was not found, inform the customer politely that the reference ID could not be found in our records, and ask them to verify or reply with the correct reference number. Do NOT call 'escalate_and_create_ticket' simply because a record was not found.
 - If the customer reports a technical issue or problem:
   1. Search the knowledge base using 'search_knowledge_base' for diagnostic guides and solutions.
   2. If steps exist, guide the customer through ONE clear troubleshooting action and ask them to test it and reply back with what happens.
   3. If previous steps failed (see conversation history), offer the next diagnostic step.
   4. Only call 'escalate_and_create_ticket' if:
      - All troubleshooting steps in the knowledge base have been exhausted, OR
-     - 3 troubleshooting turns have already occurred and the issue remains unresolved, OR
-     - The issue is a confirmed hardware/server failure or billing bug that self-troubleshooting cannot fix, OR
-     - The customer explicitly asks for human support / ticket creation.
+     - 3 troubleshooting turns have already occurred and the issue remains unresolved.
+     # - The issue is a confirmed hardware/server failure or billing bug that self-troubleshooting cannot fix, OR
+     # - The customer explicitly asks for human support / ticket creation.
 - If the customer states the issue is resolved or that a step worked, confirm resolution politely and DO NOT create a ticket.
 - NEVER invent facts, order statuses, turnaround times, or tracking links that were not returned by tools.
 - Address the customer politely: "Dear {customer_name},".
@@ -177,13 +223,36 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
 
     msg = response.choices[0].message
     tool_calls = getattr(msg, "tool_calls", None)
+    is_text_tool_calls = False
+    if not tool_calls and msg.content and ("<tool_call>" in msg.content or "<function=" in msg.content):
+        extracted = extract_text_tool_calls(msg.content)
+        if extracted:
+            tool_calls = extracted
+            is_text_tool_calls = True
 
     # 4. Handle Tool Calls
     from app.llm import strip_reasoning_and_think_tags
     if tool_calls:
         logger.info(f"⚡ [Agent Loop] Model emitted {len(tool_calls)} tool call(s)")
         # Append assistant message with tool calls
-        messages.append(msg)
+        if is_text_tool_calls:
+            messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments if isinstance(tc.function.arguments, str) else json.dumps(tc.function.arguments)
+                        }
+                    }
+                    for tc in tool_calls
+                ]
+            })
+        else:
+            messages.append(msg)
 
         ticket_escalated = False
         for tc in tool_calls:
@@ -211,6 +280,10 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
             return ctx
 
         # Round 2: Model synthesizes final answer with tool outputs
+        messages.append({
+            "role": "user",
+            "content": "Using the knowledge and tool results above, provide your final helpful troubleshooting response to the customer. Do not call any further tools or output tool tags."
+        })
         try:
             second_response = client.chat.completions.create(
                 model=model_name,
@@ -219,6 +292,7 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
                 caller="run_support_agent"
             )
             raw_content = second_response.choices[0].message.content or ""
+            raw_content = re.sub(r"<tool_call>.*?</tool_call>", "", raw_content, flags=re.DOTALL | re.IGNORECASE).strip()
             final_draft = strip_reasoning_and_think_tags(raw_content)
         except Exception as e2:
             logger.error(f"❌ [Agent Loop] Secondary synthesis failed: {e2}")
@@ -237,12 +311,15 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
 
     # 5. Post-Processing: Disclaimers and Evaluation
     final_draft = append_client_disclaimers(ctx.client_id, final_draft)
+    is_not_found = bool(isinstance(ctx.context_data, dict) and ctx.context_data.get("status") == "not_found")
     score, decision = evaluate_draft_and_decide(
         client_id=ctx.client_id,
         reply=final_draft,
         query=user_query,
         context_succeeded=bool(ctx.context_text or ctx.context_data or not tool_calls or ctx.is_resolved),
-        is_resolved=ctx.is_resolved
+        is_resolved=ctx.is_resolved,
+        troubleshooting_step=ctx.troubleshooting_step,
+        is_not_found=is_not_found
     )
 
     ctx.draft_reply = final_draft

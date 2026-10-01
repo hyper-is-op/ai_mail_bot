@@ -183,6 +183,19 @@ select {
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
+/* Hide native Edge/Chrome/Safari password reveal buttons to prevent overlay conflicts with custom eye icon */
+input::-ms-reveal,
+input::-ms-clear {
+  display: none !important;
+}
+
+input::-webkit-credentials-auto-fill-button {
+  visibility: hidden;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+
 /* Windows 11 Fluent Button Styling */
 button {
   font-family: inherit;

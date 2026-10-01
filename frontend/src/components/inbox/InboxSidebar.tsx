@@ -23,13 +23,15 @@ import {
 } from './types';
 
 interface InboxSidebarProps {
-  isAdmin: boolean;
-  clients: any[];
-  selectedClientId: string;
-  onSelectClientId: (id: string) => void;
+  isAdmin?: boolean;
+  clients?: any[];
+  selectedClientId?: string;
+  onSelectClientId?: (id: string) => void;
   onRefresh: () => void;
   activeTab: InboxTabType;
   setActiveTab: (tab: InboxTabType) => void;
+  failedSubTab?: 'All' | 'Worker' | 'Auth' | 'Ticket' | 'LLM';
+  setFailedSubTab?: (tab: 'All' | 'Worker' | 'Auth' | 'Ticket' | 'LLM') => void;
   searchQuery: string;
   setSearchQuery: (query: string) => void;
   groupedThreads: ThreadItem[];
@@ -56,13 +58,11 @@ interface InboxSidebarProps {
 }
 
 export const InboxSidebar: React.FC<InboxSidebarProps> = ({
-  isAdmin,
-  clients,
-  selectedClientId,
-  onSelectClientId,
   onRefresh,
   activeTab,
   setActiveTab,
+  failedSubTab,
+  setFailedSubTab,
   searchQuery,
   setSearchQuery,
   groupedThreads,
@@ -101,23 +101,7 @@ export const InboxSidebar: React.FC<InboxSidebarProps> = ({
           </button>
         </div>
 
-        {isAdmin && clients.length > 0 && (
-          <div className="flex items-center gap-2 bg-zinc-100 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl px-2.5 py-1.5 text-xs">
-            <span className="text-muted-foreground font-semibold text-[11px]">Client:</span>
-            <select
-              value={selectedClientId}
-              onChange={(e) => onSelectClientId(e.target.value)}
-              className="bg-transparent font-medium text-foreground focus:outline-none cursor-pointer flex-1 text-xs"
-            >
-              <option value="ALL" className="dark:bg-zinc-900">All Clients</option>
-              {clients.map((c) => (
-                <option key={c.client_id} value={c.client_id} className="dark:bg-zinc-900">
-                  {c.client_id} {c.company_name ? `(${c.company_name})` : ''}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
+
 
         {/* Filter & Search Bar */}
         <div className="flex items-center gap-2">
@@ -169,39 +153,26 @@ export const InboxSidebar: React.FC<InboxSidebarProps> = ({
           </div>
         </div>
 
-        {/* Quick Filter Section Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1 text-[11px]">
-          {(['All', 'Failed', 'Pending Review', 'Replied'] as const).map(tab => (
-            <button
-              key={tab}
-              onClick={() => handleTabChange(tab)}
-              className={cn(
-                "px-2.5 py-1 rounded-lg font-medium transition-all shrink-0 flex items-center gap-1",
-                activeTab === tab
-                  ? tab === 'Failed' 
-                    ? "bg-rose-500/20 text-rose-600 dark:text-rose-400 font-semibold border border-rose-500/30"
-                    : tab === 'Pending Review'
-                    ? "bg-amber-500/20 text-amber-600 dark:text-amber-400 font-semibold border border-amber-500/30"
-                    : "bg-primary text-primary-foreground font-semibold shadow-xs"
-                  : "bg-zinc-100 dark:bg-white/5 text-muted-foreground hover:text-foreground border border-transparent"
-              )}
-            >
-              <span>{tab}</span>
-              {tab === 'Failed' && counts.failed > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-rose-500 text-white font-bold">
-                  {counts.failed}
-                </span>
-              )}
-              {tab === 'Pending Review' && counts.pendingReview > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[9px] bg-amber-500 text-white font-bold">
-                  {counts.pendingReview}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        {/* Failed Sub-Tabs */}
+        {activeTab === 'Failed' && failedSubTab && setFailedSubTab && (
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-1 pb-1 text-[10px]">
+            {(['All', 'Worker', 'Auth', 'Ticket', 'LLM'] as const).map(subTab => (
+              <button
+                key={subTab}
+                onClick={() => setFailedSubTab(subTab)}
+                className={cn(
+                  "px-2 py-0.5 rounded-full font-medium transition-all shrink-0",
+                  failedSubTab === subTab
+                    ? "bg-rose-500 text-white"
+                    : "bg-rose-500/10 text-rose-500 hover:bg-rose-500/20"
+                )}
+              >
+                {subTab === 'All' ? 'All Failures' : `${subTab} Errors`}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
-
       {/* Paused Banner with Resume All */}
       {activeTab === 'Paused' && (
         <div className="px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-[11px] text-amber-700 dark:text-amber-300 flex items-center justify-between">

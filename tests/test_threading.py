@@ -123,6 +123,17 @@ class TestThreadingAndTroubleshooting(unittest.TestCase):
             self.assertEqual(history[1]["role"], "support")
             self.assertIn("disconnect the power adapter", history[1]["body"])
 
+    def test_07_thread_key_normalization(self):
+        """_make_key avoids duplicate th_ prefix in Redis keys."""
+        from app.chat_history import _make_key
+        # When thread_id already has th_ prefix
+        self.assertEqual(_make_key("CLI-TEST", "user@example.com", "th_abc123"), "chat_history:CLI-TEST:th_abc123")
+        # When thread_id does not have th_ prefix
+        self.assertEqual(_make_key("CLI-TEST", "user@example.com", "abc123"), "chat_history:CLI-TEST:th_abc123")
+        # When thread_id is empty
+        self.assertEqual(_make_key("CLI-TEST", "user@example.com", ""), "chat_history:CLI-TEST:user@example.com")
+
 
 if __name__ == "__main__":
     unittest.main()
+

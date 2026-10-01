@@ -25,13 +25,12 @@ import { AiTemplateModal } from '@/components/payload-config/AiTemplateModal';
 import { AllowlistModal } from '@/components/payload-config/AllowlistModal';
 import { DeleteConfirmModal } from '@/components/payload-config/DeleteConfirmModal';
 import { RejectReasonModal } from '@/components/payload-config/RejectReasonModal';
+import { useAppState } from '@/context/AppStateContext';
 
 export default function PayloadConfig() {
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const isAdmin = user?.role === 'admin';
+  const { selectedClientId, clients, isAdmin } = useAppState();
 
-  const [selectedClientId, setSelectedClientId] = useState(user?.client_id || '');
-  const [clients, setClients] = useState<any[]>([]);
   const [connectors, setConnectors] = useState<ConnectorConfig[]>([]);
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState<{ type: 'success' | 'error' | 'info'; text: string } | null>(null);
@@ -65,20 +64,6 @@ export default function PayloadConfig() {
   });
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiResult, setAiResult] = useState<AiTemplateResult | null>(null);
-
-  useEffect(() => {
-    if (isAdmin) {
-      api.getAllEmailAccounts()
-        .then((data) => {
-          const list = data || [];
-          setClients(list);
-          if (list.length > 0 && !selectedClientId) {
-            setSelectedClientId(list[0].client_id);
-          }
-        })
-        .catch((err) => console.error('Failed to fetch clients:', err));
-    }
-  }, [isAdmin]);
 
   useEffect(() => {
     loadConnectors();
@@ -190,6 +175,13 @@ export default function PayloadConfig() {
         token_auth_method: formData.oauth_token_auth_method,
       });
       setOauthTestResult(res);
+      if (res?.success && res.refresh_token) {
+        setFormData((prev) => ({
+          ...prev,
+          oauth_refresh_token: res.refresh_token,
+          oauth_grant_type: 'refresh_token',
+        }));
+      }
     } catch (err: any) {
       setOauthTestResult({ success: false, error: err.message || 'Token handshake failed' });
     } finally {
@@ -223,7 +215,7 @@ export default function PayloadConfig() {
             client_id: formData.oauth_client_id.trim(),
             client_secret: formData.oauth_client_secret ? formData.oauth_client_secret.trim() : (editingId ? '__KEEP_EXISTING__' : ''),
             refresh_token: formData.oauth_refresh_token ? formData.oauth_refresh_token.trim() : (editingId ? '__KEEP_EXISTING__' : ''),
-            grant_type: formData.oauth_grant_type || 'client_credentials',
+            grant_type: formData.oauth_grant_type === 'authorization_code' ? 'refresh_token' : (formData.oauth_grant_type || 'client_credentials'),
             header_prefix: formData.oauth_header_prefix || 'Bearer',
             scope: formData.oauth_scope || '',
             token_auth_method: formData.oauth_token_auth_method || 'client_secret_post',
@@ -470,32 +462,14 @@ export default function PayloadConfig() {
 
         <div className="flex flex-wrap items-center gap-2">
           {isAdmin && (
-            <>
-              <button
-                type="button"
-                onClick={openAllowlist}
-                className="flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-xl border border-zinc-200 dark:border-white/10 hover:bg-zinc-100 dark:hover:bg-white/5 transition-all text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                <Globe className="w-4 h-4 text-emerald-500" />
-                URL Allowlist
-              </button>
-              {clients.length > 0 && (
-                <div className="flex items-center gap-2 bg-zinc-100 dark:bg-white/5 px-3 py-1.5 rounded-xl border border-zinc-200 dark:border-white/10">
-                  <span className="text-xs text-muted-foreground font-semibold">Client:</span>
-                  <select
-                    value={selectedClientId}
-                    onChange={(e) => setSelectedClientId(e.target.value)}
-                    className="bg-transparent text-xs font-medium focus:outline-none cursor-pointer"
-                  >
-                    {clients.map((c) => (
-                      <option key={c.client_id} value={c.client_id} className="dark:bg-zinc-900">
-                        {c.client_id} {c.company_name ? `(${c.company_name})` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
-            </>
+            <button
+              type="button"
+              onClick={openAllowlist}
+              className="flex items-center gap-2 px-3 py-2 text-xs font-medium rounded-xl border border-zinc-200 dark:border-white/10 hover:bg-zinc-100 dark:hover:bg-white/5 transition-all text-muted-foreground hover:text-foreground cursor-pointer"
+            >
+              <Globe className="w-4 h-4 text-emerald-500" />
+              URL Allowlist
+            </button>
           )}
 
           <button

@@ -26,6 +26,7 @@ QDRANT_HOST = os.getenv("QDRANT_HOST", "mail_ai_qdrant")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 COLLECTION_NAME = os.getenv("QDRANT_COLLECTION", "mail_ai_knowledge")
 VECTOR_SIZE = 384  # intfloat/multilingual-e5-small
+DEFAULT_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.68"))
 
 _qdrant_client: QdrantClient | None = None
 
@@ -94,6 +95,33 @@ def ensure_collection() -> bool:
         except Exception:
             pass
 
+        # Payload full-text index on content and title for keyword / hybrid lookups
+        try:
+            client.create_payload_index(
+                collection_name=COLLECTION_NAME,
+                field_name="content",
+                field_schema=qmodels.TextIndexParams(
+                    type="text",
+                    tokenizer=qmodels.TokenizerType.WORD,
+                    lowercase=True,
+                ),
+            )
+        except Exception:
+            pass
+
+        try:
+            client.create_payload_index(
+                collection_name=COLLECTION_NAME,
+                field_name="title",
+                field_schema=qmodels.TextIndexParams(
+                    type="text",
+                    tokenizer=qmodels.TokenizerType.WORD,
+                    lowercase=True,
+                ),
+            )
+        except Exception:
+            pass
+
         return True
     except Exception as e:
         logger.error(f"❌ Failed to ensure Qdrant collection: {e}")
@@ -157,10 +185,16 @@ def upsert_chunks(
         return False
 
 
-def search(client_id: str, query_vector: list[float], top_k: int = 3) -> list[dict[str, Any]]:
+def search(
+    client_id: str,
+    query_vector: list[float],
+    top_k: int = 3,
+    min_score: float = DEFAULT_MIN_SCORE,
+) -> list[dict[str, Any]]:
     """
     Filtered ANN search scoped to client_id. Returns a list of dicts:
     [{"content": str, "title": str, "doc_id": str, "score": float, "id": str}, ...]
+    Only results with cosine score >= min_score are returned.
     Returns [] on any failure — callers treat that identically to "no matches".
     """
     client_id = _validate_tenant_id(client_id, "search")
@@ -183,13 +217,16 @@ def search(client_id: str, query_vector: list[float], top_k: int = 3) -> list[di
         )
         out = []
         for r in response.points:
+            score = round(float(r.score), 3)
+            if score < min_score:
+                continue
             payload = r.payload or {}
             out.append({
                 "id": str(r.id),
                 "content": payload.get("content", ""),
                 "title": payload.get("title", "Untitled Document"),
                 "doc_id": payload.get("doc_id", ""),
-                "score": round(float(r.score), 3),
+                "score": score,
             })
         return out
     except Exception as e:
@@ -197,7 +234,11 @@ def search(client_id: str, query_vector: list[float], top_k: int = 3) -> list[di
         return []
 
 
-def search_all_clients(query_vector: list[float], top_k: int = 3) -> list[dict[str, Any]]:
+def search_all_clients(
+    query_vector: list[float],
+    top_k: int = 3,
+    min_score: float = DEFAULT_MIN_SCORE,
+) -> list[dict[str, Any]]:
     """Unfiltered search across all clients — used for the ALL/admin views."""
     client = get_qdrant_client()
     if client is None:
@@ -210,6 +251,9 @@ def search_all_clients(query_vector: list[float], top_k: int = 3) -> list[dict[s
         )
         out = []
         for r in response.points:
+            score = round(float(r.score), 3)
+            if score < min_score:
+                continue
             payload = r.payload or {}
             out.append({
                 "id": str(r.id),
@@ -217,7 +261,7 @@ def search_all_clients(query_vector: list[float], top_k: int = 3) -> list[dict[s
                 "title": payload.get("title", "Untitled Document"),
                 "doc_id": payload.get("doc_id", ""),
                 "client_id": payload.get("client_id", ""),
-                "score": round(float(r.score), 3),
+                "score": score,
             })
         return out
     except Exception as e:

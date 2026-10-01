@@ -4,7 +4,6 @@ import {
   CheckCircle,
   RefreshCw,
   AlertTriangle,
-  User,
   Settings as SettingsIcon,
 } from 'lucide-react';
 import { api } from '../lib/api';
@@ -17,6 +16,7 @@ import {
   DraftsTable,
   DraftReviewModal,
 } from '@/components/drafts';
+import { useAppState } from '@/context/AppStateContext';
 
 export function Drafts() {
   const [drafts, setDrafts] = useState<DraftItem[]>([]);
@@ -33,13 +33,9 @@ export function Drafts() {
   const [totalPages, setTotalPages] = useState(1);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
 
-  // Multi-tenant Client Account State
+  // Global Tenant State
+  const { selectedClientId, isAdmin } = useAppState();
   const user = JSON.parse(localStorage.getItem('user') || '{}');
-  const isAdmin = user?.role === 'admin';
-  const [accounts, setAccounts] = useState<any[]>([]);
-  const [selectedClientId, setSelectedClientId] = useState<string>(
-    isAdmin ? 'ALL' : user?.client_id || ''
-  );
 
   // Filter States
   const [statusFilter, setStatusFilter] = useState<string>('pending');
@@ -63,21 +59,6 @@ export function Drafts() {
     setNotification({ type, message });
     setTimeout(() => setNotification(null), 4000);
   };
-
-  // Load registered client accounts for Admin
-  useEffect(() => {
-    if (isAdmin) {
-      api.getAllEmailAccounts()
-        .then((res) => {
-          const accs = Array.isArray(res) ? res : res?.accounts || [];
-          setAccounts(accs);
-          if (!selectedClientId) {
-            setSelectedClientId('ALL');
-          }
-        })
-        .catch(console.error);
-    }
-  }, [isAdmin]);
 
   const activeCid = isAdmin ? selectedClientId : (user?.client_id || '');
 
@@ -418,46 +399,7 @@ export function Drafts() {
         </div>
       </div>
 
-      {/* Admin Client Account Selector */}
-      {isAdmin && (
-        <div className="p-3.5 rounded-lg win11-card flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-l-4 border-l-primary">
-          <div className="flex items-center gap-2.5">
-            <User className="w-4 h-4 text-primary shrink-0" />
-            <div>
-              <span className="text-xs font-semibold text-foreground block">
-                Managing Client Mailbox
-              </span>
-              <span className="text-[11px] text-muted-foreground">
-                Admin accounts have no personal Gmail connected. Select a client to inspect their Pause &amp; Draft queue.
-              </span>
-            </div>
-          </div>
 
-          <div className="flex items-center gap-2">
-            <select
-              value={selectedClientId}
-              onChange={(e) => {
-                setSelectedClientId(e.target.value);
-                setPage(1);
-              }}
-              className="px-3 py-1.5 text-xs rounded-md border border-black/[0.08] dark:border-white/[0.08] bg-white/80 dark:bg-white/[0.05] text-foreground font-medium focus:outline-none focus:border-b-2 focus:border-b-primary shadow-2xs min-w-[220px] cursor-pointer"
-            >
-              {accounts.length === 0 ? (
-                <option value="">No registered client accounts</option>
-              ) : (
-                <>
-                  <option value="ALL">All Clients ({accounts.length})</option>
-                  {accounts.map((acc) => (
-                    <option key={acc.client_id} value={acc.client_id}>
-                      {acc.name || acc.client_id} ({acc.email})
-                    </option>
-                  ))}
-                </>
-              )}
-            </select>
-          </div>
-        </div>
-      )}
 
       {/* KPI Status Tiles */}
       <DraftMetricsCards

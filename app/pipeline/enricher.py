@@ -122,18 +122,23 @@ def fetch_rag_context(client_id: str, query: str, rag_id: Optional[str] = None) 
     Retrieves relevant knowledge base chunks via Qdrant/Chroma vector store.
     Returns (context_text, success_bool, rag_id).
     """
-    if not rag_id:
+    if not rag_id and client_id:
         rag_id = get_rag_id(client_id)
+
+    target_client_id = client_id
+    if not target_client_id and rag_id:
+        if rag_id.startswith("client_"):
+            target_client_id = rag_id[7:].replace('_', '-').upper()
+        else:
+            target_client_id = rag_id
 
     context = ""
     try:
-        if rag_id:
+        if target_client_id and target_client_id != "ALL":
+            context = query_knowledge(target_client_id, query, top_k=3)
+        elif rag_id:
             rag_res = query_rag(rag_id, query)
             context = rag_res.get("answer", "")
-        else:
-            # Fallback direct knowledge query
-            rag_res = query_knowledge(client_id, query, top_k=3)
-            context = rag_res.get("context", "") if isinstance(rag_res, dict) else str(rag_res)
 
         succeeded = bool(context and "No context found" not in context)
         return context, succeeded, rag_id

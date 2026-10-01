@@ -13,7 +13,7 @@ export interface ConnectorConfig {
   base64_query_param_name?: string | null;
   oauth_token_url?: string;
   oauth_client_id?: string;
-  oauth_grant_type?: 'client_credentials' | 'refresh_token';
+  oauth_grant_type?: 'client_credentials' | 'refresh_token' | 'authorization_code';
   oauth_header_prefix?: string;
   oauth_scope?: string;
   oauth_token_auth_method?: 'client_secret_post' | 'client_secret_basic';
@@ -41,7 +41,7 @@ export interface ConnectorFormData {
   oauth_client_id: string;
   oauth_client_secret: string;
   oauth_refresh_token: string;
-  oauth_grant_type: 'client_credentials' | 'refresh_token';
+  oauth_grant_type: 'client_credentials' | 'refresh_token' | 'authorization_code';
   oauth_header_prefix: string;
   oauth_scope: string;
   oauth_token_auth_method: 'client_secret_post' | 'client_secret_basic';
@@ -57,6 +57,7 @@ export interface OAuthTestResult {
   success: boolean;
   message?: string;
   error?: string;
+  refresh_token?: string;
   expires_in?: number;
   duration_ms?: number;
 }

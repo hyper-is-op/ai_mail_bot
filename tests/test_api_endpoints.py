@@ -143,18 +143,20 @@ class TestApiEndpoints(unittest.TestCase):
     def test_08c_process_email_api_key(self):
         """POST /process-email with valid X-API-Key must succeed with 200"""
         api_key = os.getenv("INGESTION_API_KEY", "mail_ai_ingest_secret_token_dev")
-        res = self.client.post(
-            "/process-email",
-            json={
-                "client_id": self.test_client_id,
-                "from_email": "customer@example.com",
-                "subject": "Help",
-                "body": "Issue"
-            },
-            headers={"X-API-Key": api_key}
-        )
-        self.assertEqual(res.status_code, 200)
-        self.assertEqual(res.json().get("status"), "queued")
+        with patch("app.api.emails.process_email_task.delay") as mock_delay:
+            res = self.client.post(
+                "/process-email",
+                json={
+                    "client_id": self.test_client_id,
+                    "from_email": "customer@example.com",
+                    "subject": "Help",
+                    "body": "Issue"
+                },
+                headers={"X-API-Key": api_key}
+            )
+            self.assertEqual(res.status_code, 200)
+            self.assertEqual(res.json().get("status"), "queued")
+            mock_delay.assert_called_once()
 
     def test_09_outbox_sweep_endpoint(self):
         """POST /admin/action-outbox/sweep should execute and return sweep metrics"""

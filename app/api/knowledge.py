@@ -38,6 +38,7 @@ class RagRetrieveRequest(BaseModel):
 
 
 @router.post("/rag/upload", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
+@router.post("/upload-rag", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
 def upload_rag_data_endpoint(data: RagUploadRequest, user: dict = Depends(get_current_user)):
     require_client_access(data.client_id, user)
     try:
@@ -48,6 +49,7 @@ def upload_rag_data_endpoint(data: RagUploadRequest, user: dict = Depends(get_cu
 
 
 @router.get("/rag/documents/{client_id}")
+@router.get("/rag-documents/{client_id}")
 def get_rag_documents_endpoint(client_id: str, user: dict = Depends(get_current_user)):
     require_client_access(client_id, user)
     try:
@@ -58,6 +60,7 @@ def get_rag_documents_endpoint(client_id: str, user: dict = Depends(get_current_
 
 
 @router.delete("/rag/documents/{client_id}/{doc_id}")
+@router.delete("/rag-documents/{client_id}/{doc_id}")
 def delete_rag_document_endpoint(client_id: str, doc_id: str, user: dict = Depends(get_current_user)):
     require_client_access(client_id, user)
     try:
@@ -72,6 +75,7 @@ def delete_rag_document_endpoint(client_id: str, doc_id: str, user: dict = Depen
 
 
 @router.post("/rag/query", dependencies=[Depends(RedisRateLimiter(limit=20, window=60))])
+@router.post("/query-rag", dependencies=[Depends(RedisRateLimiter(limit=20, window=60))])
 def query_rag_endpoint(data: RagQueryRequest, user: dict = Depends(get_current_user)):
     require_client_access(data.client_id, user)
     try:
@@ -82,6 +86,7 @@ def query_rag_endpoint(data: RagQueryRequest, user: dict = Depends(get_current_u
 
 
 @router.post("/rag/retrieve", dependencies=[Depends(RedisRateLimiter(limit=20, window=60))])
+@router.post("/retrieve-rag", dependencies=[Depends(RedisRateLimiter(limit=20, window=60))])
 def retrieve_rag_endpoint(data: RagRetrieveRequest, user: dict = Depends(get_current_user)):
     require_client_access(data.client_id, user)
     try:
@@ -121,6 +126,7 @@ def get_admin_knowledge_stats(user: dict = Depends(require_admin())):
 
 
 @router.post("/rag/upload-file", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
+@router.post("/upload-rag-file", dependencies=[Depends(RedisRateLimiter(limit=10, window=60))])
 async def upload_rag_file_endpoint(
     client_id: str = Form(...),
     file: UploadFile = File(...),
@@ -141,3 +147,4 @@ async def upload_rag_file_endpoint(
         raise HTTPException(status_code=400, detail=str(val_err))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+

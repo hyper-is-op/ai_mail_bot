@@ -419,6 +419,9 @@ def telemetry_create(*args, caller: str | None = None, **kwargs):
         except Exception:
             pass
 
+    email_log_id = kwargs.pop("email_log_id", None)
+    thread_id = kwargs.pop("thread_id", None)
+
     start_time = time.time()
     client_id = current_client_id.get()
 
@@ -505,15 +508,15 @@ def telemetry_create(*args, caller: str | None = None, **kwargs):
                     if raw_c:
                         choice.message.content = strip_reasoning_and_think_tags(raw_c)
 
-        log_llm_metrics_db(client_id, provider, actual_model, prompt_tokens, completion_tokens, latency_ms, caller)
+        log_llm_metrics_db(client_id, provider, actual_model, prompt_tokens, completion_tokens, latency_ms, caller, email_log_id=email_log_id, thread_id=thread_id)
     except Exception as telemetry_err:
         logger.warning(f"Telemetry tracking error: {telemetry_err}")
 
     return res
 
 class _TelemetryCompletions:
-    def create(self, *args, caller: str | None = None, **kwargs):
-        return telemetry_create(*args, caller=caller, **kwargs)
+    def create(self, *args, caller: str | None = None, email_log_id: int | None = None, thread_id: str | None = None, **kwargs):
+        return telemetry_create(*args, caller=caller, email_log_id=email_log_id, thread_id=thread_id, **kwargs)
 
 
 class _TelemetryChat:
@@ -533,62 +536,6 @@ class TelemetryLLMClient:
 
 # Canonical shared client instance
 client = TelemetryLLMClient()
-
-
-def resolve_langchain_model(client_id: str, caller_function: str, temperature: float = 0.2):
-    """
-    Resolves the LLM config for LangChain usage, returns a ChatOpenAI, AzureChatOpenAI,
-    or ChatAnthropic instance configured with database credentials.
-    """
-    config = get_llm_config_for_client(client_id, caller_function)
-    provider = config["provider"].lower()
-    
-    base_url = config["base_url"]
-    if not base_url:
-        if provider == "groq":
-            base_url = "https://api.groq.com/openai/v1"
-        elif provider == "openai":
-            base_url = "https://api.openai.com/v1"
-        elif provider == "grok":
-            base_url = "https://api.x.ai/v1"
-        elif provider == "gemini":
-            base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
-        elif provider in ("claude", "anthropic"):
-            base_url = "https://api.anthropic.com/v1"
-            
-    if provider in ("claude", "anthropic"):
-        try:
-            from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(
-                model_name=config["model_name"],
-                anthropic_api_key=config["api_key"],
-                temperature=temperature
-            )
-        except Exception:
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(
-                model=config["model_name"],
-                openai_api_key=config["api_key"],
-                openai_api_base=base_url or None,
-                temperature=temperature
-            )
-    elif provider == "azure":
-        from langchain_openai import AzureChatOpenAI
-        return AzureChatOpenAI(
-            model=config["model_name"],
-            openai_api_key=config["api_key"],
-            openai_api_version=config["api_version"] or "2024-02-15-preview",
-            azure_endpoint=base_url,
-            temperature=temperature
-        )
-    else:
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(
-            model=config["model_name"],
-            openai_api_key=config["api_key"],
-            openai_api_base=base_url or None,
-            temperature=temperature
-        )
 
 
 _model_cache = {}

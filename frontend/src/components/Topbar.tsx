@@ -1,26 +1,77 @@
 import { useState, useEffect, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { 
   Bell as BellIcon, Moon as MoonIcon, Sun as SunIcon, ChevronDown, 
   LogOut, Menu, Mail, Send, Ticket, AlertCircle, Check,
-  Sliders, Cpu, Users, Code2, ChevronRight, FileText
+  Sliders, ChevronRight, FileText,
+  Search, ArrowLeft, Zap, Activity, DollarSign, Clock, ShieldAlert
 } from 'lucide-react';
 import { api } from '@/lib/api';
+import { useAppState } from '@/context/AppStateContext';
 
 interface TopbarProps {
   onMenuClick: () => void;
 }
 
 export default function Topbar({ onMenuClick }: TopbarProps) {
-  const [theme, setTheme] = useState(() => {
-    return localStorage.getItem('theme') || 'dark';
-  });
+  const { 
+    theme, 
+    toggleTheme, 
+    pendingDraftCount,
+    selectedClientId,
+    setSelectedClientId,
+    clients,
+    isAdmin
+  } = useAppState();
   const [showDropdown, setShowDropdown] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   const [profileData, setProfileData] = useState<any>(null);
-  const [pendingDraftCount, setPendingDraftCount] = useState<number>(0);
+
+  // Find a feature/page state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearchDropdown, setShowSearchDropdown] = useState(false);
+  const searchRef = useRef<HTMLDivElement>(null);
+
+  const routeTitles: Record<string, string> = {
+    '/dashboard': 'Dashboard',
+    '/inbox': 'Mail Monitor',
+    '/drafts': 'Drafts & Approvals',
+    '/ai-processing': 'AI Pipeline Trace',
+    '/tickets': 'Tickets & Escalations',
+    '/accounts': 'Mailbox Accounts',
+    '/knowledge': 'Knowledge Base (RAG)',
+    '/payloads': 'Integrations & Webhooks',
+    '/settings': 'Settings & Policies',
+    '/admin/clients': 'Clients Management',
+    '/admin/llm-configs': 'AI & Models Configuration',
+  };
+
+  const currentTitle = routeTitles[location.pathname] || 'Dashboard';
+
+  const quickSettingsList = [
+    { name: 'Email Operations', href: '/dashboard', category: 'Overview' },
+    { name: 'LLM & AI Telemetry', href: '/dashboard?tab=llm', category: 'Overview' },
+    { name: 'Mail Monitor', href: '/inbox', category: 'Operations' },
+    { name: 'Drafts & Approvals', href: '/drafts', category: 'Operations' },
+    { name: 'Tickets & Escalations', href: '/tickets', category: 'Operations' },
+    { name: 'AI Pipeline Trace', href: '/ai-processing', category: 'Operations' },
+    { name: 'Knowledge Base (RAG)', href: '/knowledge', category: 'Knowledge' },
+    { name: 'Mailbox Accounts', href: '/accounts', category: 'Administration' },
+    { name: 'Integrations & Webhooks', href: '/payloads', category: 'Administration' },
+    { name: 'Settings & Policies', href: '/settings', category: 'Settings' },
+    { name: 'Clients Management', href: '/admin/clients', category: 'Administration' },
+    { name: 'AI & Models Configuration', href: '/admin/llm-configs', category: 'Administration' },
+  ];
+
+  const filteredQuickSettings = searchQuery.trim()
+    ? quickSettingsList.filter((item) =>
+        item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        item.category.toLowerCase().includes(searchQuery.toLowerCase())
+      )
+    : [];
 
   // Helper for user initials
   const getInitials = (str: string) => {
@@ -54,15 +105,19 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
   };
 
   // Notifications state
-  interface Notification {
+  interface SystemNotification {
     id: string;
     title: string;
     body: string;
     time: string;
     read: boolean;
     type: 'success' | 'warning' | 'info' | 'error';
+    category?: 'budget' | 'infrastructure' | 'mailbox' | 'operations' | 'pipeline' | 'sentiment';
+    client_id?: string;
+    email_id?: number | string;
+    action_url?: string;
   }
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifications, setNotifications] = useState<SystemNotification[]>([]);
   const [showNotifDropdown, setShowNotifDropdown] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const notifRef = useRef<HTMLDivElement>(null);
@@ -86,83 +141,41 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
     }
   }, [user?.client_id, user?.role]);
 
-  // Poll pending drafts count
+  // Load real system alerts and operational notifications from API
   useEffect(() => {
-    if (!user) return;
-    const fetchDraftCount = async () => {
-      try {
-        const res = await api.getPendingDraftsCount(user?.role === 'admin' ? undefined : user.client_id);
-        if (res && typeof res.pending_count === 'number') {
-          setPendingDraftCount(res.pending_count);
-        }
-      } catch (err) {
-        // silent fallback
-      }
-    };
-    fetchDraftCount();
-    const interval = setInterval(fetchDraftCount, 15000);
-    return () => clearInterval(interval);
-  }, [user?.client_id, user?.role]);
-
-  // Load notifications from API
-  useEffect(() => {
-    if (!user || !user.client_id) return;
+    const targetClientId = selectedClientId || (isAdmin ? 'ALL' : user?.client_id);
+    if (!targetClientId) return;
 
     const fetchNotifications = async () => {
       try {
-        const emails = await api.getEmails(user.client_id);
-        const recentEmails = emails.slice(0, 5);
+        const res = await api.getNotifications(targetClientId);
+        const alertsList: any[] = res?.alerts || [];
 
-        const mapped = recentEmails.map((email: any) => {
-          let title = 'New Email Received';
-          let body = `Received email from ${email.sender}`;
-          let type: 'success' | 'warning' | 'info' | 'error' = 'info';
-
-          const isReplied = email.raw_status === 'sent' || email.raw_status === 'ticket_created_and_sent' || email.status === 'Replied';
-          const isTicket = email.raw_status === 'ticket_created' || email.status === 'Ticket_Generated';
-          const isFailed = email.raw_status === 'failed' || email.status === 'Failed';
-
-          if (isReplied) {
-            title = 'AI Auto-Reply Sent';
-            body = `Auto-reply dispatched to ${email.sender} (${email.confidence || '90%'} confidence)`;
-            type = 'success';
-          } else if (isTicket) {
-            title = 'Reference Escalated';
-            body = `CRM ticket created for ${email.sender}`;
-            type = 'warning';
-          } else if (isFailed) {
-            title = 'Processing Error';
-            body = `Failed to process email from ${email.sender}`;
-            type = 'error';
-          }
-
-          return {
-            id: email.id,
-            title,
-            body,
-            time: email.time || 'Just now',
-            read: false,
-            type
-          };
-        });
-
-        const readIds = JSON.parse(localStorage.getItem('read_notif_ids') || '[]');
-        const updated = mapped.map((n: any) => ({
-          ...n,
-          read: readIds.includes(n.id)
+        const readIds: string[] = JSON.parse(localStorage.getItem('read_system_notif_ids') || '[]');
+        const updated: SystemNotification[] = alertsList.map((a: any) => ({
+          id: a.id,
+          title: a.title,
+          body: a.body,
+          time: a.time,
+          type: a.type || 'info',
+          category: a.category,
+          client_id: a.client_id,
+          email_id: a.email_id,
+          action_url: a.action_url,
+          read: readIds.includes(a.id)
         }));
 
         setNotifications(updated);
-        setUnreadCount(updated.filter((n: any) => !n.read).length);
+        setUnreadCount(updated.filter(n => !n.read).length);
       } catch (err) {
-        console.error('Failed to load notifications:', err);
+        console.error('Failed to load system notifications:', err);
       }
     };
 
     fetchNotifications();
     const interval = setInterval(fetchNotifications, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [selectedClientId, isAdmin, user?.client_id]);
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -172,6 +185,9 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
       }
       if (notifRef.current && !notifRef.current.contains(event.target as Node)) {
         setShowNotifDropdown(false);
+      }
+      if (searchRef.current && !searchRef.current.contains(event.target as Node)) {
+        setShowSearchDropdown(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
@@ -189,33 +205,94 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
     }
   };
 
-  const toggleTheme = () => setTheme(theme === 'dark' ? 'light' : 'dark');
-
   const handleLogout = () => {
     localStorage.removeItem('user');
     navigate('/login');
   };
 
+  const canGoBack = location.pathname !== '/dashboard' && location.pathname !== '/';
+
   return (
-    <header className="win11-topbar h-[64px] px-4 md:px-6 flex items-center justify-between sticky top-0 z-20 shadow-xs">
-      {/* Title / Menu trigger */}
-      <div className="flex items-center gap-3 flex-1 min-w-0">
+    <header className="win11-topbar h-[56px] px-3 md:px-5 flex items-center justify-between sticky top-0 z-20 shadow-xs select-none">
+      {/* Left: Navigation Arrow / Breadcrumb Title */}
+      <div className="flex items-center gap-2.5 shrink-0">
         <button
           onClick={onMenuClick}
-          className="p-2 -ml-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-muted-foreground hover:text-foreground md:hidden transition-all duration-150"
+          className="p-1.5 rounded-md hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-muted-foreground hover:text-foreground md:hidden transition-all duration-150"
+          aria-label="Open Navigation"
         >
-          <Menu className="w-5 h-5" />
+          <Menu className="w-4 h-4" />
         </button>
 
-        <div className="flex items-center gap-2.5 truncate">
-          <span className="text-sm md:text-base font-bold tracking-tight text-foreground truncate">
-            Advance Mail Automation & AI Mail Agent
+        {canGoBack && (
+          <button
+            onClick={() => navigate(-1)}
+            className="p-1.5 rounded-md hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-muted-foreground hover:text-foreground transition-all duration-150 hidden md:flex items-center justify-center"
+            title="Go back"
+          >
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+        )}
+
+        <div className="flex items-center gap-1.5 text-xs sm:text-sm font-semibold tracking-tight">
+          {location.pathname !== '/dashboard' && (
+            <>
+              <button
+                type="button"
+                onClick={() => navigate('/dashboard')}
+                className="text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+              >
+                Home
+              </button>
+              <span className="text-muted-foreground/60 text-xs font-normal">/</span>
+            </>
+          )}
+          <span className="text-foreground">
+            {currentTitle}
           </span>
         </div>
       </div>
 
+      {/* Center: Quick navigation & module search */}
+      <div className="hidden md:flex items-center justify-center flex-1 max-w-sm lg:max-w-md mx-4 relative" ref={searchRef}>
+        <div className="relative w-full">
+          <Search className="w-3.5 h-3.5 absolute left-3.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <input
+            type="text"
+            placeholder="Search modules, settings, or tools..."
+            value={searchQuery}
+            onFocus={() => setShowSearchDropdown(true)}
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setShowSearchDropdown(true);
+            }}
+            className="w-full bg-white/70 dark:bg-[#282828] text-xs text-foreground placeholder:text-muted-foreground pl-9 pr-3 py-1.5 rounded-full border border-black/[0.08] dark:border-white/[0.08] focus:outline-none focus:border-b-2 focus:border-b-primary shadow-2xs transition-all"
+          />
+        </div>
+
+        {showSearchDropdown && filteredQuickSettings.length > 0 && (
+          <div className="absolute left-0 right-0 top-full mt-1.5 bg-white dark:bg-[#2C2C2C] border border-black/[0.08] dark:border-white/[0.08] rounded-xl shadow-xl overflow-hidden z-50 py-1 max-h-64 overflow-y-auto">
+            {filteredQuickSettings.map((item) => (
+              <button
+                key={item.href}
+                type="button"
+                onClick={() => {
+                  navigate(item.href);
+                  setShowSearchDropdown(false);
+                  setSearchQuery('');
+                }}
+                className="w-full px-3.5 py-2 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.06] flex items-center justify-between group transition-colors"
+              >
+                <span className="text-xs font-medium text-foreground">{item.name}</span>
+                <span className="text-[10px] text-muted-foreground bg-black/[0.04] dark:bg-white/[0.08] px-2 py-0.5 rounded-full">{item.category}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
       {/* Right actions */}
-      <div className="flex items-center gap-2.5 md:gap-3 pl-4">
+      <div className="flex items-center gap-1.5 sm:gap-2 pl-2">
         {pendingDraftCount > 0 && (
           <button
             onClick={() => navigate('/drafts')}
@@ -227,13 +304,23 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
           </button>
         )}
 
-        <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 hidden sm:flex">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-          </span>
-          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400">Live</span>
-        </div>
+        {isAdmin && clients.length > 0 && (
+          <div className="flex items-center gap-1.5 bg-white dark:bg-[#2C2C2C] border border-black/[0.08] dark:border-white/[0.08] px-2.5 py-1 rounded-md shadow-2xs">
+            <span className="text-xs text-muted-foreground font-medium">Tenant:</span>
+            <select
+              value={selectedClientId}
+              onChange={(e) => setSelectedClientId(e.target.value)}
+              className="bg-transparent text-xs text-foreground font-semibold focus:outline-none cursor-pointer"
+            >
+              <option value="ALL" className="bg-card text-foreground">ALL</option>
+              {clients.map((c) => (
+                <option key={c.client_id} value={c.client_id} className="bg-card text-foreground">
+                  {c.client_id} {c.company_name ? `(${c.company_name})` : (c.email ? `(${c.email})` : '')}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         <button onClick={toggleTheme} className="p-2 rounded-lg hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-muted-foreground hover:text-foreground transition-colors">
           {theme === 'dark' ? <SunIcon className="w-4.5 h-4.5" /> : <MoonIcon className="w-4.5 h-4.5" />}
@@ -255,47 +342,89 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
           {showNotifDropdown && (
             <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-white dark:bg-zinc-950/95 backdrop-blur-xl border border-zinc-200 dark:border-white/10 rounded-2xl shadow-2xl py-2 z-50 animate-in fade-in slide-in-from-top-2">
               <div className="px-4 py-2 border-b border-zinc-100 dark:border-white/10 flex justify-between items-center">
-                <span className="text-sm font-semibold text-zinc-900 dark:text-white">Notifications</span>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-semibold text-zinc-900 dark:text-white">System Alerts</span>
+                  {notifications.length > 0 && (
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-zinc-100 dark:bg-white/10 text-muted-foreground">
+                      {notifications.length}
+                    </span>
+                  )}
+                </div>
                 {unreadCount > 0 && (
                   <button
                     onClick={() => {
                       const updated = notifications.map(n => ({ ...n, read: true }));
                       setNotifications(updated);
                       setUnreadCount(0);
-                      localStorage.setItem('read_notif_ids', JSON.stringify(notifications.map(n => n.id)));
+                      localStorage.setItem('read_system_notif_ids', JSON.stringify(notifications.map(n => n.id)));
                     }}
-                    className="text-xs text-primary hover:text-primary-foreground font-medium transition-colors"
+                    className="text-xs text-primary hover:underline font-medium transition-colors"
                   >
                     Mark all as read
                   </button>
                 )}
               </div>
-              <div className="max-h-[300px] overflow-y-auto divide-y divide-zinc-100 dark:divide-white/5">
+              <div className="max-h-[340px] overflow-y-auto divide-y divide-zinc-100 dark:divide-white/5">
                 {notifications.length > 0 ? (
                   notifications.map((notif) => {
-                    let Icon = Mail;
+                    let Icon = Activity;
                     let iconColor = 'text-blue-500 bg-blue-500/10 dark:text-blue-400';
-                    if (notif.type === 'success') {
-                      Icon = Send;
-                      iconColor = 'text-green-500 bg-green-500/10 dark:text-green-400';
-                    } else if (notif.type === 'warning') {
-                      Icon = Ticket;
+
+                    if (notif.category === 'budget') {
+                      Icon = DollarSign;
+                      iconColor = notif.type === 'error' ? 'text-rose-500 bg-rose-500/10 dark:text-rose-400' : 'text-amber-500 bg-amber-500/10 dark:text-amber-400';
+                    } else if (notif.category === 'infrastructure') {
+                      Icon = Zap;
+                      iconColor = 'text-rose-500 bg-rose-500/10 dark:text-rose-400';
+                    } else if (notif.category === 'mailbox') {
+                      Icon = Mail;
+                      iconColor = 'text-rose-500 bg-rose-500/10 dark:text-rose-400';
+                    } else if (notif.category === 'operations') {
+                      Icon = Clock;
                       iconColor = 'text-amber-500 bg-amber-500/10 dark:text-amber-400';
+                    } else if (notif.category === 'sentiment') {
+                      Icon = ShieldAlert;
+                      iconColor = 'text-orange-500 bg-orange-500/10 dark:text-orange-400';
                     } else if (notif.type === 'error') {
                       Icon = AlertCircle;
                       iconColor = 'text-rose-500 bg-rose-500/10 dark:text-rose-400';
+                    } else if (notif.type === 'warning') {
+                      Icon = Ticket;
+                      iconColor = 'text-amber-500 bg-amber-500/10 dark:text-amber-400';
+                    } else if (notif.type === 'success') {
+                      Icon = Send;
+                      iconColor = 'text-emerald-500 bg-emerald-500/10 dark:text-emerald-400';
                     }
 
                     return (
                       <div
                         key={notif.id}
                         onClick={() => {
-                          localStorage.setItem('selected_email_id', notif.id.toString());
+                          // Mark as read
+                          const readIds: string[] = JSON.parse(localStorage.getItem('read_system_notif_ids') || '[]');
+                          if (!readIds.includes(notif.id)) {
+                            readIds.push(notif.id);
+                            localStorage.setItem('read_system_notif_ids', JSON.stringify(readIds));
+                            setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, read: true } : n));
+                            setUnreadCount(prev => Math.max(0, prev - 1));
+                          }
+                          // Switch active client if specific to another client
+                          if (notif.client_id && notif.client_id !== 'ALL' && notif.client_id !== selectedClientId) {
+                            setSelectedClientId(notif.client_id);
+                          }
+                          if (notif.email_id) {
+                            localStorage.setItem('selected_email_id', notif.email_id.toString());
+                          }
                           setShowNotifDropdown(false);
-                          navigate('/inbox');
+                          if (notif.action_url) {
+                            navigate(notif.action_url);
+                          } else {
+                            navigate('/dashboard');
+                          }
                         }}
-                        className={`p-4 flex gap-3 cursor-pointer transition-colors ${!notif.read ? 'bg-zinc-50 dark:bg-white/5' : 'hover:bg-zinc-50 dark:hover:bg-white/5'
-                          }`}
+                        className={`p-3.5 flex gap-3 cursor-pointer transition-colors ${
+                          !notif.read ? 'bg-zinc-50/80 dark:bg-white/[0.04]' : 'hover:bg-zinc-50 dark:hover:bg-white/[0.03]'
+                        }`}
                       >
                         <div className={`w-8 h-8 rounded-lg shrink-0 flex items-center justify-center ${iconColor}`}>
                           <Icon className="w-4 h-4" />
@@ -305,15 +434,19 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
                             <p className="text-xs font-semibold text-zinc-900 dark:text-white truncate">{notif.title}</p>
                             <span className="text-[10px] text-zinc-500 dark:text-zinc-400 shrink-0 font-medium">{notif.time}</span>
                           </div>
-                          <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-1 leading-relaxed">{notif.body}</p>
+                          <p className="text-[11px] text-zinc-600 dark:text-zinc-400 mt-0.5 leading-relaxed">{notif.body}</p>
                         </div>
+                        {!notif.read && (
+                          <div className="w-1.5 h-1.5 rounded-full bg-primary shrink-0 self-center"></div>
+                        )}
                       </div>
                     );
                   })
                 ) : (
                   <div className="p-8 text-center text-xs text-zinc-400 dark:text-zinc-500 flex flex-col items-center gap-2">
-                    <Check className="w-8 h-8 text-zinc-300 dark:text-zinc-700" />
-                    <span>All caught up! No recent notifications.</span>
+                    <Check className="w-8 h-8 text-emerald-500/70" />
+                    <span className="font-medium text-zinc-700 dark:text-zinc-300">All systems normal</span>
+                    <span className="text-[11px] text-zinc-400 dark:text-zinc-500">No active operational alerts or incidents.</span>
                   </div>
                 )}
               </div>
@@ -387,7 +520,7 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
                 </div>
               </div>
 
-              {/* Quick Navigation Links */}
+              {/* Quick Account Links */}
               <div className="p-2 space-y-1">
                 <button
                   onClick={() => { setShowDropdown(false); navigate('/settings'); }}
@@ -396,43 +529,6 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
                   <div className="flex items-center gap-2.5">
                     <Sliders className="w-4 h-4 text-zinc-400 group-hover:text-primary transition-colors" />
                     <span>Settings & Policies</span>
-                  </div>
-                  <ChevronRight className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors" />
-                </button>
-
-                {user?.role === 'admin' && (
-                  <>
-                    <button
-                      onClick={() => { setShowDropdown(false); navigate('/admin/llm-configs'); }}
-                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5 rounded-xl transition-colors cursor-pointer group"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <Cpu className="w-4 h-4 text-zinc-400 group-hover:text-purple-500 dark:group-hover:text-purple-400 transition-colors" />
-                        <span>AI & LLM Configuration</span>
-                      </div>
-                      <ChevronRight className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors" />
-                    </button>
-
-                    <button
-                      onClick={() => { setShowDropdown(false); navigate('/admin/clients'); }}
-                      className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5 rounded-xl transition-colors cursor-pointer group"
-                    >
-                      <div className="flex items-center gap-2.5">
-                        <Users className="w-4 h-4 text-zinc-400 group-hover:text-blue-500 dark:group-hover:text-blue-400 transition-colors" />
-                        <span>Clients Management</span>
-                      </div>
-                      <ChevronRight className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors" />
-                    </button>
-                  </>
-                )}
-
-                <button
-                  onClick={() => { setShowDropdown(false); navigate('/payloads'); }}
-                  className="w-full flex items-center justify-between px-3 py-2 text-xs font-medium text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-white hover:bg-zinc-100 dark:hover:bg-white/5 rounded-xl transition-colors cursor-pointer group"
-                >
-                  <div className="flex items-center gap-2.5">
-                    <Code2 className="w-4 h-4 text-zinc-400 group-hover:text-emerald-500 dark:group-hover:text-emerald-400 transition-colors" />
-                    <span>System Connector</span>
                   </div>
                   <ChevronRight className="w-3.5 h-3.5 text-zinc-400 dark:text-zinc-600 group-hover:text-zinc-600 dark:group-hover:text-zinc-400 transition-colors" />
                 </button>

@@ -141,8 +141,9 @@ export const GloballyAvailableTab: React.FC<GloballyAvailableTabProps> = ({
               />
               <button
                 type="button"
+                tabIndex={-1}
                 onClick={() => setShowAvailFormApiKey(!showAvailFormApiKey)}
-                className="absolute right-3 top-2.5 text-zinc-400 hover:text-white transition-colors cursor-pointer"
+                className="absolute right-2 top-2 p-1 text-zinc-400 hover:text-white transition-colors cursor-pointer z-10"
               >
                 {showAvailFormApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
               </button>
@@ -274,8 +275,9 @@ export const GloballyAvailableTab: React.FC<GloballyAvailableTabProps> = ({
                           </span>
                           <button
                             type="button"
+                            tabIndex={-1}
                             onClick={() => setShowApiKeyMap((prev) => ({ ...prev, [c.id]: !prev[c.id] }))}
-                            className="text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                            className="p-1 text-zinc-500 hover:text-zinc-300 cursor-pointer"
                           >
                             {isKeyVisible ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
                           </button>

@@ -37,6 +37,8 @@ export default function AdminClients() {
         company_name: string;
         department_name: string;
         login_email: string;
+        cost_multiplier: number;
+        monthly_budget_usd?: number | '';
         new_password: string;
         status?: 'active' | 'inactive';
         savingProfile?: boolean;
@@ -58,7 +60,7 @@ export default function AdminClients() {
             setAccounts(accs || []);
             setPending(pend || []);
         } catch (err: any) {
-            setMsg({ type: 'error', text: err.message || 'Failed to load client accounts' });
+            setMsg({ type: 'error', text: err.message || 'Failed to load clients' });
         } finally {
             setLoading(false);
         }
@@ -123,6 +125,8 @@ export default function AdminClients() {
                     company_name: acc.company_name || '',
                     department_name: acc.department_name || '',
                     login_email: acc.login_email || acc.email || '',
+                    cost_multiplier: acc.cost_multiplier !== undefined ? Number(acc.cost_multiplier) : 1.0,
+                    monthly_budget_usd: acc.monthly_budget_usd !== undefined && acc.monthly_budget_usd !== null ? Number(acc.monthly_budget_usd) : '',
                     new_password: '',
                     status: acc.status || 'active',
                 },
@@ -136,15 +140,23 @@ export default function AdminClients() {
         setManageState((prev) => ({ ...prev, [clientId]: { ...prev[clientId], savingProfile: true } }));
         setMsg(null);
         try {
-            await api.updateClientProfile({
-                client_id: clientId,
-                name: s.name,
-                phone_number: s.phone_number,
-                company_name: s.company_name,
-                department_name: s.department_name,
-                login_email: s.login_email,
-            });
-            setMsg({ type: 'success', text: `Profile details updated for client ${clientId}.` });
+            await Promise.all([
+                api.updateClientProfile({
+                    client_id: clientId,
+                    name: s.name,
+                    phone_number: s.phone_number,
+                    company_name: s.company_name,
+                    department_name: s.department_name,
+                    login_email: s.login_email,
+                    cost_multiplier: s.cost_multiplier !== undefined ? Number(s.cost_multiplier) : 1.0,
+                }),
+                api.setClientCostConfig({
+                    client_id: clientId,
+                    cost_multiplier: s.cost_multiplier !== undefined ? Number(s.cost_multiplier) : 1.0,
+                    monthly_budget_usd: s.monthly_budget_usd === '' ? null : Number(s.monthly_budget_usd),
+                })
+            ]);
+            setMsg({ type: 'success', text: `Profile and cost configurations updated for client ${clientId}.` });
             loadAll();
         } catch (err: any) {
             setMsg({ type: 'error', text: err.message || 'Failed to update profile' });
@@ -371,8 +383,9 @@ export default function AdminClients() {
                                 />
                                 <button
                                     type="button"
+                                    tabIndex={-1}
                                     onClick={() => setShowCreatePass(!showCreatePass)}
-                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors cursor-pointer z-10"
                                 >
                                     {showCreatePass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                 </button>
@@ -602,6 +615,50 @@ export default function AdminClients() {
                                                             className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
                                                         />
                                                     </div>
+
+                                                    <div className="space-y-1">
+                                                        <label className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400 flex items-center gap-1">
+                                                            <span>Cost Multiplier (Rate Scaling)</span>
+                                                            <span className="text-[10px] text-amber-500 font-mono font-bold">Admin Only</span>
+                                                        </label>
+                                                        <input
+                                                            type="number"
+                                                            step="0.05"
+                                                            min="0.1"
+                                                            placeholder="e.g. 1.1, 1.5"
+                                                            value={s.cost_multiplier !== undefined ? s.cost_multiplier : 1.0}
+                                                            onChange={(e) => setManageState((prev) => ({
+                                                                ...prev,
+                                                                [acc.client_id]: { 
+                                                                    ...prev[acc.client_id], 
+                                                                    cost_multiplier: parseFloat(e.target.value) || 1.0 
+                                                                }
+                                                            }))}
+                                                            className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
+                                                        />
+                                                    </div>
+
+                                                    <div className="space-y-1">
+                                                        <label className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400 flex items-center gap-1">
+                                                            <span>Monthly LLM Budget ($ USD)</span>
+                                                            <span className="text-[10px] text-amber-500 font-mono font-bold">Admin Only</span>
+                                                        </label>
+                                                        <input
+                                                            type="number"
+                                                            step="5"
+                                                            min="0"
+                                                            placeholder="e.g. 50 (Empty = Unlimited)"
+                                                            value={s.monthly_budget_usd !== undefined ? s.monthly_budget_usd : ''}
+                                                            onChange={(e) => setManageState((prev) => ({
+                                                                ...prev,
+                                                                [acc.client_id]: { 
+                                                                    ...prev[acc.client_id], 
+                                                                    monthly_budget_usd: e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                                                                }
+                                                            }))}
+                                                            className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
+                                                        />
+                                                    </div>
                                                 </div>
 
                                                 <div className="mt-3 flex justify-start">
@@ -633,12 +690,13 @@ export default function AdminClients() {
                                                                 ...prev,
                                                                 [acc.client_id]: { ...prev[acc.client_id], new_password: e.target.value }
                                                             }))}
-                                                            className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl pl-3 pr-9 py-2 text-xs font-medium font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
+                                                            className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl pl-3 pr-10 py-2 text-xs font-medium font-mono text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
                                                         />
                                                         <button
                                                             type="button"
+                                                            tabIndex={-1}
                                                             onClick={() => setShowResetPass((prev) => ({ ...prev, [acc.client_id]: !prev[acc.client_id] }))}
-                                                            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                                                            className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-muted-foreground hover:text-foreground transition-colors cursor-pointer z-10"
                                                         >
                                                             {showResetPass[acc.client_id] ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
                                                         </button>

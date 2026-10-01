@@ -183,8 +183,9 @@ export const GlobalDefaultTab: React.FC<GlobalDefaultTabProps> = ({
               />
               <button
                 type="button"
+                tabIndex={-1}
                 onClick={() => setShowDefaultApiKey(!showDefaultApiKey)}
-                className="absolute right-3 top-2 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+                className="absolute right-2 top-1.5 p-1 text-muted-foreground hover:text-foreground transition-colors cursor-pointer z-10"
               >
                 {showDefaultApiKey ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
               </button>

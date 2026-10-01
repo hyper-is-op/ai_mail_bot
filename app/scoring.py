@@ -100,13 +100,13 @@ def rule_based_penalty(reply, query):
     if len(reply.split()) < 12:
         penalty -= 20
 
-    # 🚫 Very generic phrases
-    generic_phrases = [
+    # 🚫 Very generic delay phrases when reply lacks substance
+    delay_phrases = [
         "we will get back to you",
-        "thank you for reaching out",
-        "we are looking into it"
+        "we are looking into it",
+        "our team is reviewing your request"
     ]
-    if any(p in reply_lower for p in generic_phrases):
+    if len(reply.split()) < 25 and any(p in reply_lower for p in delay_phrases):
         penalty -= 10
 
     # 🚫 Specific order ID in query but omitted in reply

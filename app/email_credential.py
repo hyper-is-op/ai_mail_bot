@@ -210,6 +210,10 @@ def ensure_ticket_record_table(cursor):
 
     if "user_id" in existing_cols and "client_id" not in existing_cols:
         cursor.execute("ALTER TABLE ticket_record CHANGE user_id client_id VARCHAR(50) NOT NULL")
+    if "sentiment" not in existing_cols:
+        cursor.execute("ALTER TABLE ticket_record ADD COLUMN sentiment VARCHAR(50) DEFAULT NULL")
+    if "priority" not in existing_cols:
+        cursor.execute("ALTER TABLE ticket_record ADD COLUMN priority VARCHAR(50) DEFAULT NULL")
 
 
 _ensure_table = ensure_ticket_record_table
@@ -248,124 +252,6 @@ def create_email_record_db(data: dict) -> dict:
         return {"success": False, "error": str(e)}
 
 
-def ensure_create_payload_table():
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS create_payload_table (
-                    id          INT AUTO_INCREMENT PRIMARY KEY,
-                    client_id   VARCHAR(50) NOT NULL,
-                    url         VARCHAR(255),
-                    paylod      TEXT,
-                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            """)
-            try:
-                cursor.execute("ALTER TABLE create_payload_table ADD UNIQUE INDEX (client_id)")
-            except Exception:
-                pass
-        db.commit()
-        logger.info("✅ create_payload_table ensured")
-
-
-def insert_create_payload_ticket(client_id: str, url: str, paylod: dict[str, Any]) -> str:
-    ensure_create_payload_table()
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            cursor.execute("SELECT id FROM create_payload_table WHERE client_id = %s LIMIT 1", (client_id,))
-            row = cursor.fetchone()
-            if row:
-                cursor.execute("""
-                    UPDATE create_payload_table 
-                    SET url = %s, paylod = %s
-                    WHERE client_id = %s
-                """, (url, json.dumps(paylod), client_id))
-            else:
-                cursor.execute("""
-                    INSERT INTO create_payload_table (client_id, url, paylod)
-                    VALUES (%s, %s, %s)
-                """, (client_id, url, json.dumps(paylod)))
-        db.commit()
-        logger.info(f"✅ create_payload_table inserted — client_id={client_id}")
-        return client_id
-
-
-def get_create_payload_table(client_id: str) -> dict:
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            cursor.execute("""
-                SELECT url, paylod 
-                FROM create_payload_table WHERE client_id = %s LIMIT 1
-            """, (client_id,))
-            row = cursor.fetchone()
-        if not row:
-            logger.warning(f"⚠️ No create_payload_table found for client_id={client_id}")
-            return {}
-        return {
-            "url": row[0],
-            "paylod": json.loads(row[1])
-        }
-
-
-def ensure_payload_get_ticket_table():
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS payload_get_table (
-                    id          INT AUTO_INCREMENT PRIMARY KEY,
-                    client_id   VARCHAR(50) NOT NULL,
-                    url         VARCHAR(255),
-                    paylod      TEXT,
-                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            """)
-            try:
-                cursor.execute("ALTER TABLE payload_get_table ADD UNIQUE INDEX (client_id)")
-            except Exception:
-                pass
-        db.commit()
-        logger.info("✅ payload_get_table ensured")
-
-
-def insert_payload_get_ticket(client_id: str, url: str, paylod: dict[str, Any]) -> str:
-    ensure_payload_get_ticket_table()
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            cursor.execute("SELECT id FROM payload_get_table WHERE client_id = %s LIMIT 1", (client_id,))
-            row = cursor.fetchone()
-            if row:
-                cursor.execute("""
-                    UPDATE payload_get_table 
-                    SET url = %s, paylod = %s
-                    WHERE client_id = %s
-                """, (url, json.dumps(paylod), client_id))
-            else:
-                cursor.execute("""
-                    INSERT INTO payload_get_table (client_id, url, paylod)
-                    VALUES (%s, %s, %s)
-                """, (client_id, url, json.dumps(paylod)))
-        db.commit()
-        logger.info(f"✅ payload_get_table inserted — client_id={client_id}")
-        return client_id
-
-
-def get_payload_get_ticket_table(client_id: str) -> dict:
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            cursor.execute("""
-                SELECT url, paylod 
-                FROM payload_get_table WHERE client_id = %s LIMIT 1
-            """, (client_id,))
-            row = cursor.fetchone()
-        if not row:
-            logger.warning(f"⚠️ No payload_get_table found for client_id={client_id}")
-            return {}
-        return {
-            "url": row[0],
-            "paylod": json.loads(row[1])
-        }
-
-
 def get_budget_status(client_id, cursor):
     """
     Returns current-month spend vs budget for a client.
@@ -377,8 +263,10 @@ def get_budget_status(client_id, cursor):
     budget = float(row[0]) if row and row[0] is not None else None
 
     cursor.execute("""
-        SELECT COALESCE(SUM(billed_cost), 0) FROM llm_logs
-        WHERE client_id=%s AND MONTH(created_at)=MONTH(CURDATE()) AND YEAR(created_at)=YEAR(CURDATE())
+        SELECT COALESCE(SUM(l.cost * COALESCE(ea.cost_multiplier, 1.0)), 0) 
+        FROM llm_logs l
+        LEFT JOIN email_accounts ea ON l.client_id = ea.client_id
+        WHERE l.client_id=%s AND MONTH(l.created_at)=MONTH(CURDATE()) AND YEAR(l.created_at)=YEAR(CURDATE())
     """, (client_id,))
     spent = float(cursor.fetchone()[0] or 0)
 
@@ -394,53 +282,3 @@ def get_budget_status(client_id, cursor):
         status = "ok"
 
     return {"budget": budget, "spent": round(spent, 4), "percent": round(percent, 1), "status": status}
-
-
-def get_all_create_payloads() -> list[dict]:
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            cursor.execute("""
-                SELECT p.client_id, p.url, p.paylod, a.email 
-                FROM create_payload_table p
-                LEFT JOIN email_accounts a 
-                  ON p.client_id COLLATE utf8mb4_unicode_ci = a.client_id COLLATE utf8mb4_unicode_ci
-            """)
-            rows = cursor.fetchall()
-        result = []
-        for r in rows:
-            try:
-                pay = json.loads(r[2]) if r[2] else {}
-            except Exception:
-                pay = r[2]
-            result.append({
-                "client_id": r[0],
-                "url": r[1],
-                "paylod": pay,
-                "email": r[3] or r[0]
-            })
-        return result
-
-
-def get_all_get_payloads() -> list[dict]:
-    with get_db_ctx() as db:
-        with db.cursor() as cursor:
-            cursor.execute("""
-                SELECT p.client_id, p.url, p.paylod, a.email 
-                FROM payload_get_table p
-                LEFT JOIN email_accounts a 
-                  ON p.client_id COLLATE utf8mb4_unicode_ci = a.client_id COLLATE utf8mb4_unicode_ci
-            """)
-            rows = cursor.fetchall()
-        result = []
-        for r in rows:
-            try:
-                pay = json.loads(r[2]) if r[2] else {}
-            except Exception:
-                pay = r[2]
-            result.append({
-                "client_id": r[0],
-                "url": r[1],
-                "paylod": pay,
-                "email": r[3] or r[0]
-            })
-        return result

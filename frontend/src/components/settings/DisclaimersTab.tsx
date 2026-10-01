@@ -42,15 +42,15 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
 }) => {
   return (
     <div className="space-y-6">
-      <div className="glass-panel p-6 rounded-2xl border border-white/10 space-y-5">
+      <div className="glass-panel p-6 rounded-2xl border border-zinc-200 dark:border-white/10 space-y-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-400">
+            <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-500 dark:text-amber-400">
               <ShieldAlert className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-zinc-900 dark:text-white">Email Disclaimer &amp; Boilerplate Rules</h3>
-              <p className="text-xs text-zinc-400">
+              <h3 className="font-bold text-foreground">Email Disclaimer &amp; Boilerplate Rules</h3>
+              <p className="text-xs text-muted-foreground">
                 Define custom email disclaimer phrases, legal signatures, and enterprise confidentiality notices that will be collapsed in UI and stripped before AI processing.
               </p>
             </div>
@@ -99,8 +99,8 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
         </div>
 
         {/* Add New Disclaimer Form */}
-        <form onSubmit={handleAddDisclaimer} className="space-y-3 bg-white/5 border border-white/10 rounded-xl p-4">
-          <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider">
+        <form onSubmit={handleAddDisclaimer} className="space-y-3 bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-4 shadow-2xs">
+          <label className="block text-xs font-bold text-foreground uppercase tracking-wider">
             Add Custom Disclaimer / Signature Pattern
           </label>
           <textarea
@@ -109,7 +109,7 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
             placeholder="Paste the disclaimer text, confidentiality notice, or legal signature to collapse..."
             value={newDisclaimerText}
             onChange={(e) => setNewDisclaimerText(e.target.value)}
-            className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-zinc-200 font-mono focus:outline-none focus:border-primary leading-relaxed"
+            className="w-full bg-white dark:bg-black/40 border border-zinc-200 dark:border-white/10 rounded-xl p-3 text-xs text-foreground font-mono focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary leading-relaxed shadow-2xs"
           />
           <div className="flex flex-wrap items-center justify-between gap-2">
             {/* Preset Suggestions */}
@@ -120,9 +120,9 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
                   key={idx}
                   type="button"
                   onClick={() => setNewDisclaimerText(preset.text)}
-                  className="px-2 py-0.5 rounded-md bg-white/5 hover:bg-white/10 border border-white/10 text-[11px] text-zinc-300 transition-colors flex items-center gap-1"
+                  className="px-2 py-0.5 rounded-md bg-zinc-200/60 dark:bg-white/5 hover:bg-zinc-200 dark:hover:bg-white/10 border border-zinc-300/60 dark:border-white/10 text-[11px] text-zinc-700 dark:text-zinc-300 transition-colors flex items-center gap-1 cursor-pointer font-medium"
                 >
-                  <Sparkles className="w-2.5 h-2.5 text-amber-400" />
+                  <Sparkles className="w-2.5 h-2.5 text-amber-500 dark:text-amber-400" />
                   {preset.title}
                 </button>
               ))}
@@ -131,7 +131,7 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
             <button
               disabled={disclaimerSaving}
               type="submit"
-              className="bg-primary text-primary-foreground text-xs font-semibold px-4 py-2 rounded-xl flex items-center gap-1 hover:bg-primary/90 transition-all shadow-sm self-end"
+              className="bg-primary text-primary-foreground text-xs font-semibold px-4 py-2 rounded-xl flex items-center gap-1 hover:bg-primary/90 transition-all shadow-sm self-end cursor-pointer disabled:opacity-50"
             >
               {disclaimerSaving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
               Save Disclaimer Rule
@@ -151,18 +151,18 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
               {disclaimers.map((item) => (
                 <div 
                   key={item.id}
-                  className="bg-white/5 border border-white/10 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:border-white/20 transition-all"
+                  className="bg-white dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:border-zinc-300 dark:hover:border-white/20 transition-all shadow-2xs"
                 >
                   <div className="space-y-1.5 flex-1 pr-4">
                     <div className="flex items-center gap-2">
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${item.client_id === 'GLOBAL' ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 'bg-purple-500/10 text-purple-400 border border-purple-500/20'}`}>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${item.client_id === 'GLOBAL' ? 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20' : 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'}`}>
                         {item.client_id === 'GLOBAL' ? '🌐 Global Rule' : `Client: ${item.client_id}`}
                       </span>
-                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${item.is_active ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-500/10 text-zinc-400'}`}>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${item.is_active ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20' : 'bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 border-zinc-500/20'}`}>
                         {item.is_active ? 'Active' : 'Disabled'}
                       </span>
                     </div>
-                    <p className="text-xs font-mono text-zinc-300 leading-relaxed line-clamp-2">
+                    <p className="text-xs font-mono text-zinc-700 dark:text-zinc-300 leading-relaxed line-clamp-2">
                       {item.disclaimer_text}
                     </p>
                   </div>
@@ -171,7 +171,7 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
                     <button
                       type="button"
                       onClick={() => handleToggleDisclaimer(item.id, item.is_active)}
-                      className={`p-2 rounded-lg border transition-colors ${item.is_active ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20' : 'bg-white/5 border-white/10 text-zinc-400 hover:text-white'}`}
+                      className={`p-2 rounded-lg border transition-colors cursor-pointer ${item.is_active ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20' : 'bg-zinc-100 dark:bg-white/5 border-zinc-200 dark:border-white/10 text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-white'}`}
                       title={item.is_active ? 'Disable Rule' : 'Enable Rule'}
                     >
                       {item.is_active ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
@@ -179,7 +179,7 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
                     <button
                       type="button"
                       onClick={() => handleDeleteDisclaimer(item.id)}
-                      className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 transition-colors"
+                      className="p-2 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-600 dark:text-rose-400 hover:bg-rose-500/20 transition-colors cursor-pointer"
                       title="Delete Rule"
                     >
                       <Trash2 className="w-4 h-4" />
@@ -189,7 +189,7 @@ export const DisclaimersTab: React.FC<DisclaimersTabProps> = ({
               ))}
             </div>
           ) : (
-            <p className="text-xs text-muted-foreground text-center py-6 border border-dashed border-white/10 rounded-xl">
+            <p className="text-xs text-muted-foreground text-center py-6 border border-dashed border-zinc-300 dark:border-white/10 rounded-xl">
               No custom disclaimers configured yet. Built-in defaults are actively used.
             </p>
           )}

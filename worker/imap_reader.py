@@ -142,6 +142,10 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
         logger.info(f"🛑 [Client {client_id}] Master Bot Switch is OFF ({reason}) — skipping inbox check")
         return 0
 
+    if not email_user or not email_pass:
+        logger.debug(f"⏭️ [Client {client_id}] Incomplete credentials (missing user or password) — skipping inbox check")
+        return 0
+
     if is_in_cooldown(client_id):
         logger.debug(f"⏳ [Client {client_id}] Skipping inbox check (account in cooldown)")
         return 0
@@ -153,6 +157,12 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
         try:
             mail.login(email_user, email_pass)
             clear_account_cooldown(client_id)
+            try:
+                from app.redis_pool import get_redis_main
+                get_redis_main().set(f"imap_status:{client_id}", "connected", ex=180)
+                get_redis_main().set(f"imap_sync:{client_id}", int(time.time()), ex=86400)
+            except Exception:
+                pass
         except imaplib.IMAP4.error as auth_err:
             err_str = str(auth_err)
             if 'AUTHENTICATIONFAILED' in err_str or 'Invalid credentials' in err_str:
@@ -161,6 +171,11 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
                     f"Setting {IMAP_AUTH_COOLDOWN}s cooldown: {auth_err}"
                 )
                 set_account_cooldown(client_id)
+                try:
+                    from app.redis_pool import get_redis_main
+                    get_redis_main().set(f"imap_status:{client_id}", "cooldown_auth_failed", ex=int(IMAP_AUTH_COOLDOWN))
+                except Exception:
+                    pass
                 return 0
             raise
 
@@ -181,6 +196,8 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
                     raw_email = next((item[1] for item in data if isinstance(item, tuple)), None)
                     if raw_email is None:
                         continue
+
+                    msg = email.message_from_bytes(raw_email)
 
                     raw_message_id = msg.get("Message-ID", "")
                     raw_in_reply_to = msg.get("In-Reply-To", "")
@@ -288,7 +305,7 @@ def fetch_db_accounts():
             with db.cursor() as cursor:
                 cursor.execute("SELECT client_id, email, password FROM email_accounts")
                 rows = cursor.fetchall()
-                return {row[0]: {"email": row[1], "password": _decrypt_imap_password(row[2])} for row in rows}
+                return {row[0]: {"email": row[1], "password": _decrypt_imap_password(row[2], client_id=row[0])} for row in rows}
     except Exception as e:
         logger.error(f"Failed to fetch accounts from DB: {e}", exc_info=True)
         return {}
@@ -320,6 +337,12 @@ def manage_listeners():
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=IMAP_MAX_WORKERS, thread_name_prefix="imap_worker") as executor:
         while not shutdown_event.is_set():
+            try:
+                from app.redis_pool import get_redis_main
+                get_redis_main().set("imap_worker:heartbeat", int(time.time()), ex=120)
+            except Exception:
+                pass
+
             db_accounts = fetch_db_accounts()
 
             # Clean up cooldowns for accounts deleted from DB

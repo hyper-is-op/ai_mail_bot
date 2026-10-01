@@ -83,5 +83,34 @@ class TestAgentTools(unittest.TestCase):
             self.assertIn("hint", res)
 
 
+    def test_06_not_found_context_data_preservation(self):
+        """When ticket is not found, ctx.context_data must record not_found state to avoid hard floor escalation"""
+        ctx = PipelineContext.from_task_data("test-task-not-found", {
+            "client_id": "CLI-08BDA27B",
+            "from_email": "customer@example.com",
+            "subject": "Missing ticket inquiry",
+            "body": "what is status of ticket 000000"
+        })
+        with patch("app.pipeline.tools.fetch_crm_ticket_status", return_value={"success": False, "not_found": True, "error": "No matching ticket record found"}):
+            res = execute_tool_call("lookup_ticket_status", {"ticket_id": "000000"}, ctx)
+            self.assertEqual(res["status"], "not_found")
+            self.assertIsNotNone(ctx.context_data)
+            self.assertEqual(ctx.context_data.get("status"), "not_found")
+            self.assertEqual(ctx.context_data.get("reference_id"), "000000")
+
+        # Test evaluator treats not_found clarification as auto_send if score >= 50
+        from app.pipeline.evaluator import evaluate_draft_and_decide
+        with patch("app.pipeline.evaluator.llm_score", return_value=70):
+            score, decision = evaluate_draft_and_decide(
+                client_id="CLI-08BDA27B",
+                reply="Dear customer, ticket 000000 was not found in our records. Please verify the ticket ID.",
+                query=ctx.body,
+                context_succeeded=bool(ctx.context_data),
+                is_not_found=True
+            )
+            self.assertEqual(decision, "auto_send")
+            self.assertEqual(score, 70)
+
+
 if __name__ == "__main__":
     unittest.main()
