@@ -10,6 +10,7 @@ import {
   PauseCircle, 
   PlayCircle, 
   RotateCcw,
+  RefreshCw,
   ChevronRight,
   Smile,
   Meh,
@@ -41,6 +42,8 @@ interface ThreadDetailViewProps {
   setShowTraceFor: React.Dispatch<React.SetStateAction<number | null>>;
   onCreateTicket: (email: any) => void;
   ticketLoadingId: number | null;
+  onRetryEmail?: (emailLogId: number) => void;
+  retryLoadingId?: number | null;
   replyText: string;
   setReplyText: (val: string) => void;
   onSendManualReply: () => void;
@@ -63,6 +66,8 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
   setShowTraceFor,
   onCreateTicket,
   ticketLoadingId,
+  onRetryEmail,
+  retryLoadingId,
   replyText,
   setReplyText,
   onSendManualReply,
@@ -365,15 +370,29 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
                     )}
                   </div>
 
-                  <button 
-                    type="button"
-                    onClick={() => onCreateTicket(email)}
-                    disabled={ticketLoadingId === email.id || email.status === 'Ticket_Generated'} 
-                    className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-zinc-200 dark:border-white/10 hover:bg-zinc-100 dark:hover:bg-white/5 text-foreground transition-all flex items-center gap-1 disabled:opacity-50"
-                  >
-                    {ticketLoadingId === email.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Ticket className="w-3 h-3" />}
-                    {email.status === 'Ticket_Generated' ? 'Ticket Generated' : 'Create Ticket'}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {isFailed && onRetryEmail && (
+                      <button
+                        type="button"
+                        onClick={() => onRetryEmail(email.id)}
+                        disabled={retryLoadingId === email.id}
+                        className="px-2.5 py-1 text-xs font-semibold rounded-lg bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 transition-all flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                      >
+                        {retryLoadingId === email.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                        <span>Re-process Task</span>
+                      </button>
+                    )}
+
+                    <button 
+                      type="button"
+                      onClick={() => onCreateTicket(email)}
+                      disabled={ticketLoadingId === email.id || email.status === 'Ticket_Generated'} 
+                      className="px-2.5 py-1 text-xs font-semibold rounded-lg border border-zinc-200 dark:border-white/10 hover:bg-zinc-100 dark:hover:bg-white/5 text-foreground transition-all flex items-center gap-1 disabled:opacity-50"
+                    >
+                      {ticketLoadingId === email.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <Ticket className="w-3 h-3" />}
+                      {email.status === 'Ticket_Generated' ? 'Ticket Generated' : 'Create Ticket'}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Execution Steps / Failure Path Drawer */}

@@ -15,6 +15,7 @@ import Logout from './pages/auth/Logout';
 import AdminClients from './pages/AdminClients';
 import LlmConfigs from './pages/LlmConfigs';
 import { Drafts } from './pages/Drafts';
+import Reports from './pages/Reports';
 
 function App() {
   useEffect(() => {
@@ -42,6 +43,7 @@ function App() {
           <Route path="inbox" element={<Inbox />} />
           <Route path="ai-processing" element={<AiProcessing />} />
           <Route path="tickets" element={<Tickets />} />
+          <Route path="reports" element={<Reports />} />
           <Route path="accounts" element={<EmailAccounts />} />
           <Route path="payloads" element={<PayloadConfig />} />
           <Route path="knowledge" element={<KnowledgeBase />} />

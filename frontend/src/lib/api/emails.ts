@@ -73,6 +73,14 @@ export const emailsApi = {
     return safeJson(res, 'Failed to fetch emails');
   },
 
+  async retryEmail(emailLogId: number) {
+    const res = await fetch(`${BASE_URL}/emails/${emailLogId}/retry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    });
+    return safeJson(res, 'Failed to re-queue email');
+  },
+
   async getTickets(clientId: string) {
     const res = await fetch(`${BASE_URL}/tickets/${clientId}`, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch tickets');

@@ -15,7 +15,8 @@ import {
   Cpu,
   FileText,
   HelpCircle,
-  MessageSquare
+  MessageSquare,
+  BarChart3
 } from 'lucide-react';
 import { useState } from 'react';
 import { useAppState } from '@/context/AppStateContext';
@@ -50,7 +51,7 @@ export default function Sidebar({ mobileOpen, setMobileOpen }: SidebarProps) {
       title: 'Overview',
       items: [
         { name: 'Email Operations', href: '/dashboard', icon: LayoutDashboard },
-        { name: 'LLM & AI Telemetry', href: '/dashboard?tab=llm', icon: Cpu },
+        { name: 'Token Economics', href: '/dashboard?tab=llm', icon: Cpu },
       ],
     },
     {
@@ -59,6 +60,7 @@ export default function Sidebar({ mobileOpen, setMobileOpen }: SidebarProps) {
         { name: 'Mail Monitor', href: '/inbox', icon: Inbox },
         { name: 'Drafts & Approvals', href: '/drafts', icon: FileText, isDrafts: true },
         { name: 'Tickets & Escalations', href: '/tickets', icon: Ticket },
+        { name: 'Reports & Audits', href: '/reports', icon: BarChart3 },
         { name: 'AI Pipeline Trace', href: '/ai-processing', icon: BrainCircuit },
       ],
     },

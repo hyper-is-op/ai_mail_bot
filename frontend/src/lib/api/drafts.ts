@@ -29,13 +29,36 @@ export const draftsApi = {
     return safeJson(res, 'Failed to fetch features');
   },
 
-  async setClientFeatures(data: { client_id: string; feature_ticket_creation: boolean; feature_auto_send: boolean; feature_rag: boolean; feature_order_tracking: boolean; feature_manual_reply: boolean; feature_strip_disclaimers?: boolean }) {
+  async setClientFeatures(data: { client_id: string; feature_ticket_creation: boolean; feature_auto_send: boolean; feature_rag: boolean; feature_order_tracking: boolean; feature_manual_reply: boolean; feature_strip_disclaimers?: boolean; inactivity_timeout_hours?: number }) {
     const res = await fetch(`${BASE_URL}/admin/client-features`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify(data),
     });
     return safeJson(res, 'Failed to update features');
+  },
+
+  async getAlertSettings(clientId: string) {
+    const res = await fetch(`${BASE_URL}/admin/alert-settings/${clientId}`, { headers: authHeaders() });
+    return safeJson(res, 'Failed to fetch alert settings');
+  },
+
+  async updateAlertSettings(data: { client_id: string; webhook_url?: string; alert_email?: string; alert_on_sla_breach?: boolean; alert_on_worker_stall?: boolean; alert_sla_hours?: number }) {
+    const res = await fetch(`${BASE_URL}/admin/alert-settings`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(data),
+    });
+    return safeJson(res, 'Failed to update alert settings');
+  },
+
+  async testAlertWebhook(data: { client_id: string; webhook_url: string; alert_sla_hours?: number; alert_on_sla_breach?: boolean; alert_on_worker_stall?: boolean }) {
+    const res = await fetch(`${BASE_URL}/admin/alert-settings/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(data),
+    });
+    return safeJson(res, 'Failed to send test alert');
   },
 
   // -------------------------------------------------------------
@@ -99,10 +122,11 @@ export const draftsApi = {
     return safeJson(res, 'Failed to update draft');
   },
 
-  async sendDraft(id: number) {
+  async sendDraft(id: number, options?: { add_to_kb?: boolean; kb_title?: string }) {
     const res = await fetch(`${BASE_URL}/drafts/${id}/send`, {
       method: 'POST',
-      headers: authHeaders(),
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(options || {}),
     });
     return safeJson(res, 'Failed to send draft');
   },

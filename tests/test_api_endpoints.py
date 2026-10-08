@@ -235,7 +235,101 @@ class TestApiEndpoints(unittest.TestCase):
             self.assertEqual(data_degraded.get("status"), "degraded")
             self.assertEqual(data_degraded["components"]["database"]["status"], "unhealthy")
 
+    def test_12_dashboard_inbound_health_and_conversational_stats(self):
+        """GET /dashboard/stats/{client_id} must return inbound_health and conversational_performance"""
+        if not self.token:
+            self.skipTest("Admin token unavailable")
+        headers = {"Authorization": f"Bearer {self.token}"}
+        res = self.client.get(f"/dashboard/stats/{self.test_client_id}", headers=headers)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        # Inbound health validation
+        self.assertIn("inbound_health", data)
+        ih = data["inbound_health"]
+        self.assertIn("total_inbound", ih)
+        self.assertIn("real_inquiries", ih)
+        self.assertIn("marketing_count", ih)
+        self.assertIn("blocked_count", ih)
+        self.assertIn("bounce_count", ih)
+        self.assertIn("bounce_rate", ih)
+        self.assertIn("delivery_health_score", ih)
+        self.assertIn("spam_count", ih)
+        self.assertIn("avg_daily_inbound", ih)
+        self.assertIn("monthly_inbound_volume", ih)
+
+        # Execution latency validation
+        self.assertIn("execution_latency", data)
+        el = data["execution_latency"]
+        self.assertIn("total_execution_ms", el)
+        self.assertIn("avg_latency_ms", el)
+        self.assertIn("min_latency_ms", el)
+        self.assertIn("max_latency_ms", el)
+        self.assertIn("first_action", el)
+
+        # Conversational performance validation
+        self.assertIn("conversational_performance", data)
+        cp = data["conversational_performance"]
+        self.assertIn("customer_resolution_rate", cp)
+        self.assertIn("rag_resolved_count", cp)
+        self.assertIn("ticket_escalated_count", cp)
+        self.assertIn("avg_resolution_turns", cp)
+        self.assertIn("avg_resolution_duration_sec", cp)
+        self.assertIn("completed_conversations", cp)
+        self.assertIn("incomplete_conversations", cp)
+        self.assertIn("rag_resolution_timing", cp)
+        self.assertIn("ticket_escalation_timing", cp)
+        self.assertIn("sentiment_distribution", cp)
+        self.assertIn("active_wip_conversations", cp)
+        self.assertIn("sentiment_trajectory", cp)
+        self.assertIn("inferred_csat", cp)
+        self.assertIn("intent_breakdown", cp)
+
+    def test_13_llm_metrics_token_economics(self):
+        """GET /llm/metrics/{client_id} must return token_economics with per-email and per-conversation metrics"""
+        if not self.token:
+            self.skipTest("Admin token unavailable")
+        headers = {"Authorization": f"Bearer {self.token}"}
+        res = self.client.get(f"/llm/metrics/{self.test_client_id}", headers=headers)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        self.assertIn("token_economics", data)
+        te = data["token_economics"]
+        self.assertIn("avg_cost_per_email", te)
+        self.assertIn("avg_tokens_per_email", te)
+        self.assertIn("avg_cost_per_conversation", te)
+        self.assertIn("avg_tokens_per_conversation", te)
+        self.assertIn("avg_turns_per_conversation", te)
+        self.assertIn("total_conversations", te)
+        self.assertIn("guardrail_overhead_ratio", te)
+        self.assertIn("economics_by_intent", te)
+
+    def test_14_ticketing_report_and_csv_export(self):
+        """GET /reports/ticketing/{client_id} and /reports/export/{client_id} should return audit logs and CSV"""
+        if not self.token:
+            self.skipTest("Admin token unavailable")
+        headers = {"Authorization": f"Bearer {self.token}"}
+
+        # JSON audit report
+        res = self.client.get(f"/reports/ticketing/{self.test_client_id}", headers=headers)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertEqual(data.get("status"), "success")
+        self.assertIn("summary", data)
+        self.assertIn("pagination", data)
+        self.assertIn("records", data)
+        self.assertIn("deflection_rate", data["summary"])
+
+        # CSV streaming export
+        res_csv = self.client.get(f"/reports/export/{self.test_client_id}", headers=headers)
+        self.assertEqual(res_csv.status_code, 200)
+        self.assertIn("text/csv", res_csv.headers.get("content-type", ""))
+        self.assertIn("attachment; filename=", res_csv.headers.get("content-disposition", ""))
+        self.assertTrue(res_csv.text.startswith("ID,Thread ID,Timestamp,Customer Email"))
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

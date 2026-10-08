@@ -113,6 +113,7 @@ export const authApi = {
     department_name?: string; 
     company_name?: string;
     cost_multiplier?: number;
+    inactivity_timeout_hours?: number;
   }) {
     const res = await fetch(`${BASE_URL}/admin/client-profile`, {
       method: 'POST',
@@ -129,6 +130,7 @@ export const authApi = {
     score_threshold?: number;
     agent_type?: string; 
     response_tone?: string;
+    inactivity_timeout_hours?: number;
   }) {
     const res = await fetch(`${BASE_URL}/client/profile`, {
       method: 'POST',

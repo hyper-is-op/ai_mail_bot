@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Search, 
@@ -22,6 +23,7 @@ import EmailBodyWithDisclaimer from '@/components/EmailBodyWithDisclaimer';
 import { useAppState } from '@/context/AppStateContext';
 
 export default function Tickets() {
+  const [searchParams] = useSearchParams();
   const [ticketsList, setTicketsList] = useState<any[]>([]);
   const [selectedTicket, setSelectedTicket] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -29,6 +31,17 @@ export default function Tickets() {
   const [statusFilter, setStatusFilter] = useState<'all' | 'Ticket_Generated' | 'Done_Replied'>('all');
   const [priorityFilter, setPriorityFilter] = useState<'all' | 'Critical' | 'High' | 'Medium' | 'Low'>('all');
   const [copiedField, setCopiedField] = useState<string | null>(null);
+
+  useEffect(() => {
+    const qParam = searchParams.get('q') || searchParams.get('reason');
+    if (qParam) {
+      setSearchQuery(qParam);
+    }
+    const prioParam = searchParams.get('priority');
+    if (prioParam && ['Critical', 'High', 'Medium', 'Low'].includes(prioParam)) {
+      setPriorityFilter(prioParam as any);
+    }
+  }, [searchParams]);
 
   const { selectedClientId } = useAppState();
 

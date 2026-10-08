@@ -1,0 +1,5 @@
+- 2026-10-05T15:27:00+05:30 - Renamed navigation link in Sidebar.tsx from 'LLM & AI Telemetry' to 'Token Economics' under Overview section.
+- 2026-10-05T15:27:18+05:30 - Updated quick search entries in Topbar.tsx to 'Token Economics' and registered '/reports' route title.
+- 2026-10-05T15:27:35+05:30 - Updated page header title in LlmAnalytics.tsx from 'LLM Token & Cost Telemetry' to 'Token Economics' and aligned loading state copy.
+- 2026-10-05T15:27:46+05:30 - Updated shortcut navigation CTA in Dashboard.tsx to 'View Token Economics'.
+- 2026-10-05T15:34:05+05:30 - Built production frontend assets via `pnpm run build` (tsc && vite build) with 0 errors.

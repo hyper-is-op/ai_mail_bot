@@ -60,6 +60,7 @@ export default function Settings() {
     feature_order_tracking: true,
     feature_manual_reply: true,
     feature_strip_disclaimers: true,
+    inactivity_timeout_hours: 72,
   });
   const [featuresSaving, setFeaturesSaving] = useState(false);
   const [stripDisclaimerToggling, setStripDisclaimerToggling] = useState(false);
@@ -164,6 +165,7 @@ export default function Settings() {
         feature_order_tracking: features.feature_order_tracking,
         feature_manual_reply: features.feature_manual_reply,
         feature_strip_disclaimers: features.feature_strip_disclaimers,
+        inactivity_timeout_hours: features.inactivity_timeout_hours || 72,
       });
       setFeatures(prev => ({ ...prev, feature_auto_send: pendingAutoSendTarget }));
       setPendingAutoSendTarget(null);
@@ -180,7 +182,12 @@ export default function Settings() {
   const loadFeaturesData = async () => {
     if (!targetClientId || targetClientId === 'ALL') return;
     try {
-      const data = await api.getClientFeatures(targetClientId);
+      const [featRes, alertRes] = await Promise.allSettled([
+        api.getClientFeatures(targetClientId),
+        api.getAlertSettings(targetClientId),
+      ]);
+      const data = featRes.status === 'fulfilled' ? featRes.value : null;
+      const alerts = alertRes.status === 'fulfilled' ? alertRes.value : null;
       if (data) {
         setFeatures({
           feature_ticket_creation: data.feature_ticket_creation !== undefined ? Boolean(data.feature_ticket_creation) : true,
@@ -189,10 +196,16 @@ export default function Settings() {
           feature_order_tracking: data.feature_order_tracking !== undefined ? Boolean(data.feature_order_tracking) : true,
           feature_manual_reply: data.feature_manual_reply !== undefined ? Boolean(data.feature_manual_reply) : true,
           feature_strip_disclaimers: data.feature_strip_disclaimers !== undefined ? Boolean(data.feature_strip_disclaimers) : true,
+          inactivity_timeout_hours: data.inactivity_timeout_hours !== undefined ? Number(data.inactivity_timeout_hours) : 72,
+          webhook_url: alerts?.webhook_url || '',
+          alert_email: alerts?.alert_email || '',
+          alert_on_sla_breach: alerts?.alert_on_sla_breach !== undefined ? Boolean(alerts.alert_on_sla_breach) : true,
+          alert_on_worker_stall: alerts?.alert_on_worker_stall !== undefined ? Boolean(alerts.alert_on_worker_stall) : true,
+          alert_sla_hours: alerts?.alert_sla_hours !== undefined ? Number(alerts.alert_sla_hours) : 4,
         });
       }
     } catch (err) {
-      console.error("Failed to load feature flags:", err);
+      console.error("Failed to load feature flags and alert settings:", err);
     }
   };
 
@@ -210,6 +223,7 @@ export default function Settings() {
         feature_order_tracking: features.feature_order_tracking,
         feature_manual_reply: features.feature_manual_reply,
         feature_strip_disclaimers: newVal,
+        inactivity_timeout_hours: features.inactivity_timeout_hours || 72,
       });
       setFeatures(prev => ({ ...prev, feature_strip_disclaimers: newVal }));
       setSuccess(true);
@@ -417,19 +431,30 @@ export default function Settings() {
     setError('');
     setSuccess(false);
     try {
-      await api.setClientFeatures({
-        client_id: targetClientId,
-        feature_ticket_creation: features.feature_ticket_creation,
-        feature_auto_send: features.feature_auto_send,
-        feature_rag: features.feature_rag,
-        feature_order_tracking: features.feature_order_tracking,
-        feature_manual_reply: features.feature_manual_reply,
-        feature_strip_disclaimers: features.feature_strip_disclaimers,
-      });
+      await Promise.all([
+        api.setClientFeatures({
+          client_id: targetClientId,
+          feature_ticket_creation: features.feature_ticket_creation,
+          feature_auto_send: features.feature_auto_send,
+          feature_rag: features.feature_rag,
+          feature_order_tracking: features.feature_order_tracking,
+          feature_manual_reply: features.feature_manual_reply,
+          feature_strip_disclaimers: features.feature_strip_disclaimers,
+          inactivity_timeout_hours: features.inactivity_timeout_hours || 72,
+        }),
+        api.updateAlertSettings({
+          client_id: targetClientId,
+          webhook_url: features.webhook_url,
+          alert_email: features.alert_email,
+          alert_on_sla_breach: features.alert_on_sla_breach,
+          alert_on_worker_stall: features.alert_on_worker_stall,
+          alert_sla_hours: features.alert_sla_hours || 4,
+        })
+      ]);
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (err: any) {
-      setError(err.message || 'Failed to update feature flags');
+      setError(err.message || 'Failed to update feature flags and alert settings');
     } finally {
       setFeaturesSaving(false);
     }

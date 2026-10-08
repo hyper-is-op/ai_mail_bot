@@ -39,6 +39,7 @@ export default function AdminClients() {
         login_email: string;
         cost_multiplier: number;
         monthly_budget_usd?: number | '';
+        inactivity_timeout_hours?: number;
         new_password: string;
         status?: 'active' | 'inactive';
         savingProfile?: boolean;
@@ -127,6 +128,7 @@ export default function AdminClients() {
                     login_email: acc.login_email || acc.email || '',
                     cost_multiplier: acc.cost_multiplier !== undefined ? Number(acc.cost_multiplier) : 1.0,
                     monthly_budget_usd: acc.monthly_budget_usd !== undefined && acc.monthly_budget_usd !== null ? Number(acc.monthly_budget_usd) : '',
+                    inactivity_timeout_hours: acc.inactivity_timeout_hours !== undefined ? Number(acc.inactivity_timeout_hours) : 72,
                     new_password: '',
                     status: acc.status || 'active',
                 },
@@ -149,6 +151,7 @@ export default function AdminClients() {
                     department_name: s.department_name,
                     login_email: s.login_email,
                     cost_multiplier: s.cost_multiplier !== undefined ? Number(s.cost_multiplier) : 1.0,
+                    inactivity_timeout_hours: s.inactivity_timeout_hours !== undefined ? Number(s.inactivity_timeout_hours) : 72,
                 }),
                 api.setClientCostConfig({
                     client_id: clientId,
@@ -469,6 +472,9 @@ export default function AdminClients() {
                                 company_name: acc.company_name || '',
                                 department_name: acc.department_name || '',
                                 login_email: acc.login_email || acc.email || '',
+                                cost_multiplier: acc.cost_multiplier !== undefined ? Number(acc.cost_multiplier) : 1.0,
+                                monthly_budget_usd: acc.monthly_budget_usd !== undefined && acc.monthly_budget_usd !== null ? Number(acc.monthly_budget_usd) : '',
+                                inactivity_timeout_hours: acc.inactivity_timeout_hours !== undefined ? Number(acc.inactivity_timeout_hours) : 72,
                                 new_password: '',
                                 status: acc.status || 'active',
                             };
@@ -654,6 +660,29 @@ export default function AdminClients() {
                                                                 [acc.client_id]: { 
                                                                     ...prev[acc.client_id], 
                                                                     monthly_budget_usd: e.target.value === '' ? '' : parseFloat(e.target.value) || 0
+                                                                }
+                                                            }))}
+                                                            className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"
+                                                        />
+                                                    </div>
+
+                                                    <div className="space-y-1">
+                                                        <label className="text-[11px] font-semibold text-zinc-600 dark:text-zinc-400 flex items-center gap-1">
+                                                            <span>Inactivity Timeout (Hours)</span>
+                                                            <span className="text-[10px] text-primary font-mono font-bold">New Thread Cutoff</span>
+                                                        </label>
+                                                        <input
+                                                            type="number"
+                                                            step="1"
+                                                            min="1"
+                                                            max="720"
+                                                            placeholder="Default: 72"
+                                                            value={s.inactivity_timeout_hours !== undefined ? s.inactivity_timeout_hours : 72}
+                                                            onChange={(e) => setManageState((prev) => ({
+                                                                ...prev,
+                                                                [acc.client_id]: { 
+                                                                    ...prev[acc.client_id], 
+                                                                    inactivity_timeout_hours: parseInt(e.target.value, 10) || 72 
                                                                 }
                                                             }))}
                                                             className="w-full bg-zinc-50 dark:bg-zinc-900 border border-zinc-200 dark:border-white/10 rounded-xl px-3 py-2 text-xs font-medium text-foreground focus:outline-none focus:ring-2 focus:ring-primary/20 font-mono"

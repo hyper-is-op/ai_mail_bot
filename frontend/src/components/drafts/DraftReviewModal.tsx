@@ -22,7 +22,7 @@ interface DraftReviewModalProps {
   actionLoading: boolean;
   onDiscardSingle: (id: number) => void;
   onSaveDraftChanges: () => Promise<void>;
-  onSendSingle: (id: number) => Promise<void>;
+  onSendSingle: (id: number, addToKb?: boolean) => Promise<void>;
 }
 
 export const DraftReviewModal: React.FC<DraftReviewModalProps> = ({
@@ -39,6 +39,7 @@ export const DraftReviewModal: React.FC<DraftReviewModalProps> = ({
   onSaveDraftChanges,
   onSendSingle,
 }) => {
+  const [addToKb, setAddToKb] = React.useState(true);
   if (!activeDraft) return null;
 
   return (
@@ -207,6 +208,19 @@ export const DraftReviewModal: React.FC<DraftReviewModalProps> = ({
               </button>
             )}
 
+            {activeDraft.status === 'pending' && (
+              <label className="flex items-center gap-1.5 cursor-pointer text-muted-foreground hover:text-foreground text-[11px] select-none mr-2">
+                <input
+                  type="checkbox"
+                  checked={addToKb}
+                  onChange={(e) => setAddToKb(e.target.checked)}
+                  className="rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                />
+                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                <span>Save to Knowledge Base</span>
+              </label>
+            )}
+
             {activeDraft.status === 'pending' ? (
               <button
                 type="button"
@@ -214,7 +228,7 @@ export const DraftReviewModal: React.FC<DraftReviewModalProps> = ({
                   if (isEditing) {
                     await onSaveDraftChanges();
                   }
-                  await onSendSingle(activeDraft.id);
+                  await onSendSingle(activeDraft.id, addToKb);
                 }}
                 disabled={actionLoading}
                 className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-md bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs transition-colors disabled:opacity-50 cursor-pointer"

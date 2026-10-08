@@ -146,12 +146,13 @@ export function Drafts() {
   };
 
   // Single Send
-  const handleSendSingle = async (draftId: number) => {
+  const handleSendSingle = async (draftId: number, addToKb?: boolean) => {
     setActionLoading(true);
     try {
-      const res = await api.sendDraft(draftId);
+      const res = await api.sendDraft(draftId, { add_to_kb: Boolean(addToKb) });
       if (res && res.success) {
-        showToast('success', `Draft #${draftId} successfully dispatched!`);
+        const kbNote = res.added_to_kb ? ' and indexed into Knowledge Base!' : '!';
+        showToast('success', `Draft #${draftId} successfully dispatched${kbNote}`);
         if (activeDraft?.id === draftId) {
           handleCloseDrawer();
         }

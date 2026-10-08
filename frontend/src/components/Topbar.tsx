@@ -41,6 +41,7 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
     '/drafts': 'Drafts & Approvals',
     '/ai-processing': 'AI Pipeline Trace',
     '/tickets': 'Tickets & Escalations',
+    '/reports': 'Reports & Audits',
     '/accounts': 'Mailbox Accounts',
     '/knowledge': 'Knowledge Base (RAG)',
     '/payloads': 'Integrations & Webhooks',
@@ -53,10 +54,11 @@ export default function Topbar({ onMenuClick }: TopbarProps) {
 
   const quickSettingsList = [
     { name: 'Email Operations', href: '/dashboard', category: 'Overview' },
-    { name: 'LLM & AI Telemetry', href: '/dashboard?tab=llm', category: 'Overview' },
+    { name: 'Token Economics', href: '/dashboard?tab=llm', category: 'Overview' },
     { name: 'Mail Monitor', href: '/inbox', category: 'Operations' },
     { name: 'Drafts & Approvals', href: '/drafts', category: 'Operations' },
     { name: 'Tickets & Escalations', href: '/tickets', category: 'Operations' },
+    { name: 'Reports & Audits', href: '/reports', category: 'Operations' },
     { name: 'AI Pipeline Trace', href: '/ai-processing', category: 'Operations' },
     { name: 'Knowledge Base (RAG)', href: '/knowledge', category: 'Knowledge' },
     { name: 'Mailbox Accounts', href: '/accounts', category: 'Administration' },

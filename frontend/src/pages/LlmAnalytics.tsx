@@ -14,7 +14,10 @@ import {
   ShieldCheck,
   AlertTriangle,
   Calendar,
-  MessageSquare
+  MessageSquare,
+  Coins,
+  CheckCircle2,
+  Mail
 } from 'lucide-react';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -57,7 +60,7 @@ export default function LlmAnalytics() {
     return (
       <div className="min-h-[60vh] flex flex-col items-center justify-center space-y-4">
         <RefreshCw className="w-10 h-10 text-primary animate-spin" />
-        <p className="text-sm text-zinc-400 font-medium font-mono">Compiling multi-provider LLM token telemetry & latency metrics...</p>
+        <p className="text-sm text-zinc-400 font-medium font-mono">Compiling multi-provider token economics &amp; latency metrics...</p>
       </div>
     );
   }
@@ -81,6 +84,16 @@ export default function LlmAnalytics() {
     guardrail_cost: 0,
     guardrail_requests: 0,
     guardrail_tax_percent: 0
+  };
+  const tokenEconomics = metrics?.token_economics || {
+    avg_cost_per_email: totals.total_requests > 0 ? totals.total_cost / totals.total_requests : 0,
+    avg_tokens_per_email: totals.total_requests > 0 ? (totals.total_prompt_tokens + totals.total_completion_tokens) / totals.total_requests : 0,
+    avg_cost_per_conversation: 0,
+    avg_tokens_per_conversation: 0,
+    avg_turns_per_conversation: 1.0,
+    total_conversations: 0,
+    guardrail_overhead_ratio: guardrail.guardrail_tax_percent || 0,
+    economics_by_intent: [],
   };
   const dailyTrends = metrics?.daily_trends || [];
 
@@ -130,7 +143,7 @@ export default function LlmAnalytics() {
       <div className="flex flex-col md:flex-row justify-between md:items-end gap-4">
         <div>
           <h2 className="text-2xl md:text-3xl font-semibold tracking-tight text-foreground flex items-center gap-2">
-            <BarChart3 className="w-6 h-6 text-primary" /> LLM Token &amp; Cost Telemetry
+            <BarChart3 className="w-6 h-6 text-primary" /> Token Economics
           </h2>
           <p className="text-xs text-muted-foreground mt-1">Real-time usage analytics, token metrics, guardrail overhead, and unit economics across AI providers.</p>
         </div>
@@ -234,12 +247,17 @@ export default function LlmAnalytics() {
         </motion.div>
       </div>
 
-      {/* Monthly Budget & Quota Gauge Card */}
-      <div className="win11-card p-5 rounded-lg shadow-2xs">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4">
+      {/* Monthly Budget & Turnover Velocity Card */}
+      <div className="win11-card p-5 rounded-lg shadow-2xs space-y-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
           <div className="flex items-center gap-2">
             <ShieldCheck className="w-4 h-4 text-primary" />
-            <h3 className="text-base font-semibold text-foreground">Monthly LLM Budget &amp; Runaway Protection</h3>
+            <div>
+              <h3 className="text-base font-semibold text-foreground">Budget Allocated &amp; Consumption Velocity</h3>
+              <p className="text-xs text-muted-foreground">
+                Turnover cycle: <span className="font-semibold text-foreground font-mono">{budget.turnover_type || 'Monthly (Calendar)'}</span> • Next Reset: <span className="font-semibold text-foreground font-mono">{budget.turnover_reset_date || 'End of Month'}</span> ({budget.days_until_reset ?? 0}d remaining)
+              </p>
+            </div>
           </div>
           <span className={cn(
             "text-xs px-2.5 py-1 rounded-full font-medium border flex items-center gap-1.5",
@@ -253,50 +271,293 @@ export default function LlmAnalytics() {
             {budget.status === 'exceeded' 
               ? 'Budget Exceeded (Degrade/Hold)' 
               : budget.status === 'warning'
-                ? `Budget Alert (${budget.percent}% Utilized)`
+                ? `Budget Warning (${budget.percent}% Utilized)`
                 : budget.budget 
                   ? `Quota Healthy (${budget.percent}% Utilized)`
                   : 'Unlimited (No Hard Cap)'}
           </span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-          <div className="space-y-1">
-            <span className="text-xs text-muted-foreground">Month-to-Date (MTD) Spend</span>
+        {/* Primary Budget Grid */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pt-1">
+          <div className="p-3.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-1">
+            <span className="text-xs text-muted-foreground font-semibold">MTD Spend Consumption</span>
             <p className="text-2xl font-bold font-mono text-foreground">${Number(budget.spent || 0).toFixed(4)}</p>
-            <p className="text-[11px] text-muted-foreground">Reset on 1st of every calendar month</p>
+            <p className="text-[11px] text-muted-foreground font-mono">
+              Tokens: {(budget.spent_tokens ?? (totals.total_prompt_tokens + totals.total_completion_tokens)).toLocaleString()}
+            </p>
           </div>
 
-          <div className="space-y-1">
-            <span className="text-xs text-muted-foreground">Monthly Ceiling Ceiling</span>
+          <div className="p-3.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-1">
+            <span className="text-xs text-muted-foreground font-semibold">Budget Allocated</span>
             <p className="text-2xl font-bold font-mono text-foreground">
               {budget.budget !== null && budget.budget !== undefined ? `$${Number(budget.budget).toFixed(2)}` : '∞ Unlimited'}
             </p>
-            <p className="text-[11px] text-muted-foreground">Configurable per tenant in Admin &gt; Policies</p>
+            <p className="text-[11px] text-muted-foreground">
+              {budget.percent !== null && budget.percent !== undefined ? `${budget.percent}% consumed` : 'No hard budget ceiling'}
+            </p>
           </div>
 
-          <div className="space-y-2">
-            <div className="flex justify-between text-xs font-mono">
-              <span className="text-muted-foreground">Budget Consumption</span>
-              <span className="font-semibold text-foreground">
-                {budget.percent !== null && budget.percent !== undefined ? `${budget.percent}%` : 'N/A'}
-              </span>
+          <div className="p-3.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-1">
+            <span className="text-xs text-muted-foreground font-semibold">Day-Wise Avg Burn</span>
+            <div className="text-2xl font-bold font-mono text-foreground">
+              ${Number(budget.daily_avg_consumption?.avg_cost ?? 0).toFixed(4)}
+              <span className="text-xs text-muted-foreground font-normal"> /day</span>
             </div>
-            <div className="w-full bg-black/[0.06] dark:bg-white/[0.08] h-2.5 rounded-full overflow-hidden">
-              <div 
-                className={cn(
-                  "h-full transition-all duration-500 rounded-full",
-                  budget.status === 'exceeded' 
-                    ? "bg-red-500" 
-                    : budget.status === 'warning'
-                      ? "bg-amber-500"
-                      : "bg-emerald-500"
-                )}
-                style={{ width: `${Math.min(100, budget.percent || 0)}%` }}
-              />
+            <div className="text-[10px] text-muted-foreground font-mono flex justify-between pt-0.5">
+              <span>Min: ${Number(budget.daily_avg_consumption?.min_cost ?? 0).toFixed(4)}</span>
+              <span>Max: ${Number(budget.daily_avg_consumption?.max_cost ?? 0).toFixed(4)}</span>
+            </div>
+          </div>
+
+          <div className="p-3.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-1">
+            <span className="text-xs text-muted-foreground font-semibold">Projected Month-End</span>
+            <div className="text-2xl font-bold font-mono text-primary">
+              ${Number(budget.projected_month_end_spend ?? 0).toFixed(2)}
+            </div>
+            <p className="text-[10px] text-muted-foreground font-mono flex items-center gap-1">
+              <span>Day Tokens: ~{Number(budget.daily_avg_consumption?.avg_tokens ?? 0).toLocaleString()}/d</span>
+            </p>
+          </div>
+        </div>
+
+        {/* Progress Bar */}
+        <div className="space-y-1 pt-1">
+          <div className="flex justify-between text-xs font-mono">
+            <span className="text-muted-foreground">Period Budget Consumption</span>
+            <span className="font-semibold text-foreground">
+              {budget.percent !== null && budget.percent !== undefined ? `${budget.percent}%` : 'N/A'}
+            </span>
+          </div>
+          <div className="w-full bg-black/[0.06] dark:bg-white/[0.08] h-2.5 rounded-full overflow-hidden">
+            <div 
+              className={cn(
+                "h-full transition-all duration-500 rounded-full",
+                budget.status === 'exceeded' 
+                  ? "bg-red-500" 
+                  : budget.status === 'warning'
+                    ? "bg-amber-500"
+                    : "bg-emerald-500"
+              )}
+              style={{ width: `${Math.min(100, budget.percent || 0)}%` }}
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Granular Unit Economics Deck (Per Email, Completed Threads, Incomplete WIP) */}
+      <div className="win11-card p-5 rounded-lg shadow-2xs space-y-6">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+          <div>
+            <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+              <Coins className="w-4 h-4 text-emerald-500" /> Granular Unit Economics &amp; Conversation Lifecycle
+            </h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Unit economics comparing single emails processed against full completed multi-turn threads and active WIP burn
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-mono font-semibold border border-emerald-500/20">
+              {tokenEconomics.total_conversations} threads tracked
+            </span>
+            <span className="text-xs px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 font-mono font-semibold border border-amber-500/20">
+              Guardrail Tax: {Number(tokenEconomics.guardrail_overhead_ratio || 0).toFixed(1)}%
+            </span>
+          </div>
+        </div>
+
+        {/* Section 1: Per-Email Unit Economics */}
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h4 className="text-xs font-semibold text-foreground flex items-center gap-1.5 uppercase tracking-wider text-muted-foreground">
+              <Mail className="w-3.5 h-3.5 text-blue-500" /> Per-Mail Economics (All Invocations Aggregated Per Email)
+            </h4>
+            <span className="text-xs font-mono text-muted-foreground">
+              {tokenEconomics.per_email?.total_emails ?? totals.total_requests} emails processed
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {/* Cost Per Email */}
+            <div className="p-3.5 rounded-lg border border-blue-500/20 bg-blue-500/5 space-y-1">
+              <span className="text-xs text-blue-600 dark:text-blue-400 font-semibold">Avg Cost / Mail</span>
+              <div className="text-2xl font-bold font-mono text-foreground">
+                ${Number(tokenEconomics.per_email?.avg_cost ?? tokenEconomics.avg_cost_per_email ?? 0).toFixed(5)}
+              </div>
+              <div className="text-[10px] text-muted-foreground font-mono flex justify-between pt-0.5">
+                <span>Min: ${Number(tokenEconomics.per_email?.min_cost ?? 0).toFixed(5)}</span>
+                <span>Max: ${Number(tokenEconomics.per_email?.max_cost ?? 0).toFixed(5)}</span>
+              </div>
+            </div>
+
+            {/* Tokens Per Email */}
+            <div className="p-3.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-1">
+              <span className="text-xs text-muted-foreground font-semibold">Avg Tokens / Mail</span>
+              <div className="text-2xl font-bold font-mono text-foreground">
+                {Math.round(tokenEconomics.per_email?.avg_tokens ?? tokenEconomics.avg_tokens_per_email ?? 0).toLocaleString()}
+              </div>
+              <div className="text-[10px] text-muted-foreground font-mono flex justify-between pt-0.5">
+                <span>Min: {(tokenEconomics.per_email?.min_tokens ?? 0).toLocaleString()}</span>
+                <span>Max: {(tokenEconomics.per_email?.max_tokens ?? 0).toLocaleString()}</span>
+              </div>
+            </div>
+
+            {/* API Invocations Per Email */}
+            <div className="p-3.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-1">
+              <span className="text-xs text-muted-foreground font-semibold">API Calls / Mail</span>
+              <div className="text-2xl font-bold font-mono text-foreground">
+                {Number(tokenEconomics.per_email?.api_invocations?.avg_per_mail ?? 1.0).toFixed(1)}
+              </div>
+              <div className="text-[10px] text-muted-foreground font-mono flex justify-between pt-0.5">
+                <span>Min: {tokenEconomics.per_email?.api_invocations?.min_per_mail ?? 1} call</span>
+                <span>Max: {tokenEconomics.per_email?.api_invocations?.max_per_mail ?? 1} calls</span>
+              </div>
+            </div>
+
+            {/* Total Email Spend & Token Aggregate */}
+            <div className="p-3.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-1">
+              <span className="text-xs text-muted-foreground font-semibold">Total Mail Spend</span>
+              <div className="text-2xl font-bold font-mono text-foreground">
+                ${Number(tokenEconomics.per_email?.total_cost ?? totals.total_cost ?? 0).toFixed(4)}
+              </div>
+              <p className="text-[10px] text-muted-foreground font-mono">
+                Total Tokens: {(tokenEconomics.per_email?.total_tokens ?? (totals.total_prompt_tokens + totals.total_completion_tokens)).toLocaleString()}
+              </p>
             </div>
           </div>
         </div>
+
+        {/* Section 2: Completed Conversations vs Incomplete In-Flight WIP */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2">
+          {/* Completed Conversations */}
+          <div className="p-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+                <h4 className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wide">
+                  Completed Conversations (Full Multi-Turn Closed)
+                </h4>
+              </div>
+              <span className="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                {tokenEconomics.completed_conversations?.total_count ?? tokenEconomics.total_conversations ?? 0} threads
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-3 rounded-lg bg-white/60 dark:bg-black/40 border border-emerald-500/15 space-y-1">
+                <span className="text-[11px] text-muted-foreground font-semibold">Avg Cost / Completed Thread</span>
+                <div className="text-xl font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                  ${Number(tokenEconomics.completed_conversations?.avg_cost ?? tokenEconomics.avg_cost_per_conversation ?? 0).toFixed(5)}
+                </div>
+                <div className="text-[10px] text-muted-foreground font-mono flex justify-between pt-0.5">
+                  <span>Min: ${Number(tokenEconomics.completed_conversations?.min_cost ?? 0).toFixed(5)}</span>
+                  <span>Max: ${Number(tokenEconomics.completed_conversations?.max_cost ?? 0).toFixed(5)}</span>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-white/60 dark:bg-black/40 border border-emerald-500/15 space-y-1">
+                <span className="text-[11px] text-muted-foreground font-semibold">Avg Tokens / Completed Thread</span>
+                <div className="text-xl font-bold font-mono text-foreground">
+                  {Math.round(tokenEconomics.completed_conversations?.avg_tokens ?? tokenEconomics.avg_tokens_per_conversation ?? 0).toLocaleString()}
+                </div>
+                <div className="text-[10px] text-muted-foreground font-mono flex justify-between pt-0.5">
+                  <span>Min: {(tokenEconomics.completed_conversations?.min_tokens ?? 0).toLocaleString()}</span>
+                  <span>Max: {(tokenEconomics.completed_conversations?.max_tokens ?? 0).toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center text-xs font-mono text-muted-foreground pt-1 border-t border-emerald-500/10">
+              <span>Avg Turns: <strong className="text-foreground">{Number(tokenEconomics.completed_conversations?.avg_turns ?? tokenEconomics.avg_turns_per_conversation ?? 1.0).toFixed(1)}</strong> (Min: {tokenEconomics.completed_conversations?.min_turns ?? 1}, Max: {tokenEconomics.completed_conversations?.max_turns ?? 1})</span>
+              <span>API Calls: <strong className="text-foreground">{Number(tokenEconomics.completed_conversations?.avg_api_invocations ?? 1.0).toFixed(1)}</strong> (Max: {tokenEconomics.completed_conversations?.max_api_invocations ?? 1})</span>
+            </div>
+          </div>
+
+          {/* Incomplete / In-Flight WIP Conversations */}
+          <div className="p-4 rounded-xl border border-amber-500/20 bg-amber-500/5 space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Clock className="w-4 h-4 text-amber-500" />
+                <h4 className="text-xs font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wide">
+                  Incomplete Conversations (Active In-Flight WIP)
+                </h4>
+              </div>
+              <div className="flex items-center gap-2">
+                {(tokenEconomics.incomplete_conversations?.runaway_risk_count ?? 0) > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-mono font-bold bg-rose-500/15 text-rose-500 border border-rose-500/25">
+                    {tokenEconomics.incomplete_conversations?.runaway_risk_count} runaway alert
+                  </span>
+                )}
+                <span className="text-xs font-mono font-bold text-amber-600 dark:text-amber-400">
+                  {tokenEconomics.incomplete_conversations?.total_count ?? 0} active
+                </span>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="p-3 rounded-lg bg-white/60 dark:bg-black/40 border border-amber-500/15 space-y-1">
+                <span className="text-[11px] text-muted-foreground font-semibold">Avg Cost Incurred (WIP)</span>
+                <div className="text-xl font-bold font-mono text-amber-600 dark:text-amber-400">
+                  ${Number(tokenEconomics.incomplete_conversations?.avg_cost ?? 0).toFixed(5)}
+                </div>
+                <div className="text-[10px] text-muted-foreground font-mono flex justify-between pt-0.5">
+                  <span>Min: ${Number(tokenEconomics.incomplete_conversations?.min_cost ?? 0).toFixed(5)}</span>
+                  <span>Max: ${Number(tokenEconomics.incomplete_conversations?.max_cost ?? 0).toFixed(5)}</span>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-lg bg-white/60 dark:bg-black/40 border border-amber-500/15 space-y-1">
+                <span className="text-[11px] text-muted-foreground font-semibold">Avg Tokens Burned (WIP)</span>
+                <div className="text-xl font-bold font-mono text-foreground">
+                  {Math.round(tokenEconomics.incomplete_conversations?.avg_tokens ?? 0).toLocaleString()}
+                </div>
+                <div className="text-[10px] text-muted-foreground font-mono flex justify-between pt-0.5">
+                  <span>Min: {(tokenEconomics.incomplete_conversations?.min_tokens ?? 0).toLocaleString()}</span>
+                  <span>Max: {(tokenEconomics.incomplete_conversations?.max_tokens ?? 0).toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center text-xs font-mono text-muted-foreground pt-1 border-t border-amber-500/10">
+              <span>WIP Total Spend: <strong className="text-foreground">${Number(tokenEconomics.incomplete_conversations?.total_cost ?? 0).toFixed(4)}</strong></span>
+              <span>WIP Tokens: <strong className="text-foreground">{(tokenEconomics.incomplete_conversations?.total_tokens ?? 0).toLocaleString()}</strong></span>
+            </div>
+          </div>
+        </div>
+
+        {/* Intent Token Economics Breakdown */}
+        {tokenEconomics.economics_by_intent && tokenEconomics.economics_by_intent.length > 0 && (
+          <div className="pt-2 border-t border-black/[0.06] dark:border-white/[0.08] space-y-2">
+            <h4 className="text-xs font-semibold text-foreground">Token &amp; Cost Breakdown by Customer Technical Intent</h4>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-black/[0.06] dark:border-white/[0.08] text-muted-foreground font-semibold pb-1.5">
+                    <th className="py-2 px-3">Technical Intent</th>
+                    <th className="py-2 px-3 text-right">Threads</th>
+                    <th className="py-2 px-3 text-right">Total Tokens</th>
+                    <th className="py-2 px-3 text-right">Total Spend ($)</th>
+                    <th className="py-2 px-3 text-right">Avg Cost / Thread</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.04]">
+                  {tokenEconomics.economics_by_intent.map((item: any, idx: number) => (
+                    <tr key={idx} className="hover:bg-black/[0.02] dark:hover:bg-white/[0.02]">
+                      <td className="py-2 px-3 font-semibold font-mono text-foreground flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-primary" />
+                        {item.intent}
+                      </td>
+                      <td className="py-2 px-3 text-right font-mono text-foreground">{item.conversations}</td>
+                      <td className="py-2 px-3 text-right font-mono text-muted-foreground">{item.total_tokens.toLocaleString()}</td>
+                      <td className="py-2 px-3 text-right font-mono font-semibold text-foreground">${item.total_cost.toFixed(4)}</td>
+                      <td className="py-2 px-3 text-right font-mono text-emerald-600 dark:text-emerald-400 font-bold">${item.avg_cost.toFixed(5)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* 14-Day Spend & Token Volume Trend Chart */}

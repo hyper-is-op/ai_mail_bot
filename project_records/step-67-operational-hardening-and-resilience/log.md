@@ -1,0 +1,17 @@
+- 2026-10-05T16:13:30+05:30 - Initialized step-67 for system hardening & operational resilience (DLQ retry, closed-loop RAG feedback, proactive SLA webhooks, and period-over-period metric deltas).
+- 2026-10-05T16:15:10+05:30 - Added `retry_log_id` attribute to `PipelineContext` in `app/pipeline/context.py`.
+- 2026-10-05T16:17:45+05:30 - Updated `_execute_persistence` in `worker/tasks.py` to update existing `email_logs` in place when `retry_log_id` is present instead of inserting duplicate rows.
+- 2026-10-05T16:19:20+05:30 - Implemented `POST /emails/{email_log_id}/retry` in `app/api/emails.py` with client access checks and Celery task re-dispatch.
+- 2026-10-05T16:21:00+05:30 - Added `retryEmail` API method in `frontend/src/lib/api/emails.ts` and retry trigger button in `frontend/src/components/inbox/ThreadDetailView.tsx`.
+- 2026-10-05T16:22:30+05:30 - Extended `POST /drafts/{draft_id}/send` in `app/api/drafts.py` to support `add_to_kb` parameter and vector store indexing via `add_knowledge`.
+- 2026-10-05T16:23:45+05:30 - Added "Save to Knowledge Base" toggle to `frontend/src/components/drafts/DraftReviewModal.tsx` and updated `frontend/src/lib/api/drafts.ts`.
+- 2026-10-05T16:25:10+05:30 - Added webhook and alert configuration schema migration in `app/email_credential.py`.
+- 2026-10-05T16:27:00+05:30 - Implemented `app/alert_service.py` with multi-platform webhook formatting (Slack, Discord, generic) and 30-minute Redis cooldown keys.
+- 2026-10-05T16:28:40+05:30 - Added `GET/PUT /admin/alert-settings` and `POST /admin/alert-settings/test` in `app/api/settings/automation.py`.
+- 2026-10-05T16:30:15+05:30 - Wired proactive alert dispatch into worker poison pill circuit breaker in `worker/tasks.py`.
+- 2026-10-05T16:31:50+05:30 - Built Proactive Sentinel Webhooks card with test ping trigger in `frontend/src/components/settings/FeaturesTab.tsx`.
+- 2026-10-05T16:33:10+05:30 - Implemented period-over-period delta comparison calculations in `app/api/analytics.py` for today, yesterday, monthly, and custom intervals.
+- 2026-10-05T16:34:40+05:30 - Added `DeltaBadge` component and trend pills to Hero Cards 1 and 2 and Inbound Delivery Health strip in `frontend/src/pages/Dashboard.tsx`.
+- 2026-10-05T16:37:00+05:30 - Verified frontend build with `pnpm run build` (0 TypeScript / bundling errors).
+- 2026-10-05T16:40:50+05:30 - Authored `tests/test_hardening_and_resilience.py` testing DLQ retry, closed-loop RAG, alert service cooldown, and period-over-period deltas.
+- 2026-10-05T16:41:35+05:30 - Executed full test suite with `docker exec mail_ai_api python3 tests/run_all.py` (91/91 tests passed cleanly).

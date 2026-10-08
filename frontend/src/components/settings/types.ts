@@ -40,6 +40,12 @@ export interface FeaturesState {
   feature_order_tracking: boolean;
   feature_manual_reply: boolean;
   feature_strip_disclaimers: boolean;
+  inactivity_timeout_hours?: number;
+  webhook_url?: string;
+  alert_email?: string;
+  alert_on_sla_breach?: boolean;
+  alert_on_worker_stall?: boolean;
+  alert_sla_hours?: number;
 }
 
 export interface DisclaimerItem {

@@ -1,0 +1,10 @@
+- 2026-10-06T11:46:15+05:30 - Initialized step-68 for comprehensive audit and verification of step-67 operational hardening & resilience features.
+- 2026-10-06T11:48:15+05:30 - Verified container health following host server reboot; restarted stopped containers mail_ai_redis, mail_ai_api, and mail_ai_worker.
+- 2026-10-06T11:49:48+05:30 - Verified all 4 core components healthy via /health probe (MySQL database, Redis, Qdrant, embed_service).
+- 2026-10-06T11:52:33+05:30 - Audited live API responses for GET /dashboard/stats/ALL and GET /dashboard/stats/ALL?range=this_month; validated deltas structure returns accurately against real production database.
+- 2026-10-06T11:54:15+05:30 - Stress-tested alert settings persistence on unconfigured tenants; discovered edge case where UPDATE on non-existent email_accounts rows silently updated 0 rows.
+- 2026-10-06T12:00:23+05:30 - Patched update_alert_settings in app/alert_service.py to auto-insert a stub email_accounts record when configuring alerts for a new tenant before IMAP connection.
+- 2026-10-06T12:00:41+05:30 - Verified alert settings persist and fetch properly via live API for unconfigured clients, then cleaned up test record.
+- 2026-10-06T12:03:22+05:30 - Verified test_hardening_and_resilience.py passes (4/4 tests clean).
+- 2026-10-06T12:04:08+05:30 - Verified frontend production bundle with pnpm run build (0 errors, 11.02s).
+- 2026-10-06T12:04:45+05:30 - Executed full test suite via docker exec mail_ai_api python3 tests/run_all.py (91/91 tests passing in 14.49s).

@@ -1,0 +1,5 @@
+- 2026-10-05T15:39:15+05:30 - Extended app/api/analytics.py to calculate ingestion_health (Celery queue depth, worker heartbeat, sync status), FCR count/rate, guided multi-turn count, runaway risk count, active WIP SLA aging buckets (<1h, 1-4h, >4h), and intent_matrix.
+- 2026-10-05T15:42:00+05:30 - Updated destination pages (Inbox.tsx, Tickets.tsx, Reports.tsx) to accept URL searchParams filters for seamless deep-linking.
+- 2026-10-05T15:45:00+05:30 - Updated Dashboard.tsx with live Ingestion Pipeline health banner, deep-linked traffic breakdown pills, CRR/FCR/Guided conversational highlights, WIP SLA aging pills, and Technical Intent Automation & Deflection Matrix table with direct audit links.
+- 2026-10-05T15:48:09+05:30 - Executed pnpm run build; verified frontend TypeScript compilation and Vite build succeeded with 0 errors.
+- 2026-10-05T15:49:06+05:30 - Executed docker exec mail_ai_api python3 tests/run_all.py; verified 87 of 87 backend tests passed cleanly in 24.71s.

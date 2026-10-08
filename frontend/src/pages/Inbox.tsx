@@ -31,6 +31,7 @@ export default function Inbox() {
   const [failedSubTab, setFailedSubTab] = useState<'All' | 'Worker' | 'Auth' | 'Ticket' | 'LLM'>('All');
   const [searchQuery, setSearchQuery] = useState('');
   const [ticketLoadingId, setTicketLoadingId] = useState<number | null>(null);
+  const [retryLoadingId, setRetryLoadingId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [toastMsg, setToastMsg] = useState('');
   const [showTraceFor, setShowTraceFor] = useState<number | null>(null);
@@ -41,6 +42,13 @@ export default function Inbox() {
   const [isReplying, setIsReplying] = useState(false);
   const [replyText, setReplyText] = useState('');
   const [replyLoading, setReplyLoading] = useState(false);
+
+  useEffect(() => {
+    const tabParam = searchParams.get('tab');
+    if (tabParam && ['All', 'Marketing', 'Replied', 'Processing', 'Failed', 'Pending Review', 'Paused', 'Blocked'].includes(tabParam)) {
+      setActiveTab(tabParam as InboxTabType);
+    }
+  }, [searchParams]);
 
   const { selectedClientId, setSelectedClientId, clients, isAdmin } = useAppState();
 
@@ -452,6 +460,19 @@ export default function Inbox() {
     }
   };
 
+  const handleRetryEmail = async (emailLogId: number) => {
+    setRetryLoadingId(emailLogId);
+    try {
+      const res = await api.retryEmail(emailLogId);
+      showToast(res.message || `Email #${emailLogId} re-queued for processing`);
+      fetchEmails(true, selectedClientId);
+    } catch (err: any) {
+      showToast(`Retry failed: ${err.message}`);
+    } finally {
+      setRetryLoadingId(null);
+    }
+  };
+
   const handlePauseToggle = async (email: string) => {
     const isPaused = pausedEmails.includes(email);
     const activeCid = selectedClientId === "ALL" ? (selectedThread?.latest_email?.client_id || clients[0]?.client_id || '') : selectedClientId;
@@ -730,6 +751,8 @@ export default function Inbox() {
           setShowTraceFor={setShowTraceFor}
           onCreateTicket={handleCreateTicket}
           ticketLoadingId={ticketLoadingId}
+          onRetryEmail={handleRetryEmail}
+          retryLoadingId={retryLoadingId}
           replyText={replyText}
           setReplyText={setReplyText}
           onSendManualReply={() => handleSendManualReply()}

@@ -3,9 +3,13 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { 
   RefreshCw, AlertCircle, Loader2,
   Mail, Bot, Cpu, Clock, Ticket,
-  ArrowRight
+  ArrowRight, ShieldCheck, ShieldAlert,
+  FileSpreadsheet, ArrowUpRight,
+  Layers, CheckCheck, Target,
+  TrendingUp, TrendingDown, Minus,
+  Activity, Zap, Timer, Hourglass
 } from 'lucide-react';
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
+import { AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { SettingsCard } from '@/components/fluent';
@@ -17,10 +21,34 @@ function formatRelativeDuration(seconds: number | null | undefined): string {
   if (seconds < 60) return `${Math.floor(seconds)}s ago`;
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(seconds / 60);
+  const hours = Math.floor(seconds / 3600);
   if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
+  const days = Math.floor(seconds / 86400);
   return `${days}d ago`;
+}
+
+function DeltaBadge({ value, isPctPoint = false, inverse = false }: { value?: number; isPctPoint?: boolean; inverse?: boolean }) {
+  if (value === undefined || value === null || isNaN(value)) return null;
+  if (value === 0) {
+    return (
+      <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-muted-foreground bg-black/5 dark:bg-white/5 px-1.5 py-0.5 rounded" title="No change compared to prior period">
+        <Minus className="w-2.5 h-2.5" /> 0%
+      </span>
+    );
+  }
+  const isPositive = value > 0;
+  // If inverse is true (e.g. bounce rate, errors), positive is bad (rose) and negative is good (emerald)
+  const isGood = inverse ? !isPositive : isPositive;
+  const colorClass = isGood ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10" : "text-rose-600 dark:text-rose-400 bg-rose-500/10";
+  const Icon = isPositive ? TrendingUp : TrendingDown;
+  const formatted = `${isPositive ? '+' : ''}${value}${isPctPoint ? ' pts' : '%'}`;
+
+  return (
+    <span className={cn("inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded", colorClass)} title={`Compared to previous period: ${formatted}`}>
+      <Icon className="w-2.5 h-2.5 shrink-0" />
+      {formatted}
+    </span>
+  );
 }
 
 export default function Dashboard() {
@@ -71,6 +99,99 @@ export default function Dashboard() {
     worker_heartbeat: { status: 'offline', last_seen_sec: null, label: 'Offline' } as any,
     client_sync: null as any,
     client_breakdown: [] as any[],
+    inbound_health: {
+      total_inbound: 0,
+      real_inquiries: 0,
+      marketing_count: 0,
+      spam_count: 0,
+      blocked_count: 0,
+      bounce_count: 0,
+      bounce_rate: 0.0,
+      delivery_health_score: 100.0,
+      avg_daily_inbound: 0.0,
+      monthly_inbound_volume: 0,
+      hourly_profile: [] as Array<{ hour: number; count: number }>,
+    },
+    execution_latency: {
+      total_execution_ms: 0,
+      avg_latency_ms: 0,
+      min_latency_ms: 0,
+      max_latency_ms: 0,
+      first_action: {
+        avg_ms: 0,
+        min_ms: 0,
+        max_ms: 0,
+      },
+    },
+    ingestion_health: {
+      worker_heartbeat: { status: 'offline', last_seen_sec: null, label: 'Offline' } as any,
+      queue_depth: 0,
+      oldest_pending_sec: 0,
+      client_sync: null as any,
+    },
+    conversational_performance: {
+      customer_resolution_rate: 0.0,
+      rag_resolved_count: 0,
+      ticket_escalated_count: 0,
+      fcr_count: 0,
+      fcr_rate: 0.0,
+      multi_turn_count: 0,
+      runaway_risk_count: 0,
+      avg_resolution_turns: 1.0,
+      avg_resolution_duration_sec: 0,
+      completed_conversations: {
+        count: 0,
+        avg_duration_sec: 0,
+        min_duration_sec: 0,
+        max_duration_sec: 0,
+      },
+      incomplete_conversations: {
+        count: 0,
+        total_duration_sec: 0,
+        avg_duration_sec: 0,
+        min_duration_sec: 0,
+        max_duration_sec: 0,
+      },
+      rag_resolution_timing: {
+        count: 0,
+        avg_duration_sec: 0,
+        min_duration_sec: 0,
+        max_duration_sec: 0,
+      },
+      ticket_escalation_timing: {
+        count: 0,
+        avg_duration_sec: 0,
+        min_duration_sec: 0,
+        max_duration_sec: 0,
+      },
+      active_wip_conversations: 0,
+      avg_active_wip_age_sec: 0,
+      active_wip_aging: {
+        under_1h: 0,
+        warning_1_4h: 0,
+        breached_over_4h: 0,
+      },
+      sentiment_trajectory: {
+        improved: 0,
+        neutral_stable: 0,
+        deteriorated: 0,
+      },
+      sentiment_distribution: {
+        positive: 0,
+        neutral: 0,
+        negative: 0,
+        net_score: 0.0,
+      },
+      inferred_csat: 5.0,
+      intent_breakdown: [] as Array<{ intent: string; count: number }>,
+      intent_matrix: [] as any[],
+    },
+    deltas: {
+      total_emails_pct: 0,
+      ai_replies_pct: 0,
+      automation_rate_pct: 0,
+      bounce_rate_pct: 0,
+    },
   });
   
   const [chartData, setChartData] = useState<any[]>([]);
@@ -82,6 +203,7 @@ export default function Dashboard() {
   const [startDate, setStartDate] = useState(getFirstDayOfCurrentMonth());
   const [endDate, setEndDate] = useState(getLastDayOfCurrentMonth());
   const [autoRefresh, setAutoRefresh] = useState<'off' | '30' | '60'>('off');
+  const [timelineMode, setTimelineMode] = useState<'volume' | 'outcomes'>('volume');
 
   useEffect(() => {
     if (selectedClientId) {
@@ -131,6 +253,60 @@ export default function Dashboard() {
           worker_heartbeat: stats.worker_heartbeat || { status: 'offline', last_seen_sec: null, label: 'Offline' },
           client_sync: stats.client_sync || null,
           client_breakdown: stats.client_breakdown || [],
+          inbound_health: stats.inbound_health || {
+            total_inbound: stats.total_emails || 0,
+            real_inquiries: stats.total_emails || 0,
+            marketing_count: 0,
+            spam_count: 0,
+            blocked_count: 0,
+            bounce_count: 0,
+            bounce_rate: 0.0,
+            delivery_health_score: 100.0,
+            avg_daily_inbound: 0.0,
+            monthly_inbound_volume: 0,
+          },
+          execution_latency: stats.execution_latency || {
+            total_execution_ms: 0,
+            avg_latency_ms: 0,
+            min_latency_ms: 0,
+            max_latency_ms: 0,
+            first_action: { avg_ms: 0, min_ms: 0, max_ms: 0 },
+          },
+          ingestion_health: stats.ingestion_health || {
+            worker_heartbeat: stats.worker_heartbeat || { status: 'offline', last_seen_sec: null, label: 'Offline' },
+            queue_depth: 0,
+            oldest_pending_sec: stats.oldest_pending_seconds || 0,
+            client_sync: stats.client_sync || null,
+          },
+          conversational_performance: stats.conversational_performance || {
+            customer_resolution_rate: stats.total_emails > 0 ? Math.round((stats.ai_replies / stats.total_emails) * 100) : 0,
+            rag_resolved_count: stats.ai_replies || 0,
+            ticket_escalated_count: stats.tickets_generated || 0,
+            fcr_count: stats.ai_replies || 0,
+            fcr_rate: stats.total_emails > 0 ? Math.round((stats.ai_replies / stats.total_emails) * 100) : 0,
+            multi_turn_count: 0,
+            runaway_risk_count: 0,
+            avg_resolution_turns: 1.0,
+            avg_resolution_duration_sec: 0,
+            completed_conversations: { count: 0, avg_duration_sec: 0, min_duration_sec: 0, max_duration_sec: 0 },
+            incomplete_conversations: { count: 0, total_duration_sec: 0, avg_duration_sec: 0, min_duration_sec: 0, max_duration_sec: 0 },
+            rag_resolution_timing: { count: 0, avg_duration_sec: 0, min_duration_sec: 0, max_duration_sec: 0 },
+            ticket_escalation_timing: { count: 0, avg_duration_sec: 0, min_duration_sec: 0, max_duration_sec: 0 },
+            active_wip_conversations: 0,
+            avg_active_wip_age_sec: 0,
+            active_wip_aging: { under_1h: 0, warning_1_4h: 0, breached_over_4h: 0 },
+            sentiment_trajectory: { improved: 0, neutral_stable: 0, deteriorated: 0 },
+            sentiment_distribution: { positive: 0, neutral: 0, negative: 0, net_score: 0.0 },
+            inferred_csat: 5.0,
+            intent_breakdown: [],
+            intent_matrix: [],
+          },
+          deltas: stats.deltas || {
+            total_emails_pct: 0,
+            ai_replies_pct: 0,
+            automation_rate_pct: 0,
+            bounce_rate_pct: 0,
+          },
         });
         setChartData(stats.chart_data || []);
       }
@@ -170,10 +346,20 @@ export default function Dashboard() {
   // Process chart data so single points render clean, visible curves
   const processedChartData = useMemo(() => {
     if (!chartData || chartData.length === 0) return [];
-    if (chartData.length === 1) {
-      const item = chartData[0];
+    const normalized = chartData.map((item) => ({
+      ...item,
+      emails: item.emails ?? 0,
+      aiReplied: item.aiReplied ?? 0,
+      deflected: item.deflected ?? item.aiReplied ?? 0,
+      escalated: item.escalated ?? 0,
+      pending: item.pending ?? 0,
+      failed: item.failed ?? 0,
+    }));
+    if (normalized.length === 1) {
+      const item = normalized[0];
       const name = item.name || '';
       const hourMatch = name.match(/^(\d{1,2})\s*(AM|PM)$/i);
+      const emptyPoint = { emails: 0, aiReplied: 0, deflected: 0, escalated: 0, pending: 0, failed: 0 };
       if (hourMatch) {
         const hour = parseInt(hourMatch[1], 10);
         const meridian = hourMatch[2].toUpperCase();
@@ -182,19 +368,45 @@ export default function Dashboard() {
         const prevMeridian = (hour === 12 && meridian === 'PM') ? 'AM' : (hour === 12 && meridian === 'AM') ? 'PM' : meridian;
         const nextMeridian = (hour === 11 && meridian === 'AM') ? 'PM' : (hour === 11 && meridian === 'PM') ? 'AM' : meridian;
         return [
-          { name: `${prevHour} ${prevMeridian}`, emails: 0, aiReplied: 0 },
+          { name: `${prevHour} ${prevMeridian}`, ...emptyPoint },
           item,
-          { name: `${nextHour} ${nextMeridian}`, emails: 0, aiReplied: 0 },
+          { name: `${nextHour} ${nextMeridian}`, ...emptyPoint },
         ];
       }
       return [
-        { name: 'Prior', emails: 0, aiReplied: 0 },
+        { name: 'Prior', ...emptyPoint },
         item,
-        { name: 'Later', emails: 0, aiReplied: 0 },
+        { name: 'Later', ...emptyPoint },
       ];
     }
-    return chartData;
+    return normalized;
   }, [chartData]);
+
+  // Donut data for Resolution Deflection composition
+  const donutData = useMemo(() => {
+    const data = [
+      { name: 'AI Auto-Replied', value: metrics.ai_replies, color: '#10B981' },
+      { name: 'Escalated to Ticket', value: metrics.tickets_generated, color: '#A855F7' },
+      { name: 'Pending Review', value: metrics.pending_emails, color: '#F59E0B' },
+      { name: 'Processing Errors', value: metrics.failed_emails, color: '#F43F5E' },
+    ].filter((d) => d.value > 0);
+    return data.length > 0 ? data : [{ name: 'No Inbound Traffic', value: 1, color: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)' }];
+  }, [metrics.ai_replies, metrics.tickets_generated, metrics.pending_emails, metrics.failed_emails, isDark]);
+
+  // Peak Hour load from 24-hour distribution
+  const peakHourInfo = useMemo(() => {
+    const profile = metrics.inbound_health?.hourly_profile || [];
+    if (!profile.length) return null;
+    const sorted = [...profile].sort((a, b) => b.count - a.count);
+    const peak = sorted[0];
+    if (!peak || peak.count === 0) return null;
+    const period = peak.hour >= 12 ? 'PM' : 'AM';
+    const displayHour = peak.hour === 0 ? 12 : peak.hour > 12 ? peak.hour - 12 : peak.hour;
+    return {
+      label: `${displayHour}:00 ${period}`,
+      count: peak.count,
+    };
+  }, [metrics.inbound_health?.hourly_profile]);
 
   const currentClient = clients.find((c) => c.client_id === selectedClientId);
   const clientDisplayName = currentClient?.company_name || currentClient?.name || selectedClientId;
@@ -252,47 +464,6 @@ export default function Dashboard() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Daemon Ingestion Heartbeat */}
-          <div 
-            title={metrics.client_sync?.last_sync_sec !== null && metrics.client_sync?.last_sync_sec !== undefined 
-              ? `Last account sweep: ${formatRelativeDuration(metrics.client_sync.last_sync_sec)}`
-              : "Real-time IMAP listener heartbeat status"}
-            className="flex items-center gap-2 win11-card px-2.5 py-1.5 rounded-md border border-black/[0.06] dark:border-white/[0.08] shadow-2xs"
-          >
-            <span className={cn(
-              "w-2 h-2 rounded-full",
-              metrics.worker_heartbeat?.status === 'healthy' ? "bg-emerald-500 animate-pulse" :
-              metrics.worker_heartbeat?.status === 'delayed' ? "bg-amber-500" :
-              metrics.worker_heartbeat?.status === 'stalled' ? "bg-rose-500 animate-ping" :
-              metrics.worker_heartbeat?.status === 'standby' ? "bg-amber-400" : "bg-zinc-400"
-            )} />
-            <span className="text-[11px] font-medium text-foreground">
-              Daemon: <span className={cn(
-                "font-semibold",
-                metrics.worker_heartbeat?.status === 'healthy' ? "text-emerald-600 dark:text-emerald-400" :
-                metrics.worker_heartbeat?.status === 'delayed' || metrics.worker_heartbeat?.status === 'standby' ? "text-amber-600 dark:text-amber-400" :
-                "text-rose-600 dark:text-rose-400"
-              )}>
-                {metrics.worker_heartbeat?.label || 'Offline'}
-                {metrics.worker_heartbeat?.last_seen_sec !== null && metrics.worker_heartbeat?.last_seen_sec !== undefined && (
-                  <span className="font-mono text-[10px] ml-1 opacity-80">({metrics.worker_heartbeat.last_seen_sec}s)</span>
-                )}
-              </span>
-            </span>
-          </div>
-
-          {metrics.client_sync && metrics.client_sync.last_sync_sec !== null && (
-            <div 
-              title="Time since last successful mailbox poll check"
-              className="hidden md:flex items-center gap-1.5 win11-card px-2 py-1.5 rounded-md border border-black/[0.06] dark:border-white/[0.08] shadow-2xs text-[11px]"
-            >
-              <span className="text-muted-foreground">Mailbox:</span>
-              <span className="font-semibold text-foreground">
-                {formatRelativeDuration(metrics.client_sync.last_sync_sec)}
-              </span>
-            </div>
-          )}
-
           {/* Auto-Refresh Control */}
           <div className="flex items-center gap-1.5 win11-card px-2.5 py-1.5 rounded-md border border-black/[0.06] dark:border-white/[0.08] shadow-2xs">
             <span className={cn(
@@ -386,6 +557,209 @@ export default function Dashboard() {
             </div>
           )}
 
+          {/* Live Ingestion Pipeline & Worker Health Strip */}
+          <div className="win11-card p-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08] shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full animate-pulse bg-emerald-500" />
+                <span className="font-semibold text-foreground">Worker Pipeline:</span>
+                <span className={cn(
+                  "px-2 py-0.5 rounded-md font-mono text-[11px] font-bold border",
+                  (metrics.ingestion_health?.worker_heartbeat?.status ?? metrics.worker_heartbeat?.status) === 'healthy'
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                    : (metrics.ingestion_health?.worker_heartbeat?.status ?? metrics.worker_heartbeat?.status) === 'delayed'
+                    ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+                    : "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
+                )}>
+                  {metrics.ingestion_health?.worker_heartbeat?.label || metrics.worker_heartbeat?.label || 'Active'}
+                  {(metrics.ingestion_health?.worker_heartbeat?.last_seen_sec ?? metrics.worker_heartbeat?.last_seen_sec) !== null && (
+                    <span className="font-normal opacity-80 ml-1">
+                      ({metrics.ingestion_health?.worker_heartbeat?.last_seen_sec ?? metrics.worker_heartbeat?.last_seen_sec}s ago)
+                    </span>
+                  )}
+                </span>
+              </div>
+
+              <div className="h-4 w-px bg-black/[0.08] dark:border-white/[0.08] hidden sm:block" />
+
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <Layers className="w-3.5 h-3.5 text-primary" />
+                <span>Queue Depth:</span>
+                <span className={cn(
+                  "font-mono font-bold",
+                  (metrics.ingestion_health?.queue_depth ?? 0) > 10 ? "text-amber-600 dark:text-amber-400" : "text-foreground"
+                )}>
+                  {(metrics.ingestion_health?.queue_depth ?? 0).toLocaleString()} tasks
+                </span>
+              </div>
+
+              <div className="h-4 w-px bg-black/[0.08] dark:border-white/[0.08] hidden sm:block" />
+
+              <div className="flex items-center gap-1.5 text-muted-foreground">
+                <Clock className="w-3.5 h-3.5 text-muted-foreground" />
+                <span>Ingestion Lag:</span>
+                <span className={cn(
+                  "font-mono font-bold",
+                  (metrics.ingestion_health?.oldest_pending_sec ?? 0) > 60 ? "text-amber-600 dark:text-amber-400" : "text-foreground"
+                )}>
+                  {(metrics.ingestion_health?.oldest_pending_sec ?? 0) > 60 
+                    ? `${Math.round((metrics.ingestion_health?.oldest_pending_sec ?? 0) / 60)}m` 
+                    : `${metrics.ingestion_health?.oldest_pending_sec ?? 0}s`}
+                </span>
+              </div>
+            </div>
+
+            {selectedClientId !== 'ALL' && metrics.client_sync && (
+              <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                <span>Mailbox Polling:</span>
+                <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
+                  {metrics.client_sync.status === 'connected' ? 'Connected' : metrics.client_sync.status}
+                  {metrics.client_sync.last_sync_sec !== null && ` (${metrics.client_sync.last_sync_sec}s ago)`}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Real-Time Inbound Delivery Health, Volume Velocity & Traffic Classification */}
+          <div className="win11-card p-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08] shadow-2xs space-y-3">
+            <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3">
+              {/* Left: Overall Health Score & Delivery Ratio */}
+              <div className="flex items-center gap-3">
+                <div className={cn(
+                  "p-2 rounded-lg border shrink-0",
+                  (metrics.inbound_health?.bounce_rate || 0) < 5
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                    : (metrics.inbound_health?.bounce_rate || 0) < 15
+                    ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+                    : "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
+                )}>
+                  {(metrics.inbound_health?.bounce_rate || 0) < 5 ? (
+                    <ShieldCheck className="w-5 h-5" />
+                  ) : (
+                    <ShieldAlert className="w-5 h-5" />
+                  )}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-foreground">Inbound Delivery Health</span>
+                    <span className={cn(
+                      "px-2 py-0.5 rounded-full text-[10px] font-bold font-mono border",
+                      (metrics.inbound_health?.bounce_rate || 0) < 5
+                        ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20"
+                        : (metrics.inbound_health?.bounce_rate || 0) < 15
+                        ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20"
+                        : "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
+                    )}>
+                      {metrics.inbound_health?.delivery_health_score ?? 100}% Healthy
+                    </span>
+                  </div>
+                  <div className="text-[11px] text-muted-foreground flex flex-wrap items-center gap-2 mt-0.5">
+                    <span className="flex items-center gap-1.5">
+                      <span>Bounce Rate: <strong className="font-mono text-foreground">{metrics.inbound_health?.bounce_rate ?? 0}%</strong></span>
+                      <DeltaBadge value={metrics.deltas?.bounce_rate_pct} isPctPoint inverse />
+                    </span>
+                    <span>•</span>
+                    <span>Total Inbound: <strong className="font-mono text-foreground">{(metrics.inbound_health?.total_inbound ?? metrics.total_emails).toLocaleString()}</strong></span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Center: Inbound Velocity & Cadence */}
+              <div className="flex items-center gap-4 px-3 py-1.5 rounded-lg bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.04] dark:border-white/[0.06] text-xs">
+                <div>
+                  <div className="text-[10px] text-muted-foreground font-medium">Daily Cadence (Avg)</div>
+                  <div className="font-mono font-bold text-foreground flex items-baseline gap-1 mt-0.5">
+                    <span className="text-sm">{metrics.inbound_health?.avg_daily_inbound ?? 0}</span>
+                    <span className="text-[10px] text-muted-foreground font-normal">mails/day</span>
+                  </div>
+                </div>
+                <div className="h-6 w-px bg-black/[0.08] dark:bg-white/[0.08]" />
+                <div>
+                  <div className="text-[10px] text-muted-foreground font-medium">Trailing 30D Volume</div>
+                  <div className="font-mono font-bold text-foreground flex items-baseline gap-1 mt-0.5">
+                    <span className="text-sm">{(metrics.inbound_health?.monthly_inbound_volume ?? metrics.total_emails).toLocaleString()}</span>
+                    <span className="text-[10px] text-muted-foreground font-normal">total</span>
+                  </div>
+                </div>
+                {peakHourInfo && (
+                  <>
+                    <div className="h-6 w-px bg-black/[0.08] dark:bg-white/[0.08]" />
+                    <div>
+                      <div className="text-[10px] text-muted-foreground font-medium">Peak Traffic Hour</div>
+                      <div className="font-mono font-bold text-primary flex items-baseline gap-1 mt-0.5">
+                        <span className="text-sm">{peakHourInfo.label}</span>
+                        <span className="text-[10px] text-muted-foreground font-normal">({peakHourInfo.count} mails)</span>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              {/* Right: Traffic Classification Badges Strip with Deep-Linking */}
+              <div className="flex flex-wrap items-center gap-2 text-xs">
+                <button
+                  onClick={() => navigate('/inbox?tab=All')}
+                  className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 transition-all border border-emerald-500/20 flex items-center gap-1.5 cursor-pointer text-left"
+                  title="Click to view real customer requests in Mail Monitor"
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                  <span className="text-[11px] text-muted-foreground">Real Customer:</span>
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400">
+                    {(metrics.inbound_health?.real_inquiries ?? metrics.total_emails).toLocaleString()}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => navigate('/inbox?tab=Marketing')}
+                  className="px-2.5 py-1 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 transition-all border border-blue-500/20 flex items-center gap-1.5 cursor-pointer text-left"
+                  title="Click to view promotional and marketing emails"
+                >
+                  <span className="w-2 h-2 rounded-full bg-blue-500" />
+                  <span className="text-[11px] text-muted-foreground">Marketing:</span>
+                  <span className="font-mono font-bold text-blue-600 dark:text-blue-400">
+                    {(metrics.inbound_health?.marketing_count ?? 0).toLocaleString()}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => navigate('/inbox?tab=Spam')}
+                  className="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 transition-all border border-amber-500/20 flex items-center gap-1.5 cursor-pointer text-left"
+                  title="Click to inspect spam classification"
+                >
+                  <span className="w-2 h-2 rounded-full bg-amber-500" />
+                  <span className="text-[11px] text-muted-foreground">Spam:</span>
+                  <span className="font-mono font-bold text-amber-600 dark:text-amber-400">
+                    {(metrics.inbound_health?.spam_count ?? 0).toLocaleString()}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => navigate('/inbox?tab=Blocked')}
+                  className="px-2.5 py-1 rounded-lg bg-zinc-500/10 hover:bg-zinc-500/20 transition-all border border-zinc-500/20 flex items-center gap-1.5 cursor-pointer text-left"
+                  title="Click to inspect blocked senders"
+                >
+                  <span className="w-2 h-2 rounded-full bg-zinc-500" />
+                  <span className="text-[11px] text-muted-foreground">Blocked:</span>
+                  <span className="font-mono font-bold text-foreground">
+                    {(metrics.inbound_health?.blocked_count ?? 0).toLocaleString()}
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => navigate('/inbox?tab=Failed')}
+                  className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 transition-all border border-rose-500/20 flex items-center gap-1.5 cursor-pointer text-left"
+                  title="Click to inspect bounced and undelivered emails"
+                >
+                  <span className="w-2 h-2 rounded-full bg-rose-500" />
+                  <span className="text-[11px] text-muted-foreground">Bounces:</span>
+                  <span className="font-mono font-bold text-rose-600 dark:text-rose-400">
+                    {(metrics.inbound_health?.bounce_count ?? 0).toLocaleString()}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+
           {/* 5-Card Analytics KPI Grid */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             {/* Card 1: Total Ingested */}
@@ -396,8 +770,11 @@ export default function Dashboard() {
                   <Mail className="w-3.5 h-3.5" />
                 </div>
               </div>
-              <div className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-foreground">
-                {metrics.total_emails.toLocaleString()}
+              <div className="flex items-baseline justify-between gap-1">
+                <div className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-foreground">
+                  {metrics.total_emails.toLocaleString()}
+                </div>
+                <DeltaBadge value={metrics.deltas?.total_emails_pct} />
               </div>
               <div className="text-[11px] text-muted-foreground truncate">
                 {metrics.active_accounts} active connector{metrics.active_accounts === 1 ? '' : 's'}
@@ -412,11 +789,19 @@ export default function Dashboard() {
                   <Bot className="w-3.5 h-3.5" />
                 </div>
               </div>
-              <div className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-foreground">
-                {metrics.ai_replies.toLocaleString()}
+              <div className="flex items-baseline justify-between gap-1">
+                <div className="text-xl sm:text-2xl font-bold font-mono tracking-tight text-foreground">
+                  {metrics.ai_replies.toLocaleString()}
+                </div>
+                <DeltaBadge value={metrics.deltas?.ai_replies_pct} />
               </div>
-              <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold">
-                {successRate}% auto-reply rate
+              <div className="text-[11px] text-emerald-600 dark:text-emerald-400 font-semibold flex items-center justify-between">
+                <span>{successRate}% auto-reply rate</span>
+                {metrics.deltas?.automation_rate_pct !== undefined && metrics.deltas?.automation_rate_pct !== 0 && (
+                  <span className="text-[10px] text-muted-foreground font-mono" title="Change in automation rate vs prior period">
+                    ({metrics.deltas.automation_rate_pct > 0 ? '+' : ''}{metrics.deltas.automation_rate_pct} pts)
+                  </span>
+                )}
               </div>
             </div>
 
@@ -499,6 +884,76 @@ export default function Dashboard() {
             </div>
           </div>
 
+          {/* End-to-End Pipeline Execution & Latency Telemetry */}
+          <div className="win11-card p-3 rounded-xl border border-black/[0.06] dark:border-white/[0.08] shadow-2xs">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 pb-2.5 border-b border-black/[0.04] dark:border-white/[0.06]">
+              <div className="flex items-center gap-2">
+                <div className="p-1.5 rounded-md bg-primary/10 text-primary">
+                  <Zap className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-semibold text-foreground">Pipeline Execution &amp; Processing Latency</h4>
+                  <p className="text-[10px] text-muted-foreground">End-to-end task turnaround, inference runtimes, and initial action dispatch</p>
+                </div>
+              </div>
+              <div className="text-[11px] font-mono text-muted-foreground">
+                Total Execution Time: <strong className="text-foreground">{((metrics.execution_latency?.total_execution_ms ?? 0) / 1000).toFixed(1)}s</strong>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2.5">
+              {/* Avg Latency */}
+              <div className="p-2.5 rounded-lg bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.04] dark:border-white/[0.06] space-y-1">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Clock className="w-3 h-3 text-primary" />
+                  <span className="text-[10px] font-medium">Avg Execution Time</span>
+                </div>
+                <div className="text-lg font-bold font-mono text-foreground">
+                  {metrics.execution_latency?.avg_latency_ms ?? 0} <span className="text-xs font-normal text-muted-foreground">ms</span>
+                </div>
+                <p className="text-[9px] text-muted-foreground">Per inbound mail item</p>
+              </div>
+
+              {/* Min Latency */}
+              <div className="p-2.5 rounded-lg bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.04] dark:border-white/[0.06] space-y-1">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Activity className="w-3 h-3 text-emerald-500" />
+                  <span className="text-[10px] font-medium">Lowest Latency</span>
+                </div>
+                <div className="text-lg font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                  {metrics.execution_latency?.min_latency_ms ?? 0} <span className="text-xs font-normal text-muted-foreground">ms</span>
+                </div>
+                <p className="text-[9px] text-muted-foreground">Fastest task response</p>
+              </div>
+
+              {/* Max Latency */}
+              <div className="p-2.5 rounded-lg bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.04] dark:border-white/[0.06] space-y-1">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Timer className="w-3 h-3 text-amber-500" />
+                  <span className="text-[10px] font-medium">Highest Latency</span>
+                </div>
+                <div className="text-lg font-bold font-mono text-amber-600 dark:text-amber-400">
+                  {metrics.execution_latency?.max_latency_ms ?? 0} <span className="text-xs font-normal text-muted-foreground">ms</span>
+                </div>
+                <p className="text-[9px] text-muted-foreground">Peak execution latency</p>
+              </div>
+
+              {/* First Action Latency */}
+              <div className="p-2.5 rounded-lg bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.04] dark:border-white/[0.06] space-y-1">
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Hourglass className="w-3 h-3 text-blue-500" />
+                  <span className="text-[10px] font-medium">Time to First Action</span>
+                </div>
+                <div className="text-lg font-bold font-mono text-blue-600 dark:text-blue-400">
+                  {metrics.execution_latency?.first_action?.avg_ms ?? 0} <span className="text-xs font-normal text-muted-foreground">ms</span>
+                </div>
+                <div className="text-[9px] text-muted-foreground font-mono">
+                  min: {metrics.execution_latency?.first_action?.min_ms ?? 0}ms • max: {metrics.execution_latency?.first_action?.max_ms ?? 0}ms
+                </div>
+              </div>
+            </div>
+          </div>
+
           {/* Analytical Charts & Operational Resolution Section */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
             {/* Left 8 Cols: Ingestion & AI Automation AreaChart */}
@@ -508,93 +963,193 @@ export default function Dashboard() {
                 description="Live telemetry comparing raw incoming mail vs AI-generated responses"
               >
                 <div className="p-4 pt-2">
-                  {/* Telemetry Legend */}
-                  <div className="flex items-center justify-end gap-4 text-[11px] mb-3">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: primaryColor }} />
-                      <span className="text-muted-foreground font-medium">Inbound Emails</span>
+                  {/* Telemetry View Controls & Legend */}
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 text-[11px] mb-3">
+                    {/* View Mode Toggle */}
+                    <div className="flex items-center p-0.5 rounded-lg bg-black/[0.04] dark:bg-white/[0.06] border border-black/[0.06] dark:border-white/[0.08]">
+                      <button
+                        type="button"
+                        onClick={() => setTimelineMode('volume')}
+                        className={cn(
+                          "px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer",
+                          timelineMode === 'volume'
+                            ? "bg-white dark:bg-zinc-800 text-foreground shadow-2xs"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        Volume Velocity
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTimelineMode('outcomes')}
+                        className={cn(
+                          "px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer",
+                          timelineMode === 'outcomes'
+                            ? "bg-white dark:bg-zinc-800 text-foreground shadow-2xs"
+                            : "text-muted-foreground hover:text-foreground"
+                        )}
+                      >
+                        Pipeline Outcomes
+                      </button>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: aiColor }} />
-                      <span className="text-muted-foreground font-medium">AI Replied</span>
-                    </div>
+
+                    {/* Dynamic Legend */}
+                    {timelineMode === 'volume' ? (
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: primaryColor }} />
+                          <span className="text-muted-foreground font-medium">Inbound Emails</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: aiColor }} />
+                          <span className="text-muted-foreground font-medium">AI Replied</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500" />
+                          <span className="text-muted-foreground font-medium">Deflected</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-sm bg-purple-500" />
+                          <span className="text-muted-foreground font-medium">Escalated</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-sm bg-amber-500" />
+                          <span className="text-muted-foreground font-medium">Pending Review</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="w-2.5 h-2.5 rounded-sm bg-rose-500" />
+                          <span className="text-muted-foreground font-medium">Errors / Dropped</span>
+                        </div>
+                      </div>
+                    )}
                   </div>
 
                   <div className="h-[250px] w-full">
                     {processedChartData && processedChartData.length > 0 ? (
-                      <ResponsiveContainer width="100%" height="100%" minHeight={220}>
-                        <AreaChart data={processedChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
-                          <defs>
-                            <linearGradient id="colorEmails" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor={primaryColor} stopOpacity={0.35}/>
-                              <stop offset="95%" stopColor={primaryColor} stopOpacity={0.02}/>
-                            </linearGradient>
-                            <linearGradient id="colorAI" x1="0" y1="0" x2="0" y2="1">
-                              <stop offset="5%" stopColor={aiColor} stopOpacity={0.35}/>
-                              <stop offset="95%" stopColor={aiColor} stopOpacity={0.02}/>
-                            </linearGradient>
-                          </defs>
-                          <XAxis 
-                            dataKey="name" 
-                            stroke="hsl(var(--muted-foreground))" 
-                            fontSize={10} 
-                            tickLine={false} 
-                            axisLine={false} 
-                          />
-                          <YAxis 
-                            stroke="hsl(var(--muted-foreground))" 
-                            fontSize={10} 
-                            tickLine={false} 
-                            axisLine={false} 
-                            allowDecimals={false}
-                          />
-                          <Tooltip 
-                            content={({ active, payload, label }) => {
-                              if (!active || !payload?.length) return null;
-                              return (
-                                <div className="p-2.5 rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-[#2C2C2C] shadow-lg text-xs space-y-1.5 min-w-[140px]">
-                                  <div className="font-semibold text-foreground border-b border-black/[0.06] dark:border-white/[0.06] pb-1 text-[11px]">
-                                    {label}
-                                  </div>
-                                  {payload.map((entry: any) => (
-                                    <div key={entry.name} className="flex items-center justify-between gap-3 text-[11px]">
-                                      <span className="flex items-center gap-1.5 font-medium" style={{ color: entry.stroke || entry.color }}>
-                                        <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.stroke || entry.color }} />
-                                        {entry.name}
-                                      </span>
-                                      <span className="font-bold text-foreground font-mono">
-                                        {entry.value}
-                                      </span>
+                      timelineMode === 'volume' ? (
+                        <ResponsiveContainer width="100%" height="100%" minHeight={220}>
+                          <AreaChart data={processedChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="colorEmails" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor={primaryColor} stopOpacity={0.35}/>
+                                <stop offset="95%" stopColor={primaryColor} stopOpacity={0.02}/>
+                              </linearGradient>
+                              <linearGradient id="colorAI" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="5%" stopColor={aiColor} stopOpacity={0.35}/>
+                                <stop offset="95%" stopColor={aiColor} stopOpacity={0.02}/>
+                              </linearGradient>
+                            </defs>
+                            <XAxis 
+                              dataKey="name" 
+                              stroke="hsl(var(--muted-foreground))" 
+                              fontSize={10} 
+                              tickLine={false} 
+                              axisLine={false} 
+                            />
+                            <YAxis 
+                              stroke="hsl(var(--muted-foreground))" 
+                              fontSize={10} 
+                              tickLine={false} 
+                              axisLine={false} 
+                              allowDecimals={false}
+                            />
+                            <Tooltip 
+                              content={({ active, payload, label }) => {
+                                if (!active || !payload?.length) return null;
+                                return (
+                                  <div className="p-2.5 rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-[#2C2C2C] shadow-lg text-xs space-y-1.5 min-w-[140px]">
+                                    <div className="font-semibold text-foreground border-b border-black/[0.06] dark:border-white/[0.06] pb-1 text-[11px]">
+                                      {label}
                                     </div>
-                                  ))}
-                                </div>
-                              );
-                            }}
-                          />
-                          <Area 
-                            type="monotone" 
-                            dataKey="emails" 
-                            stroke={primaryColor} 
-                            strokeWidth={2} 
-                            fillOpacity={1} 
-                            fill="url(#colorEmails)" 
-                            name="Inbound Emails" 
-                            dot={{ r: 3.5, strokeWidth: 2, fill: isDark ? '#202020' : '#FFFFFF', stroke: primaryColor }}
-                            activeDot={{ r: 5.5, strokeWidth: 2, fill: primaryColor }}
-                          />
-                          <Area 
-                            type="monotone" 
-                            dataKey="aiReplied" 
-                            stroke={aiColor} 
-                            strokeWidth={2} 
-                            fillOpacity={1} 
-                            fill="url(#colorAI)" 
-                            name="AI Replied" 
-                            dot={{ r: 3.5, strokeWidth: 2, fill: isDark ? '#202020' : '#FFFFFF', stroke: aiColor }}
-                            activeDot={{ r: 5.5, strokeWidth: 2, fill: aiColor }}
-                          />
-                        </AreaChart>
-                      </ResponsiveContainer>
+                                    {payload.map((entry: any) => (
+                                      <div key={entry.name} className="flex items-center justify-between gap-3 text-[11px]">
+                                        <span className="flex items-center gap-1.5 font-medium" style={{ color: entry.stroke || entry.color }}>
+                                          <span className="w-2 h-2 rounded-full" style={{ backgroundColor: entry.stroke || entry.color }} />
+                                          {entry.name}
+                                        </span>
+                                        <span className="font-bold text-foreground font-mono">
+                                          {entry.value}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              }}
+                            />
+                            <Area 
+                              type="monotone" 
+                              dataKey="emails" 
+                              stroke={primaryColor} 
+                              strokeWidth={2} 
+                              fillOpacity={1} 
+                              fill="url(#colorEmails)" 
+                              name="Inbound Emails" 
+                              dot={{ r: 3.5, strokeWidth: 2, fill: isDark ? '#202020' : '#FFFFFF', stroke: primaryColor }}
+                              activeDot={{ r: 5.5, strokeWidth: 2, fill: primaryColor }}
+                            />
+                            <Area 
+                              type="monotone" 
+                              dataKey="aiReplied" 
+                              stroke={aiColor} 
+                              strokeWidth={2} 
+                              fillOpacity={1} 
+                              fill="url(#colorAI)" 
+                              name="AI Replied" 
+                              dot={{ r: 3.5, strokeWidth: 2, fill: isDark ? '#202020' : '#FFFFFF', stroke: aiColor }}
+                              activeDot={{ r: 5.5, strokeWidth: 2, fill: aiColor }}
+                            />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <ResponsiveContainer width="100%" height="100%" minHeight={220}>
+                          <BarChart data={processedChartData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                            <XAxis 
+                              dataKey="name" 
+                              stroke="hsl(var(--muted-foreground))" 
+                              fontSize={10} 
+                              tickLine={false} 
+                              axisLine={false} 
+                            />
+                            <YAxis 
+                              stroke="hsl(var(--muted-foreground))" 
+                              fontSize={10} 
+                              tickLine={false} 
+                              axisLine={false} 
+                              allowDecimals={false}
+                            />
+                            <Tooltip
+                              content={({ active, payload, label }) => {
+                                if (!active || !payload?.length) return null;
+                                return (
+                                  <div className="p-2.5 rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-[#2C2C2C] shadow-lg text-xs space-y-1.5 min-w-[150px]">
+                                    <div className="font-semibold text-foreground border-b border-black/[0.06] dark:border-white/[0.06] pb-1 text-[11px]">
+                                      {label}
+                                    </div>
+                                    {payload.map((entry: any) => (
+                                      <div key={entry.name} className="flex items-center justify-between gap-3 text-[11px]">
+                                        <span className="flex items-center gap-1.5 font-medium" style={{ color: entry.fill }}>
+                                          <span className="w-2 h-2 rounded-sm" style={{ backgroundColor: entry.fill }} />
+                                          {entry.name}
+                                        </span>
+                                        <span className="font-bold text-foreground font-mono">
+                                          {entry.value}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                );
+                              }}
+                            />
+                            <Bar dataKey="deflected" name="Deflected" stackId="outcomes" fill="#10B981" />
+                            <Bar dataKey="escalated" name="Escalated" stackId="outcomes" fill="#A855F7" />
+                            <Bar dataKey="pending" name="Pending Review" stackId="outcomes" fill="#F59E0B" />
+                            <Bar dataKey="failed" name="Errors / Dropped" stackId="outcomes" fill="#F43F5E" radius={[3, 3, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      )
                     ) : (
                       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
                         No telemetry data recorded for the selected timeframe.
@@ -604,14 +1159,18 @@ export default function Dashboard() {
 
                   {/* Summary Footer with Real Latency, Quality Triage & Escalation Alerts */}
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 pt-3 mt-3 border-t border-black/[0.06] dark:border-white/[0.08] text-center">
-                    <div className="p-2 rounded-md bg-black/[0.02] dark:bg-white/[0.02]">
+                    <div 
+                      onClick={() => navigate('/drafts')}
+                      className="p-2 rounded-md bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.05] dark:hover:bg-white/[0.05] cursor-pointer transition-all"
+                      title="Click to inspect drafts in Review Queue"
+                    >
                       <div className="text-[10px] text-muted-foreground font-medium">Avg AI Confidence</div>
                       <div className="text-sm font-bold text-primary mt-0.5 font-mono">
                         {metrics.avg_confidence}%
                       </div>
                       <div className="text-[10px] mt-0.5">
                         {((metrics.confidence_breakdown as any)?.hallucination_risk ?? metrics.confidence_breakdown?.low) > 0 ? (
-                          <span className="text-rose-600 dark:text-rose-400 font-semibold">
+                          <span className="text-rose-600 dark:text-rose-400 font-semibold underline">
                             {(metrics.confidence_breakdown as any)?.hallucination_risk ?? metrics.confidence_breakdown?.low} at risk (&lt;60%)
                           </span>
                         ) : (
@@ -619,7 +1178,11 @@ export default function Dashboard() {
                         )}
                       </div>
                     </div>
-                    <div className="p-2 rounded-md bg-black/[0.02] dark:bg-white/[0.02]">
+                    <div 
+                      onClick={() => navigate('/tickets?priority=Critical')}
+                      className="p-2 rounded-md bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.05] dark:hover:bg-white/[0.05] cursor-pointer transition-all"
+                      title="Click to inspect escalated tickets"
+                    >
                       <div className="text-[10px] text-muted-foreground font-medium">Escalation &amp; Sentiment Risk</div>
                       <div className="text-sm font-bold text-foreground mt-0.5 font-mono flex items-center justify-center gap-1">
                         <span className={metrics.escalation_risk_count > 0 ? "text-rose-600 dark:text-rose-400" : ""}>
@@ -651,7 +1214,53 @@ export default function Dashboard() {
                 title="Resolution Breakdown"
                 description="Distribution of inbound mail across processing pipelines"
               >
-                <div className="p-4 space-y-4">
+                <div className="p-4 space-y-3.5">
+                  {/* Resolution Composition Donut */}
+                  <div className="relative h-[155px] w-full flex items-center justify-center">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie
+                          data={donutData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={46}
+                          outerRadius={65}
+                          paddingAngle={donutData.length > 1 ? 3 : 0}
+                          dataKey="value"
+                        >
+                          {donutData.map((entry, index) => (
+                            <Cell key={`cell-${index}`} fill={entry.color} />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+                            const d = payload[0] as any;
+                            const numVal = Number(d?.value) || 0;
+                            return (
+                              <div className="p-2 rounded-lg border border-black/[0.1] dark:border-white/[0.1] bg-white dark:bg-[#2C2C2C] shadow-lg text-xs space-y-0.5">
+                                <div className="font-semibold flex items-center gap-1.5" style={{ color: d?.payload?.color }}>
+                                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: d?.payload?.color }} />
+                                  {d?.name}
+                                </div>
+                                <div className="font-mono font-bold text-foreground pl-3.5">
+                                  {numVal} {metrics.total_emails > 0 ? `(${Math.round((numVal / metrics.total_emails) * 100)}%)` : ''}
+                                </div>
+                              </div>
+                            );
+                          }}
+                        />
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none text-center">
+                      <span className="text-xl font-bold font-mono tracking-tight text-foreground">
+                        {successRate}%
+                      </span>
+                      <span className="text-[10px] text-muted-foreground font-semibold uppercase tracking-wider">
+                        Deflected
+                      </span>
+                    </div>
+                  </div>
                   {/* Progress 1: Auto-Reply */}
                   <div className="space-y-1.5">
                     <div className="flex justify-between items-center text-xs">
@@ -777,7 +1386,7 @@ export default function Dashboard() {
                     >
                       <span className="flex items-center gap-2">
                         <Cpu className="w-3.5 h-3.5 text-purple-500" />
-                        <span>View LLM Token &amp; Cost Telemetry</span>
+                        <span>View Token Economics</span>
                       </span>
                       <ArrowRight className="w-3.5 h-3.5 text-muted-foreground" />
                     </button>
@@ -786,6 +1395,368 @@ export default function Dashboard() {
               </SettingsCard>
             </div>
           </div>
+
+          {/* Conversational Performance, CRR Deflection & Sentiment Health */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            {/* Left 7 Cols: CRR Deflection & Multi-Turn Conversation Metrics */}
+            <div className="lg:col-span-7">
+              <SettingsCard
+                title="Customer Resolution Rate (CRR) & Conversational Deflection"
+                description="Analysis of multi-turn inquiries resolved automatically without creating human support tickets"
+              >
+                <div className="p-4 space-y-4">
+                  {/* Top Highlight: CRR, First-Contact Resolution (FCR) & Conversational Deflection */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-3.5 rounded-xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.04] dark:border-white/[0.06]">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-semibold text-muted-foreground">Clean Resolution (CRR)</span>
+                      </div>
+                      <div className="text-2xl font-bold font-mono tracking-tight text-emerald-600 dark:text-emerald-400">
+                        {metrics.conversational_performance?.customer_resolution_rate ?? 0}%
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        {(metrics.conversational_performance?.rag_resolved_count ?? 0).toLocaleString()} deflected without ticket
+                      </p>
+                    </div>
+
+                    <div className="space-y-1 sm:border-l sm:border-black/[0.06] sm:dark:border-white/[0.08] sm:pl-3">
+                      <div className="flex items-center gap-1.5">
+                        <CheckCheck className="w-3.5 h-3.5 text-blue-500" />
+                        <span className="text-[11px] font-semibold text-muted-foreground">First-Contact Resolution</span>
+                      </div>
+                      <div className="text-2xl font-bold font-mono tracking-tight text-blue-600 dark:text-blue-400">
+                        {metrics.conversational_performance?.fcr_rate ?? 0}%
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">
+                        {(metrics.conversational_performance?.fcr_count ?? 0).toLocaleString()} closed in single turn (one-touch)
+                      </p>
+                    </div>
+
+                    <div className="space-y-1 sm:border-l sm:border-black/[0.06] sm:dark:border-white/[0.08] sm:pl-3">
+                      <div className="flex items-center gap-1.5">
+                        <Target className="w-3.5 h-3.5 text-purple-500" />
+                        <span className="text-[11px] font-semibold text-muted-foreground">Guided vs Escalated</span>
+                      </div>
+                      <div className="text-xs font-mono font-semibold text-foreground space-y-0.5">
+                        <div className="flex justify-between">
+                          <span className="text-muted-foreground font-normal">Multi-Turn (2-4):</span>
+                          <span>{metrics.conversational_performance?.multi_turn_count ?? 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-rose-500 font-normal">Runaway (5+):</span>
+                          <span className="text-rose-500">{metrics.conversational_performance?.runaway_risk_count ?? 0}</span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-purple-500 font-normal">Human Tickets:</span>
+                          <span className="text-purple-500">{metrics.conversational_performance?.ticket_escalated_count ?? 0}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Turnaround Time Breakdown: Completed vs Incomplete (Active WIP) */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3 rounded-xl bg-black/[0.02] dark:bg-white/[0.02] border border-black/[0.04] dark:border-white/[0.06]">
+                    {/* Completed Conversations */}
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-xs font-semibold text-foreground">
+                        <span className="flex items-center gap-1.5">
+                          <CheckCheck className="w-3.5 h-3.5 text-emerald-500" />
+                          <span>Completed Conversations</span>
+                        </span>
+                        <span className="font-mono text-emerald-600 dark:text-emerald-400 font-bold">
+                          {metrics.conversational_performance?.completed_conversations?.count ?? 0}
+                        </span>
+                      </div>
+                      <div className="text-lg font-bold font-mono text-foreground flex items-baseline gap-1.5 pt-1">
+                        <span>Avg: {formatRelativeDuration(metrics.conversational_performance?.completed_conversations?.avg_duration_sec ?? 0).replace(' ago', '')}</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-mono flex items-center justify-between">
+                        <span>Min: {metrics.conversational_performance?.completed_conversations?.min_duration_sec ?? 0}s</span>
+                        <span>Max: {formatRelativeDuration(metrics.conversational_performance?.completed_conversations?.max_duration_sec ?? 0).replace(' ago', '')}</span>
+                      </div>
+                    </div>
+
+                    {/* Incomplete Conversations (Active In-Flight) */}
+                    <div className="space-y-1 sm:border-l sm:border-black/[0.06] sm:dark:border-white/[0.08] sm:pl-3">
+                      <div className="flex items-center justify-between text-xs font-semibold text-foreground">
+                        <span className="flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-amber-500" />
+                          <span>Incomplete (In-Flight WIP)</span>
+                        </span>
+                        <span className="font-mono text-amber-600 dark:text-amber-400 font-bold">
+                          {metrics.conversational_performance?.incomplete_conversations?.count ?? 0}
+                        </span>
+                      </div>
+                      <div className="text-lg font-bold font-mono text-foreground flex items-baseline gap-1.5 pt-1">
+                        <span>Avg: {formatRelativeDuration(metrics.conversational_performance?.incomplete_conversations?.avg_duration_sec ?? 0).replace(' ago', '')}</span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-mono flex items-center justify-between">
+                        <span>Min: {metrics.conversational_performance?.incomplete_conversations?.min_duration_sec ?? 0}s</span>
+                        <span>Max: {formatRelativeDuration(metrics.conversational_performance?.incomplete_conversations?.max_duration_sec ?? 0).replace(' ago', '')}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Resolution Mechanism Timings: RAG Deflection vs Ticket Creation */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 space-y-1">
+                      <div className="flex items-center justify-between text-xs font-semibold text-emerald-600 dark:text-emerald-400">
+                        <span>Autonomous RAG Deflection</span>
+                        <span className="font-mono font-bold">{metrics.conversational_performance?.rag_resolution_timing?.count ?? metrics.conversational_performance?.rag_resolved_count ?? 0} resolved</span>
+                      </div>
+                      <div className="text-base font-bold font-mono text-foreground pt-0.5">
+                        Avg: {formatRelativeDuration(metrics.conversational_performance?.rag_resolution_timing?.avg_duration_sec ?? 0).replace(' ago', '')}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-mono flex justify-between">
+                        <span>Min: {metrics.conversational_performance?.rag_resolution_timing?.min_duration_sec ?? 0}s</span>
+                        <span>Max: {formatRelativeDuration(metrics.conversational_performance?.rag_resolution_timing?.max_duration_sec ?? 0).replace(' ago', '')}</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3 rounded-lg border border-purple-500/20 bg-purple-500/5 space-y-1">
+                      <div className="flex items-center justify-between text-xs font-semibold text-purple-600 dark:text-purple-400">
+                        <span>Human Ticket Escalation</span>
+                        <span className="font-mono font-bold">{metrics.conversational_performance?.ticket_escalation_timing?.count ?? metrics.conversational_performance?.ticket_escalated_count ?? 0} raised</span>
+                      </div>
+                      <div className="text-base font-bold font-mono text-foreground pt-0.5">
+                        Avg: {formatRelativeDuration(metrics.conversational_performance?.ticket_escalation_timing?.avg_duration_sec ?? 0).replace(' ago', '')}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-mono flex justify-between">
+                        <span>Min: {metrics.conversational_performance?.ticket_escalation_timing?.min_duration_sec ?? 0}s</span>
+                        <span>Max: {formatRelativeDuration(metrics.conversational_performance?.ticket_escalation_timing?.max_duration_sec ?? 0).replace(' ago', '')}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Conversational Cadence: Avg Turns & Active WIP Queue with SLA Aging */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="p-3 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.01] dark:bg-white/[0.01] space-y-1">
+                      <span className="text-[11px] font-semibold text-muted-foreground">Avg Resolution Turns</span>
+                      <div className="text-xl font-bold font-mono text-foreground">
+                        {metrics.conversational_performance?.avg_resolution_turns ?? 1.0} <span className="text-xs font-normal text-muted-foreground">turns</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground">Exchanges per inquiry</p>
+                    </div>
+
+                    <div className="p-3 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.01] dark:bg-white/[0.01] space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[11px] font-semibold text-muted-foreground">Active WIP Inquiries</span>
+                        <button
+                          onClick={() => navigate('/inbox?tab=Pending Review')}
+                          className="text-[10px] text-primary hover:underline flex items-center gap-0.5 cursor-pointer"
+                        >
+                          <span>Queue</span>
+                          <ArrowRight className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                      <div className="flex items-baseline gap-2">
+                        <span className="text-xl font-bold font-mono text-foreground">
+                          {(metrics.conversational_performance?.active_wip_conversations ?? 0).toLocaleString()}
+                        </span>
+                        <span className="text-[10px] text-muted-foreground">
+                          avg {formatRelativeDuration(metrics.conversational_performance?.avg_active_wip_age_sec ?? 0)}
+                        </span>
+                      </div>
+                      {/* SLA Aging Buckets */}
+                      <div className="flex items-center gap-1.5 pt-0.5">
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20" title="< 1 hour">
+                          &lt;1h: {metrics.conversational_performance?.active_wip_aging?.under_1h ?? 0}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20" title="1 to 4 hours">
+                          1-4h: {metrics.conversational_performance?.active_wip_aging?.warning_1_4h ?? 0}
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20" title="> 4 hours (SLA breach risk)">
+                          &gt;4h: {metrics.conversational_performance?.active_wip_aging?.breached_over_4h ?? 0}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </SettingsCard>
+            </div>
+
+            {/* Right 5 Cols: Customer Sentiment Trajectory & AI-Inferred CSAT */}
+            <div className="lg:col-span-5 space-y-4">
+              <SettingsCard
+                title="Customer Sentiment & AI-Inferred CSAT"
+                description="Conversational mood progression, net sentiment range, and AI satisfaction"
+              >
+                <div className="p-4 space-y-4">
+                  {/* Inferred CSAT Hero Badge & Net Sentiment Score */}
+                  <div className="p-4 rounded-xl bg-gradient-to-br from-primary/10 via-primary/5 to-transparent border border-primary/20 flex items-center justify-between">
+                    <div>
+                      <span className="text-xs font-semibold text-primary">AI-Inferred CSAT Rating</span>
+                      <div className="text-3xl font-bold font-mono tracking-tight text-foreground flex items-center gap-1.5 mt-1">
+                        <span>★</span>
+                        <span>{metrics.conversational_performance?.inferred_csat ?? 5.0}</span>
+                        <span className="text-xs font-normal text-muted-foreground">/ 5.0</span>
+                      </div>
+                      <p className="text-[10px] text-muted-foreground mt-0.5">
+                        Derived from resolution deflection &amp; final interaction tone
+                      </p>
+                    </div>
+
+                    <div className="text-right space-y-1">
+                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 inline-block">
+                        High Satisfaction
+                      </span>
+                      <div className="text-[10px] font-mono text-muted-foreground">
+                        NSS: <strong className={cn(
+                          (metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0) >= 0 
+                            ? "text-emerald-600 dark:text-emerald-400" 
+                            : "text-rose-600 dark:text-rose-400"
+                        )}>
+                          {(metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0) > 0 ? '+' : ''}
+                          {metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0}%
+                        </strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Sentiment Trajectory Breakdown */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-xs font-semibold text-foreground">
+                      <span>Conversational Sentiment Range</span>
+                      <span className="text-[10px] text-muted-foreground font-normal">Full dialogue lifecycle</span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2 text-center">
+                      <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                        <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">Positive</div>
+                        <div className="text-lg font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
+                          {metrics.conversational_performance?.sentiment_trajectory?.improved ?? 0}
+                        </div>
+                        <div className="text-[9px] text-muted-foreground mt-0.5">Satisfied / Delighted</div>
+                      </div>
+
+                      <div className="p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                        <div className="text-[10px] text-blue-600 dark:text-blue-400 font-semibold">Neutral</div>
+                        <div className="text-lg font-bold font-mono text-blue-600 dark:text-blue-400 mt-0.5">
+                          {metrics.conversational_performance?.sentiment_trajectory?.neutral_stable ?? 0}
+                        </div>
+                        <div className="text-[9px] text-muted-foreground mt-0.5">Standard Inquiries</div>
+                      </div>
+
+                      <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20">
+                        <div className="text-[10px] text-rose-600 dark:text-rose-400 font-semibold">Frustrated</div>
+                        <div className="text-lg font-bold font-mono text-rose-600 dark:text-rose-400 mt-0.5">
+                          {metrics.conversational_performance?.sentiment_trajectory?.deteriorated ?? 0}
+                        </div>
+                        <div className="text-[9px] text-muted-foreground mt-0.5">Urgent Escalations</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Quick Link to Detailed Ticketing & Resolution Reports */}
+                  <button
+                    onClick={() => navigate('/reports')}
+                    className="w-full flex items-center justify-between p-2.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-semibold text-primary hover:bg-primary/20 transition-all cursor-pointer"
+                  >
+                    <span className="flex items-center gap-2">
+                      <FileSpreadsheet className="w-4 h-4" />
+                      <span>Open Resolution Reports &amp; CSV Export</span>
+                    </span>
+                    <ArrowUpRight className="w-4 h-4" />
+                  </button>
+                </div>
+              </SettingsCard>
+            </div>
+          </div>
+
+          {/* Technical Intent Automation & Deflection Matrix */}
+          <SettingsCard
+            title="Technical Intent Automation & Deflection Matrix"
+            description="Cross-intent breakdown of inbound inquiries, autonomous RAG deflection rate, average conversation turns, and escalation triggers"
+          >
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-black/[0.06] dark:border-white/[0.08] text-muted-foreground">
+                    <th className="py-2.5 px-4 font-semibold">Technical Intent</th>
+                    <th className="py-2.5 px-4 font-semibold text-right">Inbound Volume</th>
+                    <th className="py-2.5 px-4 font-semibold">Autonomous Deflection Rate</th>
+                    <th className="py-2.5 px-4 font-semibold text-center">Avg Turns</th>
+                    <th className="py-2.5 px-4 font-semibold text-right">Tickets Raised</th>
+                    <th className="py-2.5 px-4 font-semibold">Primary Escalation Trigger</th>
+                    <th className="py-2.5 px-4 font-semibold text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.04]">
+                  {(!metrics.conversational_performance?.intent_matrix || metrics.conversational_performance.intent_matrix.length === 0) ? (
+                    <tr>
+                      <td colSpan={7} className="py-6 text-center text-muted-foreground">
+                        No intent conversational telemetry available for this time range.
+                      </td>
+                    </tr>
+                  ) : (
+                    metrics.conversational_performance.intent_matrix.map((row) => (
+                      <tr 
+                        key={row.intent}
+                        className="hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors"
+                      >
+                        <td className="py-3 px-4 font-medium text-foreground">
+                          <span className="px-2 py-0.5 rounded-md font-mono text-[11px] font-semibold bg-primary/10 text-primary border border-primary/20">
+                            {row.intent}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right font-mono font-semibold text-foreground">
+                          {row.total_volume.toLocaleString()}
+                        </td>
+                        <td className="py-3 px-4 min-w-[180px]">
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-mono font-semibold text-emerald-600 dark:text-emerald-400">
+                                {row.auto_sent_rate}%
+                              </span>
+                              <span className="text-[10px] text-muted-foreground font-mono">
+                                {row.auto_sent_count} / {row.total_volume}
+                              </span>
+                            </div>
+                            <div className="w-full h-1.5 rounded-full bg-black/[0.06] dark:bg-white/[0.08] overflow-hidden">
+                              <div 
+                                className="h-full bg-emerald-500 rounded-full transition-all"
+                                style={{ width: `${Math.min(100, Math.max(0, row.auto_sent_rate))}%` }}
+                              />
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-center font-mono text-foreground font-semibold">
+                          {row.avg_turns} <span className="text-[10px] text-muted-foreground font-normal">turns</span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <div className="font-mono font-semibold text-purple-600 dark:text-purple-400">
+                            {row.ticket_count.toLocaleString()}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground font-mono">
+                            {row.escalation_rate}%
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className={cn(
+                            "px-2 py-0.5 rounded text-[11px] font-medium border",
+                            row.primary_escalation_reason && row.primary_escalation_reason !== '-'
+                              ? "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20"
+                              : "bg-black/[0.04] dark:bg-white/[0.04] text-muted-foreground border-transparent"
+                          )}>
+                            {row.primary_escalation_reason}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-right">
+                          <button
+                            onClick={() => navigate(`/reports?intent=${encodeURIComponent(row.intent)}`)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium bg-black/[0.04] hover:bg-black/[0.08] dark:bg-white/[0.06] dark:hover:bg-white/[0.1] text-foreground transition-all cursor-pointer"
+                          >
+                            <span>Audit</span>
+                            <ArrowRight className="w-3 h-3 text-muted-foreground" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </SettingsCard>
 
           {/* Multi-Tenant Fleet Performance (Active in ALL Client Scope) */}
           {selectedClientId === 'ALL' && metrics.client_breakdown && metrics.client_breakdown.length > 0 && (
