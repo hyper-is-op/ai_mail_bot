@@ -11,6 +11,7 @@ from app.email_credential import (
 )
 from app.auth import ensure_users_table, ensure_admin_seeded
 from app.migrations.init_schema import ensure_action_logs_table
+from app.prompt_service import ensure_client_prompt_configs_table
 
 logger = logging.getLogger(__name__)
 
@@ -545,6 +546,7 @@ async def initialize_database_and_services():
         asyncio.to_thread(_run_ensure_worker_tables),
         asyncio.to_thread(_run_ensure_paused_email_history_table),
         asyncio.to_thread(ensure_action_logs_table),
+        asyncio.to_thread(ensure_client_prompt_configs_table),
     )
 
     # Batch 2: Admin seeding (depends on users table)

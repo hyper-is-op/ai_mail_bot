@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Segoe+UI:wght@300;400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
@@ -100,6 +100,10 @@
     font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
     font-weight: 600;
     letter-spacing: -0.02em;
+  }
+
+  td, th, .tabular-nums {
+    font-variant-numeric: tabular-nums;
   }
 }
 
@@ -264,11 +268,6 @@ html:not(.dark) .border-white\/5,
 html:not(.dark) .border-white\/10,
 html:not(.dark) .border-white\/20 {
   border-color: rgba(0, 0, 0, 0.08) !important;
-}
-
-html:not(.dark) .bg-card\/50 {
-  background-color: #ffffff !important;
-  border: 1px solid rgba(0, 0, 0, 0.08) !important;
 }
 
 /* Dark Theme Surface Overrides */

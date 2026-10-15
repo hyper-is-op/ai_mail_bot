@@ -1,34 +1,6 @@
 import { BASE_URL, authHeaders, safeJson } from './core';
 
 export const connectorsApi = {
-  async insertCreatePayload(data: { client_id: string; url: string; paylod: any }) {
-    const res = await fetch(`${BASE_URL}/insert-create-payload`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(data),
-    });
-    return safeJson(res, 'Failed to save create payload');
-  },
-
-  async getCreatePayload(clientId: string) {
-    const res = await fetch(`${BASE_URL}/get-create-payload/${clientId}`, { headers: authHeaders() });
-    return safeJson(res, 'Failed to fetch create payload');
-  },
-
-  async insertGetPayload(data: { client_id: string; url: string; paylod: any }) {
-    const res = await fetch(`${BASE_URL}/insert-get-payload`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
-      body: JSON.stringify(data),
-    });
-    return safeJson(res, 'Failed to save get payload');
-  },
-
-  async getGetPayload(clientId: string) {
-    const res = await fetch(`${BASE_URL}/get-get-payload/${clientId}`, { headers: authHeaders() });
-    return safeJson(res, 'Failed to fetch get payload');
-  },
-
   // ===== Connector Configurations =====
   async createConnectorConfig(data: {
     client_id: string;

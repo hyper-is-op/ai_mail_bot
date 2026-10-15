@@ -91,26 +91,12 @@ def rule_based_penalty(reply, query):
     reply_lower = reply.lower()
     query_lower = query.lower()
 
-    # 🚫 Order query but no order info
-    if "order" in query_lower:
-        if not any(word in reply_lower for word in ["order", "status", "tracking", "delivery"]):
-            penalty -= 30
-
     # 🚫 Too short (generic reply)
-    if len(reply.split()) < 12:
+    if len(reply.split()) < 10:
         penalty -= 20
 
-    # 🚫 Very generic delay phrases when reply lacks substance
-    delay_phrases = [
-        "we will get back to you",
-        "we are looking into it",
-        "our team is reviewing your request"
-    ]
-    if len(reply.split()) < 25 and any(p in reply_lower for p in delay_phrases):
-        penalty -= 10
-
-    # 🚫 Specific order ID in query but omitted in reply
-    has_order_ref_query = bool(re.search(r'\b(ord\d+|order\s*#?\s*\d+)\b', query_lower))
+    # 🚫 Specific order ID in query but omitted in reply (language agnostic regex)
+    has_order_ref_query = bool(re.search(r'\b(ord\d+|order\s*#?\s*\d+|\d{5,})\b', query_lower))
     has_order_ref_reply = bool(re.search(r'\b(ord\d+|order\s*#?\s*\d+|\d{5,})\b', reply_lower))
     if has_order_ref_query and not has_order_ref_reply:
         penalty -= 25

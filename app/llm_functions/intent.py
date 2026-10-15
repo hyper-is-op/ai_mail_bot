@@ -27,34 +27,10 @@ Classify the query into exactly one intent, extract ALL ticket_ids/order_ids if 
 - `general_query`: Genuine customer support query, product question, policy inquiry, technical issue, or problem description requiring an answer (MUST contain an actual question, problem, or inquiry).
 
 ## Sentiment Analysis
-Classify user sentiment into exactly one of:
-- `Angry`: User shows frustration, anger, impatience, or threatens escalation/cancellation.
-- `Neutral`: General query, factual, standard request, off-topic, or marketing/newsletter announcement.
-- `Happy`: Expresses gratitude, happiness, satisfaction, or that their issue is resolved.
+Classify user sentiment into exactly one of: `Angry`, `Neutral`, `Happy`.
 
 ## Priority Tagging
-Classify priority level into exactly one of:
-- `Critical`: Urgent issues like order cancellation, immediate refunds, lawsuit threats, legal actions, security/data issues, or extreme user anger.
-- `High`: General support issues with angry/impatient sentiment, or containing key words like "urgent", "broken", "cancel", "refund", "sue", "failed".
-- `Medium`: General query or ticket status checks with neutral sentiment.
-- `Low`: Marketing/newsletter emails, promotional updates, positive feedback, issue resolved notices, off-topic nonsense, or suggestions.
-
-## Ticket & Order ID Extraction
-Extract ALL ticket IDs, case numbers, order IDs, or tracking references mentioned in the query.
-Examples:
-- Numeric & Hash IDs: `#275424000000399001`, `275424000000399001`, `#98765`, `#123456`
-- Support tickets: `T-260505-00117`, `T-YYMMDD-XXXXX`
-- Helpdesk / Incident / Case IDs: `INC1234567`, `CAS-98765`, `SR-10293`
-- Order / Tracking IDs: `ORD12345`, `ORD-98765`, `ORDER#54321`
-
-## Rules
-- Return ONLY raw JSON. No explanation, no markdown, no extra text.
-- Extract ALL ticket/order IDs found in the query into the `ticket_ids` list. Return clean IDs (strip leading '#' symbols).
-- If no ticket_id is found, set ticket_ids to empty list [].
-- If the query is just a greeting, salutation, or pleasantry with no issue described (e.g. "hi", "hello", "hello ladies", "good morning", "how are you"), intent MUST be `off_topic_nonsense`.
-- Do NOT classify a query as `general_query` unless it presents an actual question, problem description, product inquiry, or request for support.
-- If intent is `issue_resolved`, sentiment is typically `Happy` or `Neutral` and priority is `Low`.
-- If intent is `off_topic_nonsense` or `marketing_promotional`, sentiment is typically `Neutral` and priority is `Low`.
+Classify priority level into exactly one of: `Critical`, `High`, `Medium`, `Low`.
 
 ## Output Format
 {{

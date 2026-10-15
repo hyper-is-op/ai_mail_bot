@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
+import { InboxLayoutSkeleton } from '@/components/common/Skeleton';
 import { api } from '@/lib/api';
 import { 
   EmailItem, 
@@ -239,9 +239,14 @@ export default function Inbox() {
       thread.emails.sort((a: any, b: any) => a.id - b.id);
       const latest = thread.emails[thread.emails.length - 1];
       
+      const threadId = thread.emails.find((e: any) => e.thread_id)?.thread_id || latest.thread_id;
+      const ticketId = thread.emails.find((e: any) => e.ticket_id)?.ticket_id || latest.ticket_id;
+      
       return {
         ...thread,
         id: latest.id,
+        thread_id: threadId,
+        ticket_id: ticketId,
         latest_email: latest,
         status: latest.status,
         priority: latest.priority,
@@ -328,14 +333,25 @@ export default function Inbox() {
       (activeTab === 'Failed' && isFailedMatch) ||
       (activeTab === 'Pending Review' && latestStatus === 'pending review');
     
-    const query = searchQuery.toLowerCase();
+    const query = searchQuery.trim().toLowerCase();
+    const queryNum = query.startsWith('#') ? query.slice(1).trim() : query;
+
     const matchesSearch = 
       !query ||
       thread.sender.toLowerCase().includes(query) ||
       thread.subject.toLowerCase().includes(query) ||
+      (thread.thread_id && thread.thread_id.toLowerCase().includes(query)) ||
+      (thread.ticket_id && thread.ticket_id.toLowerCase().includes(query)) ||
+      String(thread.id) === queryNum ||
+      `#${thread.id}` === query ||
       thread.emails.some((email: any) => 
         (email.preview || '').toLowerCase().includes(query) ||
-        (email.reply || '').toLowerCase().includes(query)
+        (email.body || '').toLowerCase().includes(query) ||
+        (email.reply || '').toLowerCase().includes(query) ||
+        (email.thread_id && email.thread_id.toLowerCase().includes(query)) ||
+        (email.ticket_id && email.ticket_id.toLowerCase().includes(query)) ||
+        String(email.id) === queryNum ||
+        `#${email.id}` === query
       );
       
     return matchesTab && matchesSearch;
@@ -343,21 +359,29 @@ export default function Inbox() {
 
   // Filter paused items (from paused_email_history)
   const filteredPausedHistory = pausedHistory.filter(item => {
-    const query = searchQuery.toLowerCase();
-    return !query || 
-      (item.from_email || '').toLowerCase().includes(query) ||
-      (item.subject || '').toLowerCase().includes(query) ||
-      (item.body || '').toLowerCase().includes(query);
-  });
+    const query = searchQuery.trim().toLowerCase();
+    const queryNum = query.startsWith('#') ? query.slice(1).trim() : query;
 
-  // Filter blocked emails
-  const filteredBlockedEmails = blockedEmails.filter(item => {
-    const query = searchQuery.toLowerCase();
     return !query || 
       (item.from_email || '').toLowerCase().includes(query) ||
       (item.subject || '').toLowerCase().includes(query) ||
       (item.body || '').toLowerCase().includes(query) ||
-      (item.matched_keyword || '').toLowerCase().includes(query);
+      String(item.id) === queryNum ||
+      `#${item.id}` === query;
+  });
+
+  // Filter blocked emails
+  const filteredBlockedEmails = blockedEmails.filter(item => {
+    const query = searchQuery.trim().toLowerCase();
+    const queryNum = query.startsWith('#') ? query.slice(1).trim() : query;
+
+    return !query || 
+      (item.from_email || '').toLowerCase().includes(query) ||
+      (item.subject || '').toLowerCase().includes(query) ||
+      (item.body || '').toLowerCase().includes(query) ||
+      (item.matched_keyword || '').toLowerCase().includes(query) ||
+      String(item.id) === queryNum ||
+      `#${item.id}` === query;
   });
 
   // Reset selection when switching tabs so the first item in the new view is selected
@@ -633,13 +657,8 @@ export default function Inbox() {
   }).length;
   const pendingReviewCount = groupedThreads.filter(t => (t.latest_email.status || '').toLowerCase() === 'pending review').length;
 
-  if (loading) {
-    return (
-      <div className="h-[calc(100vh-140px)] flex flex-col items-center justify-center space-y-3">
-        <Loader2 className="w-8 h-8 text-primary animate-spin" />
-        <p className="text-xs text-muted-foreground font-medium">Loading inbox conversations...</p>
-      </div>
-    );
+  if (loading && groupedThreads.length === 0) {
+    return <InboxLayoutSkeleton />;
   }
 
   return (

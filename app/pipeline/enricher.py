@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 VERIFICATION_STATES = {"pending_verification", "verification_failed"}
 
 
-def tpl_please_verify(ticket_id: str, customer_name: str = "Customer") -> str:
+def tpl_please_verify(ticket_id: str, customer_name: str = "Customer", client_id: str = "SYSTEM") -> str:
     return (
         f"Hi {customer_name},\n\n"
         f"Thank you for reaching out. We received your query regarding ticket "
@@ -24,7 +24,7 @@ def tpl_please_verify(ticket_id: str, customer_name: str = "Customer") -> str:
     )
 
 
-def tpl_verification_failed(customer_name: str = "Customer") -> str:
+def tpl_verification_failed(customer_name: str = "Customer", client_id: str = "SYSTEM") -> str:
     return (
         f"Hi {customer_name},\n\n"
         f"We were still unable to locate the ticket ID in our system after verification.\n\n"

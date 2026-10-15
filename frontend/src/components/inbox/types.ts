@@ -19,6 +19,8 @@ export interface EmailItem {
   summary?: string;
   execution_steps?: string[];
   client_id?: string;
+  thread_id?: string;
+  ticket_id?: string;
   [key: string]: any;
 }
 
@@ -26,6 +28,8 @@ export interface ThreadItem {
   key: string;
   subject: string;
   sender: string;
+  thread_id?: string;
+  ticket_id?: string;
   emails: EmailItem[];
   latest_email: EmailItem;
   id: number;

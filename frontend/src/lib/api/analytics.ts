@@ -81,6 +81,7 @@ export const analyticsApi = {
       resolution_mode?: string;
       escalation_reason?: string;
       search?: string;
+      search_field?: string;
       page?: number;
       page_size?: number;
     } = {}
@@ -93,6 +94,7 @@ export const analyticsApi = {
     if (params.resolution_mode && params.resolution_mode !== 'all') query.set('resolution_mode', params.resolution_mode);
     if (params.escalation_reason && params.escalation_reason !== 'all') query.set('escalation_reason', params.escalation_reason);
     if (params.search) query.set('search', params.search);
+    if (params.search_field && params.search_field !== 'all') query.set('search_field', params.search_field);
     if (params.page) query.set('page', params.page.toString());
     if (params.page_size) query.set('page_size', params.page_size.toString());
 
@@ -112,6 +114,7 @@ export const analyticsApi = {
       resolution_mode?: string;
       escalation_reason?: string;
       search?: string;
+      search_field?: string;
     } = {}
   ) {
     const query = new URLSearchParams();
@@ -122,6 +125,7 @@ export const analyticsApi = {
     if (params.resolution_mode && params.resolution_mode !== 'all') query.set('resolution_mode', params.resolution_mode);
     if (params.escalation_reason && params.escalation_reason !== 'all') query.set('escalation_reason', params.escalation_reason);
     if (params.search) query.set('search', params.search);
+    if (params.search_field && params.search_field !== 'all') query.set('search_field', params.search_field);
 
     const res = await fetch(`${BASE_URL}/reports/export/${clientId}?${query.toString()}`, {
       headers: authHeaders(),
@@ -257,6 +261,14 @@ export interface TicketingReportRecord {
   sentiment_shift: string;
   sentiment_score: number;
   estimated_cost: number;
+  raw_cost?: number;
+  billed_cost?: number;
+  margin?: number;
+  total_tokens?: number;
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  latency_ms?: number;
+  latency_sec?: number;
 }
 
 export interface TicketingReportResponse {

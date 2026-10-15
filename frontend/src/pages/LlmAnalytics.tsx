@@ -14,7 +14,6 @@ import {
   ShieldCheck,
   AlertTriangle,
   Calendar,
-  MessageSquare,
   Coins,
   CheckCircle2,
   Mail
@@ -22,25 +21,59 @@ import {
 import { api } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { useAppState } from '@/context/AppStateContext';
+import { ReferenceBadge } from '@/components/common/ReferenceBadge';
+import { LlmAnalyticsSkeleton } from '@/components/common/Skeleton';
 
 export default function LlmAnalytics() {
   const [metrics, setMetrics] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [timeWindow, setTimeWindow] = useState<'24h' | '7d' | '30d' | 'all'>('all');
+  const [rangeType, setRangeType] = useState<string>('all');
+
+  const getFirstDayOfCurrentMonth = () => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    return `${y}-${m}-01`;
+  };
+
+  const getLastDayOfCurrentMonth = () => {
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = d.getMonth() + 1;
+    const lastDay = new Date(y, m, 0).getDate();
+    const formattedMonth = String(m).padStart(2, '0');
+    const formattedDay = String(lastDay).padStart(2, '0');
+    return `${y}-${formattedMonth}-${formattedDay}`;
+  };
+
+  const [startDate, setStartDate] = useState<string>(getFirstDayOfCurrentMonth());
+  const [endDate, setEndDate] = useState<string>(getLastDayOfCurrentMonth());
   const [filterProvider, setFilterProvider] = useState('All');
   const [filterModel, setFilterModel] = useState('All');
   const [filterCaller, setFilterCaller] = useState('All');
 
   const { selectedClientId } = useAppState();
 
-  const fetchMetrics = async (isRefresh = false, cid = selectedClientId, window = timeWindow) => {
+  const fetchMetrics = async (
+    isRefresh = false, 
+    cid = selectedClientId, 
+    range = rangeType,
+    start = startDate,
+    end = endDate
+  ) => {
     if (!cid) return;
     if (isRefresh) setRefreshing(true);
     else setLoading(true);
     
     try {
-      const data = await api.getLlmMetrics(cid, window);
+      const data = await api.getLlmMetrics(
+        cid, 
+        range, 
+        range, 
+        range === 'custom' ? start : undefined, 
+        range === 'custom' ? end : undefined
+      );
       setMetrics(data);
     } catch (err) {
       console.error("Failed to load LLM metrics:", err);
@@ -51,18 +84,19 @@ export default function LlmAnalytics() {
   };
 
   useEffect(() => {
-    if (selectedClientId) {
-      fetchMetrics(false, selectedClientId, timeWindow);
+    if (selectedClientId && rangeType !== 'custom') {
+      fetchMetrics(false, selectedClientId, rangeType);
     }
-  }, [selectedClientId, timeWindow]);
+  }, [selectedClientId, rangeType]);
 
-  if (loading) {
-    return (
-      <div className="min-h-[60vh] flex flex-col items-center justify-center space-y-4">
-        <RefreshCw className="w-10 h-10 text-primary animate-spin" />
-        <p className="text-sm text-zinc-400 font-medium font-mono">Compiling multi-provider token economics &amp; latency metrics...</p>
-      </div>
-    );
+  const handleApplyCustomRange = () => {
+    if (selectedClientId && startDate && endDate) {
+      fetchMetrics(false, selectedClientId, 'custom', startDate, endDate);
+    }
+  };
+
+  if (loading && !metrics) {
+    return <LlmAnalyticsSkeleton />;
   }
 
   const totals = metrics?.totals || {
@@ -138,7 +172,7 @@ export default function LlmAnalytics() {
   const maxDailyCost = Math.max(...dailyTrends.map((d: any) => d.cost), 0.001);
 
   return (
-    <div className="space-y-6 pb-12">
+    <div className={cn("space-y-6 pb-12 transition-opacity duration-200", refreshing && "opacity-60 pointer-events-none")}>
       {/* Header with Title and Time Window Filter */}
       <div className="flex flex-col md:flex-row justify-between md:items-end gap-4">
         <div>
@@ -148,26 +182,8 @@ export default function LlmAnalytics() {
           <p className="text-xs text-muted-foreground mt-1">Real-time usage analytics, token metrics, guardrail overhead, and unit economics across AI providers.</p>
         </div>
         <div className="flex flex-wrap items-center gap-3 self-start md:self-auto">
-          {/* Time Window Pills */}
-          <div className="flex bg-black/[0.04] dark:bg-white/[0.04] p-0.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08]">
-            {(['24h', '7d', '30d', 'all'] as const).map((w) => (
-              <button
-                key={w}
-                onClick={() => setTimeWindow(w)}
-                className={cn(
-                  "px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer",
-                  timeWindow === w 
-                    ? "bg-white dark:bg-zinc-800 text-foreground shadow-2xs font-semibold" 
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {w === '24h' ? '24 Hours' : w === '7d' ? '7 Days' : w === '30d' ? '30 Days' : 'All Time'}
-              </button>
-            ))}
-          </div>
-
           <button 
-            onClick={() => fetchMetrics(true, selectedClientId, timeWindow)} 
+            onClick={() => fetchMetrics(true, selectedClientId, rangeType, startDate, endDate)} 
             disabled={refreshing}
             className="win11-card hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-foreground rounded-lg px-3.5 py-2 text-xs font-medium transition-all flex items-center gap-2 cursor-pointer shadow-2xs"
           >
@@ -177,11 +193,66 @@ export default function LlmAnalytics() {
         </div>
       </div>
 
+      {/* Date Filter Panel */}
+      <div className="win11-card p-2 px-3 rounded-lg flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 shadow-2xs">
+        <div className="flex flex-wrap items-center gap-1">
+          {[
+            { id: 'all', label: 'All Time' },
+            { id: 'today', label: 'Today' },
+            { id: 'yesterday', label: 'Yesterday' },
+            { id: 'this_week', label: 'This Week' },
+            { id: 'last_week', label: 'Last Week' },
+            { id: 'this_month', label: 'Current Month' },
+            { id: 'last_month', label: 'Last Month' },
+            { id: 'custom', label: 'Custom Range' },
+          ].map((r) => (
+            <button
+              key={r.id}
+              onClick={() => setRangeType(r.id)}
+              className={cn(
+                "px-2.5 py-1 rounded-md text-xs font-medium transition-all cursor-pointer",
+                rangeType === r.id
+                  ? "bg-primary text-primary-foreground font-semibold shadow-2xs"
+                  : "text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+              )}
+            >
+              {r.label}
+            </button>
+          ))}
+        </div>
+
+        {rangeType === 'custom' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className="bg-white dark:bg-[#202020] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-2 py-0.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary cursor-pointer"
+            />
+            <span className="text-xs text-muted-foreground">to</span>
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className="bg-white dark:bg-[#202020] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-2 py-0.5 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary cursor-pointer"
+            />
+            <button
+              onClick={handleApplyCustomRange}
+              className="px-2.5 py-0.5 bg-primary text-primary-foreground rounded-md text-xs font-semibold hover:opacity-90 transition-all cursor-pointer"
+            >
+              Apply
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* KPI Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <motion.div initial={{ opacity: 0, y: 15 }} animate={{ opacity: 1, y: 0 }} className="win11-card p-5 rounded-lg relative overflow-hidden group shadow-2xs">
           <div className="flex justify-between items-start mb-3">
-            <span className="text-xs font-semibold text-muted-foreground">Period Cost ({timeWindow.toUpperCase()})</span>
+            <span className="text-xs font-semibold text-muted-foreground">
+              Period Cost ({rangeType === 'all' ? 'ALL TIME' : rangeType.replace('_', ' ').toUpperCase()})
+            </span>
             <div className="bg-primary/10 p-2 rounded-lg text-primary">
               <DollarSign className="w-4 h-4" />
             </div>
@@ -876,11 +947,14 @@ export default function LlmAnalytics() {
                     </td>
                     <td className="py-2.5 font-mono text-muted-foreground">
                       {log.thread_id || log.email_log_id ? (
-                        <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded bg-black/[0.04] dark:bg-white/[0.06] text-foreground">
-                          <MessageSquare className="w-3 h-3 text-primary" />
-                          {log.email_log_id ? `#${log.email_log_id}` : ''}
-                          {log.thread_id ? ` (${log.thread_id.slice(0, 8)})` : ''}
-                        </span>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          {log.email_log_id ? (
+                            <ReferenceBadge id={log.email_log_id} type="message" label="#" truncateLength={0} />
+                          ) : null}
+                          {log.thread_id ? (
+                            <ReferenceBadge id={log.thread_id} type="thread" truncateLength={8} />
+                          ) : null}
+                        </div>
                       ) : (
                         <span className="text-[10px] text-muted-foreground italic">System Node</span>
                       )}

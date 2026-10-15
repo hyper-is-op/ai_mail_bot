@@ -25,6 +25,7 @@ import {
   SignoffTab,
   ModerationTab,
   DisclaimersTab,
+  PromptsTab,
   ConfirmGlobalModal,
   ConfirmAutoSendModal,
   ConfirmKillSwitchModal,
@@ -37,6 +38,7 @@ export default function Settings() {
   const [agentType, setAgentType] = useState('customer_support');
   const [companyName, setCompanyName] = useState('');
   const [departmentName, setDepartmentName] = useState('');
+  const [weekStartDay, setWeekStartDay] = useState('monday');
   
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -44,9 +46,9 @@ export default function Settings() {
   const [error, setError] = useState('');
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const [activeTab, setActiveTab] = useState<'general' | 'pause_draft' | 'features' | 'signoff' | 'moderation' | 'disclaimers' | null>(() => {
+  const [activeTab, setActiveTab] = useState<'general' | 'features' | 'pause_draft' | 'signoff' | 'moderation' | 'disclaimers' | 'prompts' | null>(() => {
     const tabParam = new URLSearchParams(window.location.search).get('tab');
-    if (tabParam && ['general', 'pause_draft', 'features', 'signoff', 'moderation', 'disclaimers'].includes(tabParam)) {
+    if (tabParam && ['general', 'features', 'pause_draft', 'signoff', 'moderation', 'disclaimers', 'prompts'].includes(tabParam)) {
       return tabParam as any;
     }
     return null;
@@ -244,6 +246,7 @@ export default function Settings() {
         setAgentType('customer_support');
         setCompanyName('');
         setDepartmentName('');
+        setWeekStartDay('monday');
       } else {
         const client = await api.getEmailAccount(targetClientId);
         if (client) {
@@ -252,6 +255,7 @@ export default function Settings() {
           setAgentType(client.agent_type || 'customer_support');
           setCompanyName(client.company_name || '');
           setDepartmentName(client.department_name || '');
+          setWeekStartDay(client.week_start_day || 'monday');
         }
       }
     } catch (err: any) {
@@ -403,6 +407,7 @@ export default function Settings() {
         await api.updateSelfProfile({
           client_id: 'ALL',
           score_threshold: Number(threshold),
+          week_start_day: weekStartDay,
         });
       } else {
         await api.updateSelfProfile({
@@ -411,7 +416,8 @@ export default function Settings() {
           company_name: companyName,
           score_threshold: Number(threshold),
           agent_type: agentType,
-          response_tone: tone
+          response_tone: tone,
+          week_start_day: weekStartDay,
         });
       }
 
@@ -559,6 +565,7 @@ export default function Settings() {
     signoff: 'Organization Sign-Off & Persona',
     moderation: 'Keyword Moderation & Sender Rules',
     disclaimers: 'Email Disclaimers & Boilerplates',
+    prompts: 'Prompt Studio & Multilingual Engine',
   };
 
   if (loading) {
@@ -794,6 +801,22 @@ export default function Settings() {
                 setSearchParams({ tab: 'disclaimers' });
               }}
             />
+
+            {/* 7. Prompt Studio & Multilingual Engine */}
+            <SettingsRow
+              icon={Sparkles}
+              title="Prompt Studio & Multilingual Engine"
+              description="Customize the 4 core AI system prompts (Agent Brain, Escalation, Resolution, and Boundary) with instant factory reset"
+              action={
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                  4 Core Prompts
+                </span>
+              }
+              onClick={() => {
+                setActiveTab('prompts');
+                setSearchParams({ tab: 'prompts' });
+              }}
+            />
           </SettingsCard>
         </div>
       )}
@@ -896,6 +919,21 @@ export default function Settings() {
               <Building2 className="w-3.5 h-3.5" />
               <span>Disclaimers</span>
             </button>
+
+            <button
+              onClick={() => {
+                setActiveTab('prompts');
+                setSearchParams({ tab: 'prompts' });
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold transition-all cursor-pointer ${
+                activeTab === 'prompts'
+                  ? 'bg-primary text-primary-foreground shadow-2xs'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06]'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Prompts</span>
+            </button>
           </div>
 
           {/* Tab Renderers */}
@@ -908,6 +946,8 @@ export default function Settings() {
               setTone={setTone}
               agentType={agentType}
               setAgentType={setAgentType}
+              weekStartDay={weekStartDay}
+              setWeekStartDay={setWeekStartDay}
               masterBotStatus={masterBotStatus}
               masterBotLoading={masterBotLoading}
               masterBotToggling={masterBotToggling}
@@ -983,6 +1023,10 @@ export default function Settings() {
               handleToggleDisclaimer={handleToggleDisclaimer}
               handleDeleteDisclaimer={handleDeleteDisclaimer}
             />
+          )}
+
+          {activeTab === 'prompts' && (
+            <PromptsTab />
           )}
         </div>
       )}

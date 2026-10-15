@@ -131,6 +131,7 @@ export const authApi = {
     agent_type?: string; 
     response_tone?: string;
     inactivity_timeout_hours?: number;
+    week_start_day?: string;
   }) {
     const res = await fetch(`${BASE_URL}/client/profile`, {
       method: 'POST',

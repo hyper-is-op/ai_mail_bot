@@ -2,19 +2,19 @@ import React from 'react';
 import {
   CheckSquare,
   Square,
-  RefreshCw,
   FileText,
   User,
   Calendar,
-  Clock,
-  CheckCircle,
   Trash2,
   Edit3,
   Send,
-  ChevronLeft,
-  ChevronRight,
 } from 'lucide-react';
 import { DraftItem } from './types';
+import { ReferenceBadge } from '@/components/common/ReferenceBadge';
+import { StatusBadge } from '@/components/common/StatusBadge';
+import { Pagination } from '@/components/common/Pagination';
+import { cn } from '@/lib/utils';
+import { TableSkeleton } from '@/components/common/Skeleton';
 
 interface DraftsTableProps {
   drafts: DraftItem[];
@@ -50,7 +50,10 @@ export const DraftsTable: React.FC<DraftsTableProps> = ({
   totalCount,
 }) => {
   return (
-    <div className="rounded-lg win11-card overflow-hidden shadow-xs">
+    <div className="rounded-xl win11-card border border-border overflow-hidden shadow-2xs relative">
+      {loading && drafts.length > 0 && (
+        <div className="absolute top-0 left-0 right-0 h-0.5 bg-primary/40 animate-pulse z-10" />
+      )}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
           <thead className="bg-black/[0.02] dark:bg-white/[0.03] text-[11px] font-semibold text-muted-foreground uppercase tracking-wider border-b border-black/[0.06] dark:border-white/[0.06]">
@@ -68,6 +71,8 @@ export const DraftsTable: React.FC<DraftsTableProps> = ({
                   )}
                 </button>
               </th>
+              <th className="p-3.5 font-semibold">ID</th>
+              <th className="p-3.5 font-semibold">Thread ID</th>
               <th className="p-3.5 font-semibold">Sender &amp; Customer</th>
               <th className="p-3.5 font-semibold">Subject &amp; AI Draft Snippet</th>
               <th className="p-3.5 font-semibold">Intent / Quality</th>
@@ -75,17 +80,21 @@ export const DraftsTable: React.FC<DraftsTableProps> = ({
               <th className="p-3.5 text-right font-semibold">Actions</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.05]">
-            {loading ? (
-              <tr>
-                <td colSpan={6} className="p-8 text-center text-muted-foreground">
-                  <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-primary" />
-                  Loading drafts...
-                </td>
-              </tr>
+          <tbody className={cn(
+            "divide-y divide-black/[0.04] dark:divide-white/[0.05] transition-opacity",
+            loading && drafts.length > 0 && "opacity-50 pointer-events-none"
+          )}>
+            {loading && drafts.length === 0 ? (
+              <TableSkeleton
+                rows={6}
+                columns={8}
+                alignments={['left', 'left', 'left', 'left', 'left', 'left', 'left', 'right']}
+                cellTypes={['text', 'badge', 'badge', 'text', 'text', 'pill', 'pill', 'button']}
+                columnWidths={['w-6', 'w-16', 'w-24', 'w-36', 'w-64', 'w-24', 'w-20', 'w-24']}
+              />
             ) : drafts.length === 0 ? (
               <tr>
-                <td colSpan={6} className="p-12 text-center text-muted-foreground">
+                <td colSpan={8} className="p-12 text-center text-muted-foreground">
                   <FileText className="w-10 h-10 mx-auto mb-2.5 opacity-40 text-foreground" />
                   <p className="text-sm font-semibold text-foreground">No drafts found</p>
                   <p className="text-xs text-muted-foreground mt-0.5">
@@ -121,15 +130,42 @@ export const DraftsTable: React.FC<DraftsTableProps> = ({
                       </button>
                     </td>
 
+                    {/* ID Column */}
+                    <td className="p-3.5 whitespace-nowrap">
+                      <div className="flex flex-col gap-0.5 items-start">
+                        <ReferenceBadge
+                          id={draft.email_log_id ?? draft.id}
+                          type="message"
+                          label="#"
+                          truncateLength={0}
+                        />
+                        {draft.email_log_id && draft.id ? (
+                          <span className="text-[10px] font-mono text-muted-foreground/70">
+                            Draft #{draft.id}
+                          </span>
+                        ) : null}
+                      </div>
+                    </td>
+
+                    {/* Thread Column */}
+                    <td className="p-3.5 whitespace-nowrap">
+                      <ReferenceBadge id={draft.thread_id} type="thread" truncateLength={10} />
+                    </td>
+
                     <td className="p-3.5">
                       <div className="font-semibold text-foreground flex items-center gap-1.5">
                         <User className="w-3.5 h-3.5 text-muted-foreground" />
                         {draft.sender_name || draft.from_email.split('@')[0]}
                       </div>
                       <div className="text-[11px] text-muted-foreground">{draft.from_email}</div>
-                      <div className="text-[10px] text-muted-foreground/80 mt-0.5 flex items-center gap-1">
-                        <Calendar className="w-3 h-3" />
-                        {new Date(draft.created_at).toLocaleString()}
+                      <div className="text-[10px] text-muted-foreground/80 mt-1 flex items-center gap-1.5 flex-wrap">
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          {new Date(draft.created_at).toLocaleString()}
+                        </span>
+                        {draft.ticket_id ? (
+                          <ReferenceBadge id={draft.ticket_id} type="ticket" truncateLength={10} />
+                        ) : null}
                       </div>
                     </td>
 
@@ -172,24 +208,13 @@ export const DraftsTable: React.FC<DraftsTableProps> = ({
 
                     <td className="p-3.5">
                       {draft.status === 'pending' ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                          <Clock className="w-3 h-3" />
-                          Pending
-                        </span>
+                        <StatusBadge variant="warning" label="Pending" dot size="xs" />
                       ) : draft.status === 'sent' ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                          <CheckCircle className="w-3 h-3" />
-                          Dispatched
-                        </span>
+                        <StatusBadge variant="success" label="Dispatched" dot size="xs" />
                       ) : draft.status === 'discarded' ? (
-                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-red-500/15 text-red-600 dark:text-red-400 border border-red-500/20">
-                          <Trash2 className="w-3 h-3" />
-                          Discarded
-                        </span>
+                        <StatusBadge variant="danger" label="Discarded" dot size="xs" />
                       ) : (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-black/[0.05] dark:bg-white/[0.08] text-muted-foreground">
-                          {draft.status}
-                        </span>
+                        <StatusBadge variant="neutral" label={draft.status} dot size="xs" />
                       )}
                     </td>
 
@@ -239,29 +264,13 @@ export const DraftsTable: React.FC<DraftsTableProps> = ({
 
       {/* Pagination Footer */}
       {totalPages > 1 && (
-        <div className="p-3 border-t border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between text-xs text-muted-foreground">
-          <div>
-            Showing page <strong>{page}</strong> of <strong>{totalPages}</strong> ({totalCount} total)
-          </div>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              disabled={page <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-              className="p-1 rounded border border-black/[0.08] dark:border-white/[0.08] disabled:opacity-40 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-foreground cursor-pointer"
-            >
-              <ChevronLeft className="w-3.5 h-3.5" />
-            </button>
-            <button
-              type="button"
-              disabled={page >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-              className="p-1 rounded border border-black/[0.08] dark:border-white/[0.08] disabled:opacity-40 hover:bg-black/[0.04] dark:hover:bg-white/[0.06] text-foreground cursor-pointer"
-            >
-              <ChevronRight className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
+        <Pagination
+          page={page}
+          pageSize={15}
+          totalCount={totalCount}
+          totalPages={totalPages}
+          onPageChange={setPage}
+        />
       )}
     </div>
   );

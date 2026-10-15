@@ -68,8 +68,19 @@ export const emailsApi = {
     return safeJson(res, 'Failed to fetch ticket status');
   },
 
-  async getEmails(clientId: string) {
-    const res = await fetch(`${BASE_URL}/emails/${clientId}`, { headers: authHeaders() });
+  async getEmails(clientId: string, params?: { page?: number; page_size?: number; search?: string; status?: string }) {
+    let url = `${BASE_URL}/emails/${clientId}`;
+    if (params) {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') {
+          q.append(k, String(v));
+        }
+      });
+      const qs = q.toString();
+      if (qs) url += `?${qs}`;
+    }
+    const res = await fetch(url, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch emails');
   },
 
@@ -81,8 +92,19 @@ export const emailsApi = {
     return safeJson(res, 'Failed to re-queue email');
   },
 
-  async getTickets(clientId: string) {
-    const res = await fetch(`${BASE_URL}/tickets/${clientId}`, { headers: authHeaders() });
+  async getTickets(clientId: string, params?: { page?: number; page_size?: number; search?: string; status?: string; priority?: string; intent?: string }) {
+    let url = `${BASE_URL}/tickets/${clientId}`;
+    if (params) {
+      const q = new URLSearchParams();
+      Object.entries(params).forEach(([k, v]) => {
+        if (v !== undefined && v !== null && v !== '') {
+          q.append(k, String(v));
+        }
+      });
+      const qs = q.toString();
+      if (qs) url += `?${qs}`;
+    }
+    const res = await fetch(url, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch tickets');
   },
 

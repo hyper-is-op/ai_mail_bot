@@ -305,6 +305,14 @@ class TestApiEndpoints(unittest.TestCase):
         self.assertIn("guardrail_overhead_ratio", te)
         self.assertIn("economics_by_intent", te)
 
+        # Test time range filters on LLM metrics endpoint
+        for r in ["today", "yesterday", "this_week", "last_week", "this_month", "last_month"]:
+            f_res = self.client.get(f"/llm/metrics/{self.test_client_id}?range_type={r}", headers=headers)
+            self.assertEqual(f_res.status_code, 200)
+            f_data = f_res.json()
+            self.assertEqual(f_data.get("status"), "success")
+            self.assertEqual(f_data.get("totals", {}).get("range_type"), r)
+
     def test_14_ticketing_report_and_csv_export(self):
         """GET /reports/ticketing/{client_id} and /reports/export/{client_id} should return audit logs and CSV"""
         if not self.token:
@@ -326,7 +334,7 @@ class TestApiEndpoints(unittest.TestCase):
         self.assertEqual(res_csv.status_code, 200)
         self.assertIn("text/csv", res_csv.headers.get("content-type", ""))
         self.assertIn("attachment; filename=", res_csv.headers.get("content-disposition", ""))
-        self.assertTrue(res_csv.text.startswith("ID,Thread ID,Timestamp,Customer Email"))
+        self.assertTrue(res_csv.text.startswith("ID,Thread ID,Timestamp (UTC),Customer Email"))
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import { connectorsApi } from './api/connectors';
 import { emailsApi } from './api/emails';
 import { draftsApi } from './api/drafts';
 import { analyticsApi } from './api/analytics';
+import { promptsApi } from './api/prompts';
 
 export { BASE_URL, authHeaders, handleAuthFailure, safeJson };
 
@@ -16,6 +17,7 @@ export const api = {
   ...emailsApi,
   ...draftsApi,
   ...analyticsApi,
+  ...promptsApi,
 };
 
 export default api;

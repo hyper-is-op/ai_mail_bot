@@ -37,6 +37,20 @@ def apply_deterministic_filters(ctx: PipelineContext, cursor) -> bool:
         ctx.halt("system_bounce_dropped", "Automated bounce or daemon notification", "System_Bounce_Dropped")
         return True
 
+    # 0b. Automated Marketing / Broadcast Blast Sender Detection
+    # Catch obvious automated broadcast, promo, and digest addresses (e.g. promo@, newsletter@, digests@, updates@, bulletin@)
+    # or mailings with standard unsubscribe indicators where no user inquiry or ticket exists
+    is_broadcast_prefix = from_email_clean.startswith((
+        "newsletter@", "newsletters@", "promo@", "promotions@", "marketing@",
+        "bulletin@", "digests@", "digest@", "updates@", "campaign@", "offers@"
+    ))
+    if is_broadcast_prefix:
+        logger.info(f"📢 [Client {client_id}] Automated broadcast/newsletter sender detected ({from_email}) — dropping without automated ticket or reply")
+        ctx.summary = f"Automated marketing broadcast from {from_email}. Dropped without reply."
+        ctx.priority = "Low"
+        ctx.halt("no_action_needed", f"Broadcast sender prefix: {from_email}", "Broadcast_Sender_Dropped")
+        return True
+
     # 1. Master Bot Switch (Disabled by Administrator or Paused by Client)
     admin_bot_enabled = ctx.features.get("admin_bot_enabled", True)
     client_bot_enabled = ctx.features.get("client_bot_enabled", True)

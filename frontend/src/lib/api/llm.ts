@@ -1,9 +1,24 @@
 import { BASE_URL, authHeaders, safeJson } from './core';
 
 export const llmApi = {
-  async getLlmMetrics(clientId: string, timeWindow?: string) {
-    const q = timeWindow && timeWindow !== 'all' ? `?time_window=${encodeURIComponent(timeWindow)}` : '';
-    const res = await fetch(`${BASE_URL}/llm/metrics/${clientId}${q}`, { headers: authHeaders() });
+  async getLlmMetrics(
+    clientId: string, 
+    timeWindow?: string,
+    rangeType?: string,
+    startDate?: string,
+    endDate?: string
+  ) {
+    const params = new URLSearchParams();
+    const effectiveRange = rangeType || timeWindow;
+    if (effectiveRange && effectiveRange !== 'all') {
+      params.append('range_type', effectiveRange);
+      params.append('time_window', effectiveRange);
+    }
+    if (startDate) params.append('start_date', startDate);
+    if (endDate) params.append('end_date', endDate);
+
+    const queryString = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`${BASE_URL}/llm/metrics/${clientId}${queryString}`, { headers: authHeaders() });
     return safeJson(res, 'Failed to fetch LLM metrics');
   },
 

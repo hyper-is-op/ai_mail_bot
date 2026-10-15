@@ -141,10 +141,10 @@ export const InboxSidebar: React.FC<InboxSidebarProps> = ({
               type="text" 
               placeholder={
                 activeTab === 'Blocked' 
-                  ? "Search blocked..." 
+                  ? "Search blocked by sender, content, #ID..." 
                   : activeTab === 'Paused'
-                  ? "Search paused..."
-                  : "Search..."
+                  ? "Search paused by sender, content, #ID..."
+                  : "Search subject, sender, body, #ID, thread, ticket..."
               }
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}

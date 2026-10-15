@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { 
-  RefreshCw, AlertCircle, Loader2,
+  RefreshCw, AlertCircle,
   Mail, Bot, Cpu, Clock, Ticket,
   ArrowRight, ShieldCheck, ShieldAlert,
   FileSpreadsheet, ArrowUpRight,
@@ -15,6 +15,7 @@ import { cn } from '@/lib/utils';
 import { SettingsCard } from '@/components/fluent';
 import LlmAnalytics from './LlmAnalytics';
 import { useAppState } from '@/context/AppStateContext';
+import { DashboardSkeleton } from '@/components/common/Skeleton';
 
 function formatRelativeDuration(seconds: number | null | undefined): string {
   if (seconds === null || seconds === undefined || isNaN(seconds)) return 'Never';
@@ -492,13 +493,10 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {loading ? (
-        <div className="min-h-[50vh] flex flex-col items-center justify-center space-y-4">
-          <Loader2 className="w-9 h-9 text-primary animate-spin" />
-          <p className="text-xs text-muted-foreground font-medium">Gathering operational telemetry and mail metrics...</p>
-        </div>
+      {loading && !metrics.total_emails ? (
+        <DashboardSkeleton />
       ) : (
-        <>
+        <div className={cn("space-y-6 transition-opacity", loading && "opacity-50 pointer-events-none")}>
           {/* Date Filter Panel */}
           <div className="win11-card p-2 px-3 rounded-lg flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 shadow-2xs">
             <div className="flex flex-wrap items-center gap-1">
@@ -506,6 +504,8 @@ export default function Dashboard() {
                 { id: 'all', label: 'All Time' },
                 { id: 'today', label: 'Today' },
                 { id: 'yesterday', label: 'Yesterday' },
+                { id: 'this_week', label: 'This Week' },
+                { id: 'last_week', label: 'Last Week' },
                 { id: 'this_month', label: 'Current Month' },
                 { id: 'last_month', label: 'Last Month' },
                 { id: 'custom', label: 'Custom Range' },
@@ -1904,7 +1904,7 @@ export default function Dashboard() {
               )}
             </div>
           </SettingsCard>
-        </>
+        </div>
       )}
     </div>
   );

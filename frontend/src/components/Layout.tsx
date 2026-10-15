@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Outlet, Navigate } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
-import SetupWizard from './SetupWizard';
 import { AppStateProvider } from '@/context/AppStateContext';
 
 export default function Layout() {
@@ -26,7 +25,6 @@ export default function Layout() {
             </div>
           </main>
         </div>
-        <SetupWizard />
       </div>
     </AppStateProvider>
   );

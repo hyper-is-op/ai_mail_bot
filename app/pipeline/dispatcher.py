@@ -31,6 +31,20 @@ def dispatch_or_draft_reply(
     or creates a draft in draft_emails if in Draft Mode.
     Returns (status_str, save_history_bool).
     """
+    # Check for unmonitored / broadcast addresses where sending outbound mail triggers guaranteed bounce loops
+    from_lower = (from_email or "").lower().strip()
+    is_unmonitored_or_broadcast = (
+        from_lower.startswith(("noreply@", "no-reply@", "mailer-daemon@", "postmaster@", "donotreply@", "do-not-reply@"))
+        or from_lower.endswith((".invalid", ".local"))
+        or "@mail." in from_lower
+        or "@newsletter." in from_lower
+    )
+    if is_unmonitored_or_broadcast:
+        logger.warning(f"🚫 [Client {client_id}] Outbound reply delivery suppressed for unmonitored/broadcast address {from_email} to avoid bounce loops")
+        if execution_steps is not None:
+            execution_steps.append("Outbound_Delivery_Suppressed")
+        return "sent", False
+
     if features.get("feature_auto_send", True):
         logger.info(f"📤 [Client {client_id}] Auto-send enabled — dispatching reply via SMTP")
         clean_subj = (subject or "").strip()

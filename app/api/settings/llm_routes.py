@@ -254,7 +254,7 @@ def get_global_default_llm_endpoint(user: dict = Depends(require_admin())):
                         "provider": "groq",
                         "api_key": os.getenv("GROQ_API_KEY", ""),
                         "base_url": "https://api.groq.com/openai/v1",
-                        "model_name": os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b"),
+                        "model_name": os.getenv("GROQ_MODEL", "").strip() or "qwen/qwen3.8-27b",
                         "api_version": None,
                         "created_at": None,
                         "updated_at": None,

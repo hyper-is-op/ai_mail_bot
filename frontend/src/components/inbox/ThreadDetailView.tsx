@@ -25,6 +25,7 @@ import { cn } from '@/lib/utils';
 import EmailBodyWithDisclaimer from '@/components/EmailBodyWithDisclaimer';
 import { ThreadItem, sanitizeSandboxedHtml } from './types';
 import ManualReplyComposer from './ManualReplyComposer';
+import { ReferenceBadge } from '@/components/common/ReferenceBadge';
 
 interface ThreadDetailViewProps {
   selectedThread: ThreadItem | null;
@@ -112,10 +113,20 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
           <h2 className="text-base sm:text-lg font-bold text-foreground truncate">
             {selectedThread.subject}
           </h2>
-          <p className="text-xs text-muted-foreground flex items-center gap-2">
+          <p className="text-xs text-muted-foreground flex items-center gap-2 flex-wrap">
             <span className="font-medium text-foreground">{selectedThread.sender}</span>
             <span>•</span>
             <span>{selectedThread.emails.length} {selectedThread.emails.length === 1 ? 'message' : 'messages'}</span>
+            {(selectedThread.latest_email?.thread_id || (selectedThread as any).thread_id) && (
+              <>
+                <span>•</span>
+                <ReferenceBadge 
+                  id={selectedThread.latest_email?.thread_id || (selectedThread as any).thread_id} 
+                  type="thread" 
+                  truncateLength={12} 
+                />
+              </>
+            )}
           </p>
         </div>
 
@@ -271,8 +282,13 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
                     <span className="font-semibold text-foreground">{email.sender}</span>
                   </div>
                   
-                  <div className="flex items-center gap-3 text-muted-foreground text-[11px]">
-                    <span>{email.date_str} {email.time}</span>
+                  <div className="flex items-center gap-2.5 text-muted-foreground text-[11px] flex-wrap">
+                    <div className="flex items-center gap-1.5">
+                      <span>{email.date_str} {email.time}</span>
+                      {email.id && (
+                        <ReferenceBadge id={email.id} type="message" label="#" truncateLength={0} />
+                      )}
+                    </div>
                     <div className="flex items-center gap-1.5 font-medium">
                       {/* HTML vs Clean Text Toggle Button */}
                       {hasHtmlContent && (

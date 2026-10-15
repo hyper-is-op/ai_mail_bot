@@ -1,3 +1,4 @@
+import os
 import json
 import logging
 from typing import Dict, Any, List, Optional
@@ -99,39 +100,16 @@ NOTE: The customer has indicated their problem is now RESOLVED.
 - DO NOT call 'escalate_and_create_ticket'.
 """
 
-    return f"""You are a professional, accurate customer support agent for {company_name or 'our support team'}.
-Customer Name: {customer_name}
-{step_info}
-{resolution_instruction}
-
-You have direct access to tools to:
-1. 'lookup_order_status': Look up status of an order ID/number (e.g. #1001, ORD-9201) in the e-commerce/store system.
-2. 'lookup_payment_status': Look up payment transaction status, refund status, or invoice payment details (e.g. Stripe, Razorpay, Zoho Books).
-3. 'lookup_ticket_status': Look up status of an existing support ticket reference (e.g. T-260526-00431, 10294) in the CRM.
-4. 'lookup_ticket_or_order_status': Combined fallback lookup tool for ticket or order references.
-5. 'search_knowledge_base': Search company policies, FAQs, manuals, and troubleshooting guides.
-6. 'escalate_and_create_ticket': Create a formal support ticket in the CRM if the issue cannot be solved with existing knowledge, if 3 troubleshooting attempts have failed, or if the user requests human agent assistance.
-
-GUIDELINES & HARD CONSTRAINTS:
-- If the customer asks about or provides an order number/ID (e.g., #1001, ORD10294, 'where is my order'), you MUST call 'lookup_order_status'.
-- If the customer asks about payment, billing, charge, or transaction status (e.g., transaction ID, invoice ID, payment reference), you MUST call 'lookup_payment_status'.
-- If the customer asks about or provides an existing support ticket reference (e.g., T-260505-00117, ticket #4921), you MUST call 'lookup_ticket_status'.
-- If any lookup tool ('lookup_ticket_status', 'lookup_order_status', 'lookup_payment_status', 'lookup_ticket_or_order_status') returns that the record was not found, inform the customer politely that the reference ID could not be found in our records, and ask them to verify or reply with the correct reference number. Do NOT call 'escalate_and_create_ticket' simply because a record was not found.
-- If the customer reports a technical issue or problem:
-  1. Search the knowledge base using 'search_knowledge_base' for diagnostic guides and solutions.
-  2. If steps exist, guide the customer through ONE clear troubleshooting action and ask them to test it and reply back with what happens.
-  3. If previous steps failed (see conversation history), offer the next diagnostic step.
-  4. Only call 'escalate_and_create_ticket' if:
-     - All troubleshooting steps in the knowledge base have been exhausted, OR
-     - 3 troubleshooting turns have already occurred and the issue remains unresolved.
-     # - The issue is a confirmed hardware/server failure or billing bug that self-troubleshooting cannot fix, OR
-     # - The customer explicitly asks for human support / ticket creation.
-- If the customer states the issue is resolved or that a step worked, confirm resolution politely and DO NOT create a ticket.
-- NEVER invent facts, order statuses, turnaround times, or tracking links that were not returned by tools.
-- Address the customer politely: "Dear {customer_name},".
-- End your response with the standard sign-off:
-{signoff_text}
-"""
+    from app.prompt_service import format_prompt
+    return format_prompt(
+        client_id=ctx.client_id,
+        prompt_key="agent_system_prompt",
+        company_name=company_name or "our support team",
+        customer_name=customer_name,
+        step_info=step_info,
+        resolution_instruction=resolution_instruction,
+        signoff_text=signoff_text
+    )
 
 
 def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> PipelineContext:
@@ -156,8 +134,9 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
 
     # Normalize model for tool calling
     model_name = raw_model.strip()
-    if provider == "groq" and (model_name in ("compound-mini", "compound", "groq/compound-mini", "") or "llama" in model_name):
-        model_name = "qwen/qwen3.6-27b"
+    system_env_model = os.getenv("GROQ_MODEL", "").strip() or "qwen/qwen3.8-27b"
+    if provider == "groq" and (model_name in ("compound-mini", "compound", "groq/compound-mini", "")):
+        model_name = system_env_model
 
     # 2. Build conversation messages
     system_prompt = build_system_prompt(ctx)
@@ -188,9 +167,9 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
         )
     except Exception as e:
         err_str = str(e)
-        if ("tool calling" in err_str.lower() or "404" in err_str) and provider == "groq" and model_name != "qwen/qwen3.6-27b":
-            logger.warning(f"⚠️ Model {model_name} failed tool calling on Groq, retrying with qwen/qwen3.6-27b")
-            model_name = "qwen/qwen3.6-27b"
+        if ("tool calling" in err_str.lower() or "404" in err_str) and provider == "groq" and model_name != system_env_model:
+            logger.warning(f"⚠️ Model {model_name} failed tool calling on Groq, retrying with fallback model {system_env_model}")
+            model_name = system_env_model
             try:
                 response = client.chat.completions.create(
                     model=model_name,
@@ -203,20 +182,28 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
             except Exception as retry_err:
                 logger.error(f"❌ [Agent Loop] Tool calling retry failed: {retry_err}")
                 ctx.log_step(f"Agent_Completion_Error:{str(retry_err)[:50]}")
-                ctx.draft_reply = append_client_disclaimers(
-                    ctx.client_id,
-                    f"Dear Customer,\n\nThank you for contacting us. We have received your inquiry regarding '{ctx.subject}'. Our support team is currently reviewing your message and will get back to you shortly.\n\nThanks & Regards,\nSupport Team"
+                cust_name = extract_name_from_email(ctx.from_email)
+                fallback_msg = (
+                    f"Dear {cust_name},\n\n"
+                    f"Thank you for contacting us. We have received your inquiry regarding '{ctx.subject}'. "
+                    f"Our support team is currently reviewing your message and will get back to you shortly.\n\n"
+                    f"Thanks & Regards,\nSupport Team"
                 )
+                ctx.draft_reply = append_client_disclaimers(ctx.client_id, fallback_msg)
                 ctx.score = 50
                 ctx.response_action = "draft_mode"
                 return ctx
         else:
             logger.error(f"❌ [Agent Loop] Primary completion failed: {e}. Falling back to default customer acknowledgement.")
             ctx.log_step(f"Agent_Completion_Error:{str(e)[:50]}")
-            ctx.draft_reply = append_client_disclaimers(
-                ctx.client_id,
-                f"Dear Customer,\n\nThank you for contacting us. We have received your inquiry regarding '{ctx.subject}'. Our support team is currently reviewing your message and will get back to you shortly.\n\nThanks & Regards,\nSupport Team"
+            cust_name = extract_name_from_email(ctx.from_email)
+            fallback_msg = (
+                f"Dear {cust_name},\n\n"
+                f"Thank you for contacting us. We have received your inquiry regarding '{ctx.subject}'. "
+                f"Our support team is currently reviewing your message and will get back to you shortly.\n\n"
+                f"Thanks & Regards,\nSupport Team"
             )
+            ctx.draft_reply = append_client_disclaimers(ctx.client_id, fallback_msg)
             ctx.score = 50
             ctx.response_action = "draft_mode"
             return ctx

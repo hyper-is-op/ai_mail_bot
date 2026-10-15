@@ -2,6 +2,7 @@ export interface DraftItem {
   id: number;
   client_id: string;
   email_log_id?: number;
+  thread_id?: string;
   from_email: string;
   sender_name?: string;
   to_email: string;

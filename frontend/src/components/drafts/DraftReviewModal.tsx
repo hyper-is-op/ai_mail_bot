@@ -1,7 +1,6 @@
 import React from 'react';
 import {
   FileText,
-  X,
   MessageSquare,
   Sparkles,
   ShieldCheck,
@@ -9,6 +8,9 @@ import {
   Send,
 } from 'lucide-react';
 import { DraftItem } from './types';
+import { ReferenceBadge } from '@/components/common/ReferenceBadge';
+import { StatusBadge } from '@/components/common/StatusBadge';
+import { BaseModal } from '@/components/common/BaseModal';
 
 interface DraftReviewModalProps {
   activeDraft: DraftItem | null;
@@ -43,46 +45,98 @@ export const DraftReviewModal: React.FC<DraftReviewModalProps> = ({
   if (!activeDraft) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in">
-      <div className="w-full max-w-4xl max-h-[90vh] bg-white dark:bg-[#2C2C2C] rounded-lg shadow-2xl border border-black/[0.1] dark:border-white/[0.1] flex flex-col overflow-hidden">
-        {/* Modal Header */}
-        <div className="px-5 py-4 border-b border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between bg-black/[0.02] dark:bg-white/[0.02]">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10 text-primary">
-              <FileText className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-                Draft Review #{activeDraft.id}
-                <span
-                  className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                    activeDraft.status === 'pending'
-                      ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                      : activeDraft.status === 'sent'
-                      ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
-                      : 'bg-red-500/15 text-red-600 dark:text-red-400'
-                  }`}
-                >
-                  {activeDraft.status.toUpperCase()}
-                </span>
-              </h3>
-              <p className="text-xs text-muted-foreground">
-                To: {activeDraft.from_email} • Confidence: {activeDraft.confidence_score}%
-              </p>
-            </div>
+    <BaseModal
+      isOpen={Boolean(activeDraft)}
+      onClose={onClose}
+      maxWidth="max-w-4xl"
+      icon={<FileText className="w-5 h-5" />}
+      title={
+        <div className="flex items-center gap-2 flex-wrap">
+          <span>Draft Review #{activeDraft.id}</span>
+          {activeDraft.thread_id && (
+            <ReferenceBadge id={activeDraft.thread_id} type="thread" truncateLength={10} />
+          )}
+          <StatusBadge
+            label={activeDraft.status}
+            variant={
+              activeDraft.status === 'pending' ? 'warning' :
+              activeDraft.status === 'sent' ? 'success' : 'danger'
+            }
+          />
+        </div>
+      }
+      subtitle={`To: ${activeDraft.from_email} • Confidence: ${activeDraft.confidence_score}%`}
+      footer={
+        <div className="w-full flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {activeDraft.status === 'pending' && (
+              <button
+                type="button"
+                onClick={() => onDiscardSingle(activeDraft.id)}
+                disabled={actionLoading}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md text-red-600 dark:text-red-400 hover:bg-red-500/15 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                Discard Draft
+              </button>
+            )}
           </div>
 
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-black/[0.04] dark:hover:bg-white/[0.06] transition-colors cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+          <div className="flex items-center gap-2">
+            {isEditing && (
+              <button
+                type="button"
+                onClick={onSaveDraftChanges}
+                disabled={actionLoading}
+                className="px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-secondary text-foreground hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-50"
+              >
+                {actionLoading ? 'Saving...' : 'Save Changes'}
+              </button>
+            )}
 
-        {/* Modal Body - Split View */}
-        <div className="flex-1 overflow-y-auto p-5 grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
+            {activeDraft.status === 'pending' && (
+              <label className="flex items-center gap-1.5 cursor-pointer text-muted-foreground hover:text-foreground text-[11px] select-none mr-2">
+                <input
+                  type="checkbox"
+                  checked={addToKb}
+                  onChange={(e) => setAddToKb(e.target.checked)}
+                  className="rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
+                />
+                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                <span>Save to Knowledge Base</span>
+              </label>
+            )}
+
+            {activeDraft.status === 'pending' ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  if (isEditing) {
+                    await onSaveDraftChanges();
+                  }
+                  await onSendSingle(activeDraft.id, addToKb);
+                }}
+                disabled={actionLoading}
+                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-md bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
+              >
+                <Send className="w-3.5 h-3.5" />
+                {actionLoading ? 'Dispatching...' : 'Approve & Send Now'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onClose}
+                className="px-3 py-1.5 text-xs font-medium rounded-md bg-secondary text-foreground cursor-pointer hover:opacity-80"
+              >
+                Close
+              </button>
+            )}
+          </div>
+        </div>
+      }
+    >
+      {/* Modal Body - Split View */}
+      <div className="p-5 grid grid-cols-1 md:grid-cols-2 gap-5 text-xs">
           {/* Left Column: Original Customer Email Context */}
           <div className="space-y-3">
             <div className="flex items-center justify-between">
@@ -104,11 +158,17 @@ export const DraftReviewModal: React.FC<DraftReviewModalProps> = ({
               <div className="text-muted-foreground">
                 <strong className="text-foreground">Subject:</strong> {activeDraft.subject}
               </div>
-              {activeDraft.ticket_id && (
-                <div className="text-primary font-semibold">
-                  Ticket ID: {activeDraft.ticket_id}
-                </div>
-              )}
+              <div className="flex items-center gap-2 pt-1 flex-wrap">
+                {activeDraft.email_log_id ? (
+                  <ReferenceBadge id={activeDraft.email_log_id} type="message" label="#" truncateLength={0} />
+                ) : null}
+                {activeDraft.thread_id ? (
+                  <ReferenceBadge id={activeDraft.thread_id} type="thread" truncateLength={0} />
+                ) : null}
+                {activeDraft.ticket_id ? (
+                  <ReferenceBadge id={activeDraft.ticket_id} type="ticket" truncateLength={0} />
+                ) : null}
+              </div>
               <hr className="border-black/[0.06] dark:border-white/[0.06] my-2" />
               <div className="text-foreground whitespace-pre-wrap leading-relaxed">
                 {activeDraft.original_body}
@@ -179,75 +239,6 @@ export const DraftReviewModal: React.FC<DraftReviewModalProps> = ({
             </div>
           </div>
         </div>
-
-        {/* Modal Footer */}
-        <div className="px-5 py-3 border-t border-black/[0.06] dark:border-white/[0.06] flex items-center justify-between bg-black/[0.02] dark:bg-white/[0.02]">
-          <div className="flex items-center gap-2">
-            {activeDraft.status === 'pending' && (
-              <button
-                type="button"
-                onClick={() => onDiscardSingle(activeDraft.id)}
-                disabled={actionLoading}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md text-red-600 dark:text-red-400 hover:bg-red-500/15 transition-colors cursor-pointer disabled:opacity-50"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                Discard Draft
-              </button>
-            )}
-          </div>
-
-          <div className="flex items-center gap-2">
-            {isEditing && (
-              <button
-                type="button"
-                onClick={onSaveDraftChanges}
-                disabled={actionLoading}
-                className="px-3 py-1.5 text-xs font-medium rounded-md border border-black/[0.08] dark:border-white/[0.08] bg-black/[0.04] dark:bg-white/[0.08] text-foreground hover:opacity-80 transition-opacity cursor-pointer disabled:opacity-50"
-              >
-                {actionLoading ? 'Saving...' : 'Save Changes'}
-              </button>
-            )}
-
-            {activeDraft.status === 'pending' && (
-              <label className="flex items-center gap-1.5 cursor-pointer text-muted-foreground hover:text-foreground text-[11px] select-none mr-2">
-                <input
-                  type="checkbox"
-                  checked={addToKb}
-                  onChange={(e) => setAddToKb(e.target.checked)}
-                  className="rounded border-zinc-300 text-emerald-600 focus:ring-emerald-500 cursor-pointer"
-                />
-                <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                <span>Save to Knowledge Base</span>
-              </label>
-            )}
-
-            {activeDraft.status === 'pending' ? (
-              <button
-                type="button"
-                onClick={async () => {
-                  if (isEditing) {
-                    await onSaveDraftChanges();
-                  }
-                  await onSendSingle(activeDraft.id, addToKb);
-                }}
-                disabled={actionLoading}
-                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold rounded-md bg-emerald-600 hover:bg-emerald-500 text-white shadow-xs transition-colors disabled:opacity-50 cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-                {actionLoading ? 'Dispatching...' : 'Approve & Send Now'}
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-3 py-1.5 text-xs font-medium rounded-md bg-black/[0.06] dark:bg-white/[0.08] text-foreground cursor-pointer hover:opacity-80"
-              >
-                Close
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
+      </BaseModal>
   );
 };

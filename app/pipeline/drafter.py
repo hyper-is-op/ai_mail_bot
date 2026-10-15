@@ -86,32 +86,88 @@ def generate_ticket_status_reply(
 
     # 1. Closed or Resolved Ticket
     if is_closed:
-        logger.info(f"ℹ️ Ticket #{display_ticket_id} is {raw_status} — sending closure notification")
-        reply = (
-            f"Dear {customer_name},\n\n"
-            f"Thank you for reaching out regarding ticket #{display_ticket_id}.\n\n"
-            f"According to our records, this ticket has already been marked as '{raw_status}'.\n\n"
-            f"If you still require assistance or if your issue is not resolved, please reply directly to this email or submit a new ticket, and our team will gladly assist you.\n\n"
-            f"{signoff_text}"
-        )
-        return reply, 95
+        logger.info(f"ℹ️ Ticket #{display_ticket_id} is {raw_status} — drafting multilingual closure notification via LLM")
+        from app.llm_config import client, resolve_model
+        from app.llm_utils import strip_reasoning_and_think_tags
+
+        prompt = f"""Write a polite email reply to {customer_name} regarding support ticket #{display_ticket_id}.
+CRITICAL MULTILINGUAL INSTRUCTION:
+- Detect the customer's language from their incoming message and reply in that EXACT SAME language.
+- The ticket currently has status: '{raw_status}' (Closed / Resolved).
+- Inform them that ticket #{display_ticket_id} is already marked as '{raw_status}'. If they still need help, they can reply directly.
+- Conclude with:
+{signoff_text}
+
+Write ONLY the final plain text email."""
+        try:
+            res = client.chat.completions.create(
+                model=resolve_model(client_id, "generate_reply_llm"),
+                caller="drafter_closed_ticket",
+                messages=[
+                    {"role": "system", "content": "You are a helpful customer support agent. Reply concisely in the customer's language."},
+                    {"role": "user", "content": f"Customer Message:\n{body}\n\nTask:\n{prompt}"}
+                ],
+                temperature=0.2,
+                max_tokens=350
+            )
+            reply = strip_reasoning_and_think_tags(res.choices[0].message.content).strip()
+            return reply, 95
+        except Exception as e:
+            logger.error(f"❌ Failed to generate closed ticket reply via LLM: {e}")
+            reply = (
+                f"Dear {customer_name},\n\n"
+                f"Thank you for reaching out regarding ticket #{display_ticket_id}.\n\n"
+                f"According to our records, this ticket has already been marked as '{raw_status}'.\n\n"
+                f"If you still require assistance or if your issue is not resolved, please reply directly to this email or submit a new ticket, and our team will gladly assist you.\n\n"
+                f"{signoff_text}"
+            )
+            return reply, 95
 
     # 2. Active Ticket: Pure Status Ping
     if is_pure_status_ping(body):
-        logger.info(f"⚡ Pure status ping detected for ticket #{display_ticket_id} — returning standardized template")
+        logger.info(f"⚡ Pure status ping detected for ticket #{display_ticket_id} — drafting multilingual status update via LLM")
         tracking_block = ""
         if ticket_info.get("tracking_url"):
             tracking_block = f"Tracking Link: {ticket_info['tracking_url']}\n\n"
 
-        reply = (
-            f"Dear {customer_name},\n\n"
-            f"Thank you for contacting us regarding your inquiry.\n\n"
-            f"Your ticket (#{display_ticket_id}) is currently in '{raw_status}' status and is actively under review by our support team. "
-            f"We are working on your request.\n\n"
-            f"{tracking_block}"
-            f"{signoff_text}"
-        )
-        return reply, 95
+        from app.llm_config import client, resolve_model
+        from app.llm_utils import strip_reasoning_and_think_tags
+
+        prompt = f"""Write a prompt, courteous status update email to {customer_name}.
+CRITICAL MULTILINGUAL INSTRUCTION:
+- Detect the customer's language from their incoming message and reply in that EXACT SAME language.
+- Ticket Reference: #{display_ticket_id}
+- Current Status: '{raw_status}'
+{tracking_block}
+- Inform them their ticket is currently in '{raw_status}' status and actively under review.
+- Conclude with:
+{signoff_text}
+
+Write ONLY the final plain text email."""
+        try:
+            res = client.chat.completions.create(
+                model=resolve_model(client_id, "generate_reply_llm"),
+                caller="drafter_status_ping",
+                messages=[
+                    {"role": "system", "content": "You are a helpful customer support agent. Reply concisely in the customer's language."},
+                    {"role": "user", "content": f"Customer Message:\n{body}\n\nTask:\n{prompt}"}
+                ],
+                temperature=0.2,
+                max_tokens=350
+            )
+            reply = strip_reasoning_and_think_tags(res.choices[0].message.content).strip()
+            return reply, 95
+        except Exception as e:
+            logger.error(f"❌ Failed to generate status ping reply via LLM: {e}")
+            reply = (
+                f"Dear {customer_name},\n\n"
+                f"Thank you for contacting us regarding your inquiry.\n\n"
+                f"Your ticket (#{display_ticket_id}) is currently in '{raw_status}' status and is actively under review by our support team. "
+                f"We are working on your request.\n\n"
+                f"{tracking_block}"
+                f"{signoff_text}"
+            )
+            return reply, 95
 
     # 3. Compound inquiry: Call LLM
     logger.info(f"🧠 Compound status inquiry detected for ticket #{display_ticket_id} — invoking guardrailed LLM")

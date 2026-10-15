@@ -87,72 +87,38 @@ def generate_reply_llm(
             }
             team_name = agent_team_map.get(agent_type_override, "Support Team")
 
-        prompt = f"""Write a professional email reply to {customer_name} acknowledging that support ticket #{ticket_id} has been logged and is currently in progress.
-
-Customer Query:
-{query}
-
-Ticket Information:
-- Ticket ID: {ticket_id}
-- Customer Name: {customer_name}
-{context}
-
-Requirements:
-1. Start with greeting: Hi {customer_name},
-2. Acknowledge that ticket #{ticket_id} is registered and the team is reviewing their inquiry.
-3. Keep it to 2-3 sentences.
-4. Write in plain text only. Do NOT use markdown formatting (such as **, _, or #), bullet points, or special characters.
-5. Conclude with:
-Thanks & Regards,
-{team_name}
-
-Write ONLY the final email message text. No preamble, no quotes, no explanation, no bulleted instructions.
-"""
+        from app.prompt_service import format_prompt
+        prompt = format_prompt(
+            client_id=client_id,
+            prompt_key="escalation_reply_prompt",
+            customer_name=customer_name,
+            ticket_id=ticket_id or "N/A",
+            team_name=team_name
+        )
 
     # ==========================================
     # 💬 General Reply
     # ==========================================
     else:
-
-        status_guardrails = ""
-        if is_status_inquiry:
-            status_guardrails = """- CRITICAL STATUS INQUIRY CONSTRAINTS:
-  * State the current ticket/order status accurately as provided in Context.
-  * NEVER invent, estimate, or promise timelines, ETAs, turnaround hours, or days (e.g. DO NOT say 'within 2 hours', 'within 24 hours', or 'within 48 hours').
-  * NEVER invent fictional diagnostic procedures, manufacturing logs, internal QA teams, or technician assignments.
-  * Address any specific notes, questions, or updates the customer mentioned, and assure them their notes are logged for the support team.
-  * Reassure the customer that the support team is actively reviewing the case."""
+        team_name = department_name or "Support Team"
+        if company_name:
+            team_name = f"{company_name} {team_name}"
 
         prompt = f"""
-Customer Name:
-{customer_name}
-
-{history_block}
-
-Context:
-{context}
-
 Customer Query:
 {query}
 
-Instructions:
-- Be professional
-- Be concise
-- Do NOT hallucinate
-- Write in plain text only. Do NOT use markdown formatting (such as **, _, or #), bullet points, or special characters.
-- NEVER claim or state that a ticket has been created, and NEVER output placeholder ticket references like "[Insert Ticket ID]" or "[Ticket Number]" or "[Ticket ID]".
-- DO NOT append placeholder names like "[Your Name]" to the sign-off.
-{status_guardrails}
-- If previous conversation exists above, maintain continuity — do not repeat what was already addressed
-- If no answer available, say politely
-- End professionally
+Context Information:
+{context}
 
-Write the email reply.
+{history_block}
 
-Email Ending
+Requirements:
+- Answer the customer inquiry accurately using the context above.
+- Follow the brand persona and tone.
+- Conclude with:
 Thanks & Regards,
-Department: {department_name or 'derive from agent_type'}
-Company: {company_name or 'derive from context/email'}
+{team_name}
 """
 
     try:
@@ -242,31 +208,22 @@ def generate_issue_resolved_reply(
 
     ticket_mention = f" regarding ticket #{ticket_id}" if ticket_id else ""
 
-    prompt = f"""Write a short, professional, and courteous email response to {customer_name}.
-The customer sent an email stating that their issue{ticket_mention} has been resolved / is working fine.
-
-Customer Query:
-{query}
-
-Requirements:
-1. Greet: Hi {customer_name},
-2. Express that you are glad to hear everything is sorted out and working properly.
-3. Let them know they are welcome to reach back out anytime if they need any further assistance.
-4. Keep it concise (2-3 sentences total).
-5. Tone: {response_tone}
-6. Write in plain text only. Do NOT use markdown formatting (such as **, _, or #), bullet points, or special characters.
-7. Conclude with:
-Thanks & Regards,
-{team_name}
-
-Write ONLY the final email text. No explanation, no quotes.
-"""
+    from app.prompt_service import format_prompt
+    prompt = format_prompt(
+        client_id=client_id,
+        prompt_key="issue_resolved_reply_prompt",
+        customer_name=customer_name,
+        ticket_mention=ticket_mention,
+        query=query,
+        team_name=team_name,
+        response_tone=response_tone
+    )
     try:
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "generate_reply_llm"),
             caller="generate_issue_resolved_reply",
             messages=[
-                {"role": "system", "content": "You are a courteous customer support assistant. Write concise, warm emails."},
+                {"role": "system", "content": "You are a courteous customer support assistant. Write concise, warm emails in the customer's language."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2,
@@ -314,30 +271,20 @@ def generate_off_topic_reply(
     if company_name:
         team_name = f"{company_name} {team_name}"
 
-    prompt = f"""Write a polite, professional customer support email to {customer_name}.
-The customer sent an email that appears to be incomplete, gibberish, or outside the scope of customer support:
-
-Customer Email:
-{query}
-
-Requirements:
-1. Greet: Hi {customer_name},
-2. Politely mention that we received their email, but we were unable to identify a clear support request or inquiry from the message.
-3. Invite them to reply with specific details or order/account information if they require assistance with our products or services.
-4. Keep it concise, respectful, and helpful (2-3 sentences max).
-5. Write in plain text only. Do NOT use markdown formatting (such as **, _, or #), bullet points, or special characters.
-6. Conclude with:
-Thanks & Regards,
-{team_name}
-
-Write ONLY the final email text. No explanation, no quotes.
-"""
+    from app.prompt_service import format_prompt
+    prompt = format_prompt(
+        client_id=client_id,
+        prompt_key="off_topic_reply_prompt",
+        customer_name=customer_name,
+        team_name=team_name
+    )
+    prompt = f"Customer Query:\n{query}\n\nTask:\n{prompt}"
     try:
         res = client.chat.completions.create(
             model=resolve_model(current_client_id.get(), "generate_reply_llm"),
             caller="generate_ticket_status_reply",
             messages=[
-                {"role": "system", "content": "You are a professional customer support assistant. Write concise, polite boundary-setting emails."},
+                {"role": "system", "content": "You are a professional customer support assistant. Write concise, polite boundary-setting emails in the customer's language."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.2,

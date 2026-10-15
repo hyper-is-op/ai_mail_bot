@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  X,
   Sparkles,
   Lock,
   RefreshCw,
@@ -8,6 +7,7 @@ import {
   CheckCircle,
   XCircle,
 } from 'lucide-react';
+import { BaseModal } from '@/components/common';
 import { ConnectorFormData, OAuthTestResult, CONTEXT_VARS } from './types';
 
 interface ConnectorEditorModalProps {
@@ -49,29 +49,21 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm">
-      <div className="bg-card w-full max-w-3xl max-h-[90vh] flex flex-col rounded-3xl border border-zinc-200 dark:border-white/10 shadow-2xl overflow-hidden my-auto animate-in fade-in zoom-in-95 duration-200">
-        <div className="p-6 pb-4 border-b border-zinc-200 dark:border-white/10 flex justify-between items-center shrink-0">
-          <div>
-            <h3 className="text-xl font-bold">
-              {editingId ? 'Update Connector Configuration' : 'Create New Connector'}
-            </h3>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {editingId
-                ? 'Submitting an update creates a pending version. Active live connections remain uninterrupted.'
-                : 'Configure a target CRM webhook endpoint with variable substitution.'}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="p-2 rounded-xl hover:bg-zinc-100 dark:hover:bg-white/5 text-muted-foreground"
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        <form onSubmit={(e) => onSubmit(e, 'pending_approval')} className="flex flex-col flex-1 min-h-0 overflow-hidden">
+    <BaseModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={!submitting}
+      closeOnEscape={!submitting}
+      maxWidth="max-w-3xl"
+      title={editingId ? 'Update Connector Configuration' : 'Create New Connector'}
+      subtitle={
+        editingId
+          ? 'Submitting an update creates a pending version. Active live connections remain uninterrupted.'
+          : 'Configure a target CRM webhook endpoint with variable substitution.'
+      }
+      bodyClassName="flex flex-col min-h-0 p-0"
+    >
+      <form onSubmit={(e) => onSubmit(e, 'pending_approval')} className="flex flex-col flex-1 min-h-0 overflow-hidden">
           <div className="p-6 overflow-y-auto space-y-4 text-xs flex-1 scrollbar-thin">
             {/* Quick Presets Bar */}
             <div className="p-3 bg-zinc-50 dark:bg-white/[0.02] border border-zinc-200 dark:border-white/5 rounded-xl space-y-2">
@@ -575,11 +567,11 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
           </div>
 
           {/* Sticky Footer */}
-          <div className="p-4 sm:px-6 border-t border-zinc-200 dark:border-white/10 flex justify-end items-center gap-3 bg-card shrink-0">
+          <div className="p-4 sm:px-6 border-t border-border flex justify-end items-center gap-2.5 bg-card/80 shrink-0">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2.5 rounded-xl border border-zinc-200 dark:border-white/10 hover:bg-zinc-100 dark:hover:bg-white/5 font-semibold transition-all text-xs cursor-pointer"
+              className="px-4 py-2 rounded-lg border border-border text-foreground/80 hover:text-foreground bg-secondary hover:bg-secondary/80 font-semibold transition-all text-xs cursor-pointer"
             >
               Cancel
             </button>
@@ -588,7 +580,7 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
               type="button"
               disabled={submitting}
               onClick={(e) => onSubmit(e, 'draft')}
-              className="px-4 py-2.5 rounded-xl border border-zinc-200 dark:border-white/10 hover:bg-zinc-100 dark:hover:bg-white/5 font-semibold transition-all text-xs cursor-pointer"
+              className="px-4 py-2 rounded-lg border border-border text-foreground/80 hover:text-foreground bg-secondary hover:bg-secondary/80 font-semibold transition-all text-xs cursor-pointer disabled:opacity-50"
             >
               Save as Draft
             </button>
@@ -596,15 +588,14 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
             <button
               type="submit"
               disabled={submitting}
-              className="px-6 py-2.5 rounded-xl bg-primary text-primary-foreground font-semibold hover:bg-primary/90 transition-all flex items-center gap-2 shadow-sm text-xs cursor-pointer"
+              className="px-5 py-2 rounded-lg bg-primary text-primary-foreground font-semibold hover:bg-primary/90 transition-all flex items-center gap-2 shadow-sm text-xs cursor-pointer disabled:opacity-50"
             >
-              {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
-              {editingId ? 'Submit Version for Approval' : 'Submit for Approval'}
+              {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              <span>{editingId ? 'Submit Version for Approval' : 'Submit for Approval'}</span>
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </BaseModal>
   );
 };
 

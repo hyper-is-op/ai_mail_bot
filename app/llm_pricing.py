@@ -56,6 +56,7 @@ PROVIDER_MODEL_PRICING = {
     "qwen-2.5-72b": (0.40, 0.40),
     "qwen/qwen3-32b": (0.20, 0.20),
     "qwen/qwen3.6-27b": (0.18, 0.18),
+    "qwen/qwen3.8-27b": (0.20, 0.20),
 }
 
 DEFAULT_PROVIDER_PRICING = {
@@ -118,17 +119,34 @@ def log_llm_metrics_db(
         from app.db import get_db_ctx
         with get_db_ctx() as db:
             with db.cursor() as cursor:
+                # Fetch snapshot cost_multiplier for client
+                multiplier = 1.0
+                try:
+                    cursor.execute("SELECT cost_multiplier FROM email_accounts WHERE client_id = %s LIMIT 1", (client_id,))
+                    row = cursor.fetchone()
+                    if row and row[0] is not None:
+                        multiplier = float(row[0])
+                except Exception:
+                    multiplier = 1.0
+
+                billed_cost = round(cost * multiplier, 6)
+
                 try:
                     cursor.execute("""
-                        INSERT INTO llm_logs (client_id, provider, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function, email_log_id, thread_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (client_id, provider_clean, model_name, prompt_tokens, completion_tokens, cost, int(latency_ms), caller_function, email_log_id, thread_id))
+                        INSERT INTO llm_logs (client_id, provider, model_name, prompt_tokens, completion_tokens, cost, billed_cost, latency_ms, caller_function, email_log_id, thread_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """, (client_id, provider_clean, model_name, prompt_tokens, completion_tokens, cost, billed_cost, int(latency_ms), caller_function, email_log_id, thread_id))
                 except Exception:
-                    # Fallback for un-migrated tables
-                    cursor.execute("""
-                        INSERT INTO llm_logs (client_id, provider, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (client_id, provider_clean, model_name, prompt_tokens, completion_tokens, cost, int(latency_ms), caller_function))
+                    try:
+                        cursor.execute("""
+                            INSERT INTO llm_logs (client_id, provider, model_name, prompt_tokens, completion_tokens, cost, billed_cost, latency_ms, caller_function)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (client_id, provider_clean, model_name, prompt_tokens, completion_tokens, cost, billed_cost, int(latency_ms), caller_function))
+                    except Exception:
+                        cursor.execute("""
+                            INSERT INTO llm_logs (client_id, provider, model_name, prompt_tokens, completion_tokens, cost, latency_ms, caller_function)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (client_id, provider_clean, model_name, prompt_tokens, completion_tokens, cost, int(latency_ms), caller_function))
             db.commit()
     except Exception as e:
         logger.warning(f"⚠️ Failed to write LLM telemetry log to database: {e}")

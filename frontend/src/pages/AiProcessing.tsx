@@ -1,7 +1,5 @@
-import { useState, useEffect, useMemo } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useState, useEffect } from 'react';
 import { 
-  Loader2, 
   Terminal, 
   Database, 
   Cpu, 
@@ -14,7 +12,6 @@ import {
   Search,
   Copy,
   Check,
-  X,
   Send,
   Ticket,
   Mail,
@@ -25,16 +22,57 @@ import {
 import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 import EmailBodyWithDisclaimer from '@/components/EmailBodyWithDisclaimer';
+import { ReferenceBadge } from '@/components/common/ReferenceBadge';
+import { TableSkeleton, MetricCardsSkeleton } from '@/components/common/Skeleton';
+import { Pagination } from '@/components/common/Pagination';
+import { BaseDrawer } from '@/components/common/BaseDrawer';
+
+interface AiLogRecord {
+  id: number | string;
+  mailId?: string;
+  sender: string;
+  subject: string;
+  preview: string;
+  reply?: string;
+  confidence?: string;
+  status: string;
+  category: string;
+  time: string;
+  date_str: string;
+  raw_status: string;
+  score: number;
+  rag_id?: string | null;
+  sentiment?: string;
+  priority?: string;
+  execution_steps?: string[];
+  summary?: string;
+  body_html?: string | null;
+  client_id?: string | null;
+  thread_id?: string | null;
+  intent?: string | null;
+}
 
 export default function AiProcessing() {
-  const [logs, setLogs] = useState<any[]>([]);
-  const [selectedLog, setSelectedLog] = useState<any>(null);
+  const [logs, setLogs] = useState<AiLogRecord[]>([]);
+  const [selectedLog, setSelectedLog] = useState<AiLogRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeFilter, setActiveFilter] = useState<'all' | 'sent' | 'ticket' | 'failed'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [drawerTab, setDrawerTab] = useState<'pipeline' | 'payload' | 'json'>('pipeline');
   
+  // Pagination & Server-side Metrics
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(25);
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [metrics, setMetrics] = useState({
+    total: 0,
+    auto_sent: 0,
+    ticketed: 0,
+    avg_score: 0,
+  });
+
   const user = JSON.parse(localStorage.getItem('user') || '{}');
   const [selectedClientId, setSelectedClientId] = useState(user?.role === 'admin' ? 'ALL' : (user?.client_id || ''));
   const [clients, setClients] = useState<any[]>([]);
@@ -47,18 +85,39 @@ export default function AiProcessing() {
     }
   }, []);
 
-  useEffect(() => {
-    if (selectedClientId) {
-      fetchLogs(selectedClientId);
-    }
-  }, [selectedClientId]);
-
-  const fetchLogs = async (cid = selectedClientId) => {
+  const fetchLogs = async (
+    cid = selectedClientId,
+    pageNumber = page,
+    size = pageSize,
+    search = searchQuery,
+    filter = activeFilter
+  ) => {
     if (!cid) return;
     setLoading(true);
     try {
-      const data = await api.getEmails(cid);
-      setLogs(data || []);
+      const data = await api.getEmails(cid, {
+        page: pageNumber,
+        page_size: size,
+        search: search.trim() || undefined,
+        status: filter !== 'all' ? filter : undefined,
+      });
+
+      if (data && typeof data === 'object' && 'items' in data) {
+        setLogs(data.items || []);
+        setTotalCount(data.total || 0);
+        setTotalPages(data.total_pages || 1);
+        if (data.metrics) {
+          setMetrics(data.metrics);
+        }
+      } else if (Array.isArray(data)) {
+        setLogs(data);
+        setTotalCount(data.length);
+        setTotalPages(Math.max(1, Math.ceil(data.length / size)));
+      } else {
+        setLogs([]);
+        setTotalCount(0);
+        setTotalPages(1);
+      }
     } catch (err) {
       console.error("Failed to fetch AI processing logs:", err);
     } finally {
@@ -66,40 +125,24 @@ export default function AiProcessing() {
     }
   };
 
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchLogs(selectedClientId, page, pageSize, searchQuery, activeFilter);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [selectedClientId, page, pageSize, searchQuery, activeFilter]);
+
   const copyToClipboard = (text: string, id: string) => {
     navigator.clipboard.writeText(text);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
   };
 
-  // Filter & Search Logic
-  const filteredLogs = useMemo(() => {
-    return logs.filter(log => {
-      // Filter tab
-      if (activeFilter === 'sent' && log.raw_status !== 'sent') return false;
-      if (activeFilter === 'ticket' && log.raw_status !== 'ticket_created_and_sent') return false;
-      if (activeFilter === 'failed' && !(log.raw_status && log.raw_status.includes('failed'))) return false;
-
-      // Search query
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchSender = (log.sender || '').toLowerCase().includes(q);
-        const matchSubject = (log.subject || '').toLowerCase().includes(q);
-        const matchCategory = (log.category || '').toLowerCase().includes(q);
-        const matchPreview = (log.preview || '').toLowerCase().includes(q);
-        if (!matchSender && !matchSubject && !matchCategory && !matchPreview) return false;
-      }
-      return true;
-    });
-  }, [logs, activeFilter, searchQuery]);
-
   // Aggregated Telemetry
-  const totalLogs = logs.length;
-  const autoRepliedCount = logs.filter(l => l.raw_status === 'sent').length;
-  const ticketedCount = logs.filter(l => l.raw_status === 'ticket_created_and_sent').length;
-  const avgScore = totalLogs > 0 
-    ? Math.round(logs.reduce((acc, curr) => acc + (curr.score || 0), 0) / totalLogs) 
-    : 0;
+  const totalLogs = metrics.total;
+  const autoRepliedCount = metrics.auto_sent;
+  const ticketedCount = metrics.ticketed;
+  const avgScore = metrics.avg_score;
 
   return (
     <div className="space-y-6">
@@ -117,16 +160,16 @@ export default function AiProcessing() {
 
         <div className="flex items-center gap-3 self-start sm:self-auto">
           {user?.role === 'admin' && clients.length > 0 && (
-            <div className="flex items-center gap-2 bg-white/5 border border-white/10 rounded-xl px-3 py-1.5">
+            <div className="flex items-center gap-2 win11-card rounded-xl px-3 py-1.5 shadow-2xs">
               <span className="text-xs text-muted-foreground font-medium">Client:</span>
               <select
                 value={selectedClientId}
                 onChange={(e) => setSelectedClientId(e.target.value)}
                 className="bg-transparent text-xs text-foreground focus:outline-none cursor-pointer"
               >
-                <option value="ALL" className="bg-zinc-900 text-foreground">ALL</option>
+                <option value="ALL" className="bg-card text-foreground">ALL</option>
                 {clients.map((c) => (
-                  <option key={c.client_id} value={c.client_id} className="bg-zinc-900 text-foreground">
+                  <option key={c.client_id} value={c.client_id} className="bg-card text-foreground">
                     {c.client_id} ({c.email})
                   </option>
                 ))}
@@ -135,7 +178,7 @@ export default function AiProcessing() {
           )}
           <button 
             onClick={() => fetchLogs(selectedClientId)} 
-            className="flex items-center gap-2 px-3.5 py-2 bg-white/5 hover:bg-white/10 text-foreground rounded-xl border border-white/10 transition-colors text-xs font-semibold"
+            className="flex items-center gap-2 px-3.5 py-2 win11-card hover:bg-secondary text-foreground rounded-xl transition-colors text-xs font-semibold shadow-2xs cursor-pointer active:scale-[0.98]"
           >
             <RefreshCw className={cn("w-3.5 h-3.5", loading && "animate-spin")} />
             Sync Logs
@@ -144,47 +187,51 @@ export default function AiProcessing() {
       </div>
 
       {/* KPI Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sm:p-5">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-xs font-semibold uppercase tracking-wider">Total Traces</span>
-            <Mail className="w-4 h-4 text-primary" />
+      {loading && logs.length === 0 ? (
+        <MetricCardsSkeleton count={4} className="grid grid-cols-2 md:grid-cols-4 gap-4" />
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <div className="win11-card rounded-2xl p-4 sm:p-5 shadow-2xs">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span className="text-xs font-semibold uppercase tracking-wider">Total Traces</span>
+              <Mail className="w-4 h-4 text-primary" />
+            </div>
+            <h3 className="text-2xl sm:text-3xl font-bold text-foreground mt-2">{totalLogs}</h3>
+            <p className="text-[11px] text-muted-foreground mt-1">Processed email requests</p>
           </div>
-          <h3 className="text-2xl sm:text-3xl font-black text-foreground mt-2">{totalLogs}</h3>
-          <p className="text-[11px] text-muted-foreground mt-1">Processed email requests</p>
-        </div>
 
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sm:p-5">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-xs font-semibold uppercase tracking-wider">Avg Quality Score</span>
-            <Award className="w-4 h-4 text-emerald-400" />
+          <div className="win11-card rounded-2xl p-4 sm:p-5 shadow-2xs">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span className="text-xs font-semibold uppercase tracking-wider">Avg Quality Score</span>
+              <Award className="w-4 h-4 text-emerald-400" />
+            </div>
+            <h3 className="text-2xl sm:text-3xl font-bold text-emerald-500 dark:text-emerald-400 mt-2">{avgScore}%</h3>
+            <p className="text-[11px] text-muted-foreground mt-1">Confidence rating average</p>
           </div>
-          <h3 className="text-2xl sm:text-3xl font-black text-emerald-400 mt-2">{avgScore}%</h3>
-          <p className="text-[11px] text-muted-foreground mt-1">Confidence rating average</p>
-        </div>
 
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sm:p-5">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-xs font-semibold uppercase tracking-wider">Auto-Sent</span>
-            <Send className="w-4 h-4 text-blue-400" />
+          <div className="win11-card rounded-2xl p-4 sm:p-5 shadow-2xs">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span className="text-xs font-semibold uppercase tracking-wider">Auto-Sent</span>
+              <Send className="w-4 h-4 text-blue-400" />
+            </div>
+            <h3 className="text-2xl sm:text-3xl font-bold text-blue-500 dark:text-blue-400 mt-2">{autoRepliedCount}</h3>
+            <p className="text-[11px] text-muted-foreground mt-1">Dispatched above threshold</p>
           </div>
-          <h3 className="text-2xl sm:text-3xl font-black text-blue-400 mt-2">{autoRepliedCount}</h3>
-          <p className="text-[11px] text-muted-foreground mt-1">Dispatched above threshold</p>
-        </div>
 
-        <div className="bg-white/5 border border-white/10 rounded-2xl p-4 sm:p-5">
-          <div className="flex items-center justify-between text-muted-foreground">
-            <span className="text-xs font-semibold uppercase tracking-wider">Triaged Tickets</span>
-            <Ticket className="w-4 h-4 text-purple-400" />
+          <div className="win11-card rounded-2xl p-4 sm:p-5 shadow-2xs">
+            <div className="flex items-center justify-between text-muted-foreground">
+              <span className="text-xs font-semibold uppercase tracking-wider">Triaged Tickets</span>
+              <Ticket className="w-4 h-4 text-purple-400" />
+            </div>
+            <h3 className="text-2xl sm:text-3xl font-bold text-purple-500 dark:text-purple-400 mt-2">{ticketedCount}</h3>
+            <p className="text-[11px] text-muted-foreground mt-1">Escalated to ticket system</p>
           </div>
-          <h3 className="text-2xl sm:text-3xl font-black text-purple-400 mt-2">{ticketedCount}</h3>
-          <p className="text-[11px] text-muted-foreground mt-1">Escalated to ticket system</p>
         </div>
-      </div>
+      )}
 
       {/* Filter & Search Bar */}
       <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
-        <div className="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/10">
+        <div className="flex items-center gap-1 win11-card p-1 rounded-xl shadow-2xs">
           {[
             { key: 'all', label: 'All' },
             { key: 'sent', label: 'Auto-Replied' },
@@ -193,12 +240,15 @@ export default function AiProcessing() {
           ].map((f) => (
             <button
               key={f.key}
-              onClick={() => setActiveFilter(f.key as any)}
+              onClick={() => {
+                setActiveFilter(f.key as any);
+                setPage(1);
+              }}
               className={cn(
-                "px-3 py-1.5 rounded-lg text-xs font-semibold transition-all",
+                "px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer",
                 activeFilter === f.key 
                   ? "bg-primary text-primary-foreground shadow-sm" 
-                  : "text-muted-foreground hover:text-foreground hover:bg-white/5"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
               )}
             >
               {f.label}
@@ -206,42 +256,67 @@ export default function AiProcessing() {
           ))}
         </div>
 
-        <div className="relative min-w-[260px]">
+        <div className="relative min-w-[280px]">
           <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
           <input
             type="text"
-            placeholder="Search sender, subject, intent..."
+            placeholder="Search ID, thread, sender, subject, intent..."
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+            onChange={(e) => {
+              setSearchQuery(e.target.value);
+              setPage(1);
+            }}
+            className="w-full win11-card rounded-xl pl-9 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary shadow-2xs"
           />
         </div>
       </div>
 
       {/* Logs Table */}
-      <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
-        {loading ? (
-          <div className="py-20 flex flex-col items-center justify-center space-y-3">
-            <Loader2 className="w-8 h-8 text-primary animate-spin" />
-            <p className="text-xs text-muted-foreground font-medium">Loading AI processing traces...</p>
-          </div>
-        ) : filteredLogs.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-white/10 bg-white/5 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
-                  <th className="py-3.5 px-5">Timestamp</th>
-                  <th className="py-3.5 px-5">Sender</th>
-                  <th className="py-3.5 px-5">Subject / Query</th>
-                  <th className="py-3.5 px-5 text-center">Sentiment</th>
-                  <th className="py-3.5 px-5 text-center">Score</th>
-                  <th className="py-3.5 px-5 text-center">Status</th>
-                  <th className="py-3.5 px-5 text-right">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5 text-xs text-zinc-300">
-                {filteredLogs.map(log => (
+      <div className="win11-card rounded-2xl overflow-hidden shadow-2xs relative">
+        {loading && logs.length > 0 && (
+          <div className="absolute top-0 left-0 right-0 h-0.5 bg-primary/40 animate-pulse z-10" />
+        )}
+        <div className="overflow-x-auto">
+          <table className="w-full text-left border-collapse">
+            <thead>
+              <tr className="border-b border-border bg-card/60 text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                <th className="py-3.5 px-5">Mail ID</th>
+                <th className="py-3.5 px-5">Thread ID</th>
+                <th className="py-3.5 px-5">Timestamp</th>
+                <th className="py-3.5 px-5">Sender</th>
+                <th className="py-3.5 px-5">Subject / Query</th>
+                <th className="py-3.5 px-5 text-center">Sentiment</th>
+                <th className="py-3.5 px-5 text-center">Score</th>
+                <th className="py-3.5 px-5 text-center">Status</th>
+                <th className="py-3.5 px-5 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody className={cn(
+              "divide-y divide-border text-xs text-foreground/90 transition-opacity",
+              loading && logs.length > 0 && "opacity-50 pointer-events-none"
+            )}>
+              {loading && logs.length === 0 ? (
+                <TableSkeleton
+                  rows={pageSize > 25 ? 12 : 8}
+                  columns={9}
+                  alignments={['left', 'left', 'left', 'left', 'left', 'center', 'center', 'center', 'right']}
+                  cellTypes={['badge', 'badge', 'text', 'text', 'text', 'pill', 'pill', 'pill', 'button']}
+                  columnWidths={['w-14', 'w-24', 'w-24', 'w-32', 'w-48', 'w-16', 'w-12', 'w-20', 'w-16']}
+                />
+              ) : logs.length > 0 ? (
+                logs.map((log: any) => (
                   <tr key={log.id} className="hover:bg-white/5 transition-colors">
+                    {/* Mail ID */}
+                    <td className="py-3.5 px-5 whitespace-nowrap">
+                      <ReferenceBadge id={log.id} type="message" label="#" truncateLength={0} />
+                    </td>
+
+                    {/* Thread ID */}
+                    <td className="py-3.5 px-5 whitespace-nowrap">
+                      <ReferenceBadge id={log.thread_id} type="thread" truncateLength={10} />
+                    </td>
+
+                    {/* Timestamp */}
                     <td className="py-3.5 px-5 font-mono text-[11px] text-muted-foreground whitespace-nowrap">
                       {log.date_str || ''} {log.time || ''}
                     </td>
@@ -305,70 +380,65 @@ export default function AiProcessing() {
                           setSelectedLog(log);
                           setDrawerTab('pipeline');
                         }}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 hover:border-primary/40 rounded-lg text-xs font-semibold transition-all"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-primary/10 hover:bg-primary/20 text-primary border border-primary/20 hover:border-primary/40 rounded-lg text-xs font-semibold transition-all cursor-pointer"
                       >
                         <Eye className="w-3.5 h-3.5" />
                         Inspect
                       </button>
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="py-16 flex flex-col items-center justify-center text-center space-y-3">
-            <Terminal className="w-10 h-10 text-muted-foreground opacity-50" />
-            <h4 className="text-sm font-semibold text-foreground">No Traces Found</h4>
-            <p className="text-xs text-muted-foreground max-w-sm">
-              No AI execution traces match your search or filter criteria.
-            </p>
-          </div>
-        )}
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={9} className="py-16 text-center">
+                    <div className="flex flex-col items-center justify-center space-y-3">
+                      <Terminal className="w-10 h-10 text-muted-foreground opacity-50" />
+                      <h4 className="text-sm font-semibold text-foreground">No Traces Found</h4>
+                      <p className="text-xs text-muted-foreground max-w-sm">
+                        No AI execution traces match your search or filter criteria.
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Standardized Pagination */}
+        <Pagination
+          page={page}
+          pageSize={pageSize}
+          totalCount={totalCount}
+          totalPages={totalPages}
+          onPageChange={setPage}
+          onPageSizeChange={setPageSize}
+          loading={loading}
+        />
       </div>
 
       {/* Trace Inspection Side Drawer */}
-      <AnimatePresence>
+      <BaseDrawer
+        isOpen={Boolean(selectedLog)}
+        onClose={() => setSelectedLog(null)}
+        icon={<Cpu className="w-5 h-5" />}
+        title={
+          selectedLog ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-base font-bold text-foreground">Trace</h3>
+              <ReferenceBadge id={selectedLog.id} type="message" label="#" truncateLength={0} />
+              {selectedLog.thread_id && (
+                <ReferenceBadge id={selectedLog.thread_id} type="thread" truncateLength={12} />
+              )}
+            </div>
+          ) : undefined
+        }
+        subtitle={selectedLog?.sender}
+      >
         {selectedLog && (
           <>
-            {/* Backdrop */}
-            <motion.div 
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 0.6 }}
-              exit={{ opacity: 0 }}
-              onClick={() => setSelectedLog(null)}
-              className="fixed inset-0 bg-black/60 dark:bg-black/80 z-40"
-            />
-
-            {/* Side Drawer */}
-            <motion.div
-              initial={{ x: "100%" }}
-              animate={{ x: 0 }}
-              exit={{ x: "100%" }}
-              transition={{ type: "spring", damping: 26, stiffness: 220 }}
-              className="fixed right-0 top-0 bottom-0 w-full max-w-[560px] bg-white dark:bg-zinc-950 border-l border-zinc-200 dark:border-white/10 shadow-2xl z-50 flex flex-col overflow-hidden"
-            >
-              {/* Drawer Header */}
-              <div className="p-5 border-b border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-white/5 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="p-2 bg-primary/10 text-primary rounded-xl border border-primary/20">
-                    <Cpu className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h3 className="text-base font-bold text-foreground">Execution Trace #{selectedLog.id}</h3>
-                    <p className="text-xs text-muted-foreground truncate max-w-[340px]">{selectedLog.sender}</p>
-                  </div>
-                </div>
-                <button 
-                  onClick={() => setSelectedLog(null)}
-                  className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-white/10 rounded-lg transition-colors"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              {/* Drawer Tabs */}
-              <div className="flex border-b border-zinc-200 dark:border-white/10 px-5 bg-zinc-100/70 dark:bg-black/30">
+            {/* Drawer Tabs */}
+            <div className="flex border-b border-border px-5 bg-card/60">
                 {[
                   { id: 'pipeline', label: 'Pipeline Steps' },
                   { id: 'payload', label: 'Input & Reply' },
@@ -395,10 +465,24 @@ export default function AiProcessing() {
                 {/* 1. PIPELINE TAB */}
                 {drawerTab === 'pipeline' && (
                   <div className="space-y-5">
-                    {/* Summary Card */}
-                    <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3.5 shadow-2xs">
-                        <span className="text-[10px] uppercase font-bold text-muted-foreground">Customer Sentiment</span>
+                    {/* Summary Card - 4 Columns */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-muted-foreground">Mail ID</span>
+                        <div className="mt-1">
+                          <ReferenceBadge id={selectedLog.id} type="message" label="#" truncateLength={0} />
+                        </div>
+                      </div>
+
+                      <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-muted-foreground">Thread ID</span>
+                        <div className="mt-1">
+                          <ReferenceBadge id={selectedLog.thread_id} type="thread" truncateLength={10} />
+                        </div>
+                      </div>
+
+                      <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-muted-foreground">Sentiment</span>
                         <div className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-foreground">
                           {selectedLog.sentiment === 'Angry' ? <Frown className="w-3.5 h-3.5 text-rose-500" /> :
                            selectedLog.sentiment === 'Happy' ? <Smile className="w-3.5 h-3.5 text-emerald-500" /> :
@@ -406,8 +490,9 @@ export default function AiProcessing() {
                           {selectedLog.sentiment || 'Neutral'}
                         </div>
                       </div>
-                      <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3.5 shadow-2xs">
-                        <span className="text-[10px] uppercase font-bold text-muted-foreground">Confidence Score</span>
+
+                      <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3 shadow-2xs">
+                        <span className="text-[10px] uppercase font-bold text-muted-foreground">Confidence</span>
                         <div className="text-sm font-bold text-primary mt-0.5">{selectedLog.score || 0}%</div>
                       </div>
                     </div>
@@ -423,7 +508,7 @@ export default function AiProcessing() {
                           <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />
                         </h5>
                         <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
-                          Parsed email payload from <span className="text-foreground font-medium">{selectedLog.sender}</span>. Subject: <span className="text-foreground font-medium">"{selectedLog.subject}"</span>.
+                          Parsed email payload from <span className="text-foreground font-medium">{selectedLog.sender}</span> (Mail <ReferenceBadge id={selectedLog.id} type="message" label="#" truncateLength={0} className="inline-flex text-[10px] py-0 px-1" />{selectedLog.thread_id ? <>, Thread <ReferenceBadge id={selectedLog.thread_id} type="thread" truncateLength={8} className="inline-flex text-[10px] py-0 px-1" /></> : null}). Subject: <span className="text-foreground font-medium">"{selectedLog.subject}"</span>.
                         </p>
                       </div>
 
@@ -513,6 +598,26 @@ export default function AiProcessing() {
                 {/* 2. PAYLOAD TAB */}
                 {drawerTab === 'payload' && (
                   <div className="space-y-4">
+                    {/* Metadata Strip */}
+                    <div className="bg-zinc-50 dark:bg-white/5 border border-zinc-200 dark:border-white/10 rounded-xl p-3.5 space-y-2 shadow-2xs text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground font-medium">Mail Log ID:</span>
+                        <ReferenceBadge id={selectedLog.id} type="message" label="#" truncateLength={0} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground font-medium">Thread ID:</span>
+                        <ReferenceBadge id={selectedLog.thread_id} type="thread" truncateLength={0} />
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground font-medium">Sender:</span>
+                        <span className="font-mono text-foreground font-medium truncate max-w-[280px]">{selectedLog.sender}</span>
+                      </div>
+                      <div className="flex items-center justify-between">
+                        <span className="text-muted-foreground font-medium">Subject:</span>
+                        <span className="text-foreground font-medium truncate max-w-[280px]">{selectedLog.subject}</span>
+                      </div>
+                    </div>
+
                     {/* Customer Query */}
                     <div>
                       <div className="flex items-center justify-between mb-1.5">
@@ -536,7 +641,7 @@ export default function AiProcessing() {
                         <span className="text-[11px] font-bold text-muted-foreground uppercase tracking-wider">AI Generated Response</span>
                         {selectedLog.reply && (
                           <button
-                            onClick={() => copyToClipboard(selectedLog.reply, 'reply')}
+                            onClick={() => copyToClipboard(selectedLog.reply || '', 'reply')}
                             className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
                           >
                             {copiedId === 'reply' ? <Check className="w-3 h-3 text-emerald-500" /> : <Copy className="w-3 h-3" />}
@@ -571,10 +676,9 @@ export default function AiProcessing() {
                 )}
 
               </div>
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
+            </>
+          )}
+        </BaseDrawer>
     </div>
   );
 }

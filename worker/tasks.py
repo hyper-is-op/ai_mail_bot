@@ -376,6 +376,7 @@ def _finalize_task_and_log(ctx: PipelineContext, task_id: str, cursor=None, db=N
                     in_reply_to=ctx.message_id,
                     message_id=ctx.message_id,
                     sender_name=ctx.sender_name,
+                    thread_id=ctx.thread_id,
                 )
                 logger.info(f"📝 Auto-created Pending Review draft in draft_emails for log_id {log_id}")
             except Exception as draft_err:
@@ -538,6 +539,24 @@ def process_email_task(self, data: Dict[str, Any]):
         except Exception as route_err:
             logger.warning(f"⚠️ Intent routing failed, using defaults: {route_err}")
             ctx.intent = "general_support"
+
+        # Early exit for marketing promotional blasts or off-topic emails without explicit support inquiry or ticket
+        if ctx.intent == "marketing_promotional" and not ticket_ids and not ctx.troubleshooting_step:
+            logger.info(f"🛑 [Client {client_id}] Inbound email classified as 'marketing_promotional' — dropping without automated ticket or reply")
+            ctx.summary = f"Automated marketing/promotional message ({ctx.subject}). Dropped without reply."
+            ctx.priority = "Low"
+            ctx.halt("no_action_needed", "Classified as marketing_promotional", "Intent_Drop:marketing_promotional")
+            _finalize_task_and_log(ctx, task_id=task_id)
+            return
+
+        if ctx.intent == "off_topic_nonsense" and not ticket_ids and not ctx.troubleshooting_step and not ctx.history:
+            # Standalone off-topic gibberish or empty opener with zero history or ticket reference
+            logger.info(f"🛑 [Client {client_id}] Inbound email classified as 'off_topic_nonsense' without history — dropping without ticket escalation")
+            ctx.summary = f"Off-topic greeting/nonsense with no support issue ({ctx.subject}). Dropped without reply."
+            ctx.priority = "Low"
+            ctx.halt("no_action_needed", "Classified as off_topic_nonsense", "Intent_Drop:off_topic_nonsense")
+            _finalize_task_and_log(ctx, task_id=task_id)
+            return
 
         # Load Conversation History from Redis (with SQL fallback and prior thread carryover)
         ctx.history = get_history(client_id, ctx.from_email, last_n=10, thread_id=ctx.thread_id)

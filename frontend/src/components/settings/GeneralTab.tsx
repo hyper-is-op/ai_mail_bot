@@ -9,7 +9,8 @@ import {
   Gauge, 
   UserCheck, 
   Sparkles, 
-  Save 
+  Save,
+  Calendar 
 } from 'lucide-react';
 import { AGENT_PERSONAS, TONE_OPTIONS, MasterBotStatus } from './types';
 
@@ -21,6 +22,8 @@ interface GeneralTabProps {
   setTone: (val: string) => void;
   agentType: string;
   setAgentType: (val: string) => void;
+  weekStartDay: string;
+  setWeekStartDay: (val: string) => void;
   masterBotStatus: MasterBotStatus;
   masterBotLoading: boolean;
   masterBotToggling: boolean;
@@ -39,6 +42,8 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({
   setTone,
   agentType,
   setAgentType,
+  weekStartDay,
+  setWeekStartDay,
   masterBotStatus,
   masterBotLoading,
   masterBotToggling,
@@ -249,6 +254,60 @@ export const GeneralTab: React.FC<GeneralTabProps> = ({
           <p className="text-[11px] text-muted-foreground leading-relaxed pt-1">
             When the LLM confidence score is <strong>≥ {threshold}%</strong>, the system executes automated SMTP delivery. If score falls below <strong>{threshold}%</strong>, the message is automatically escalated to the support desk as a ticket.
           </p>
+        </div>
+      </div>
+
+      {/* Card 1b: Week Start Configuration (Operational Rhythm) */}
+      <div className="glass-panel p-6 rounded-2xl border border-white/10 space-y-4">
+        <div className="flex items-center gap-2">
+          <div className="p-2 rounded-lg bg-blue-500/10 border border-blue-500/20 text-blue-400">
+            <Calendar className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="font-bold text-zinc-900 dark:text-white">Week Start Day</h3>
+            <p className="text-xs text-zinc-400">
+              Define the first day of the week used for &ldquo;This Week&rdquo; and &ldquo;Last Week&rdquo; operations metrics and reports.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
+          {[
+            {
+              id: 'monday',
+              name: 'Monday (ISO Standard)',
+              desc: 'Week runs Monday 00:00 through Sunday 23:59. Recommended for standard business and support operations.'
+            },
+            {
+              id: 'sunday',
+              name: 'Sunday (US Standard)',
+              desc: 'Week runs Sunday 00:00 through Saturday 23:59. Standard for North American enterprise reporting cadence.'
+            }
+          ].map((item) => {
+            const isSelected = (weekStartDay || 'monday').toLowerCase() === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setWeekStartDay(item.id)}
+                className={`relative p-4 rounded-xl border text-left transition-all flex flex-col justify-between gap-2.5 cursor-pointer ${
+                  isSelected
+                    ? 'bg-primary/10 border-primary text-foreground shadow-sm shadow-primary/10 ring-1 ring-primary'
+                    : 'bg-white/5 border-zinc-200 dark:border-white/10 hover:border-zinc-300 dark:hover:border-white/20 text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold text-foreground">{item.name}</span>
+                  {isSelected && (
+                    <CheckCircle2 className="w-4 h-4 text-primary shrink-0" />
+                  )}
+                </div>
+                <p className="text-[11px] text-muted-foreground leading-relaxed">
+                  {item.desc}
+                </p>
+              </button>
+            );
+          })}
         </div>
       </div>
 

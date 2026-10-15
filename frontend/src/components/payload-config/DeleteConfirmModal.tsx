@@ -1,5 +1,6 @@
 import React from 'react';
 import { Trash2, Loader2 } from 'lucide-react';
+import { BaseModal } from '@/components/common';
 import { ConnectorConfig } from './types';
 
 interface DeleteConfirmModalProps {
@@ -19,21 +20,65 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
   deleting,
   isAdmin,
 }) => {
-  if (!isOpen || !connector) return null;
+  if (!connector) return null;
+
+  const title =
+    connector.status === 'draft'
+      ? 'Delete Draft Connector'
+      : connector.status === 'pending_approval'
+      ? 'Delete Pending Approval Connector'
+      : isAdmin
+      ? 'Delete Disabled Connector'
+      : 'Request Connector Deletion';
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-card w-full max-w-md rounded-3xl border border-zinc-200 dark:border-white/10 shadow-2xl p-6 space-y-4">
-        <h3 className="text-lg font-bold text-rose-600 flex items-center gap-2">
-          <Trash2 className="w-5 h-5" />
-          {connector.status === 'draft'
-            ? 'Delete Draft Connector'
-            : connector.status === 'pending_approval'
-            ? 'Delete Pending Approval Connector'
-            : isAdmin
-            ? 'Delete Disabled Connector'
-            : 'Request Connector Deletion'}
-        </h3>
+    <BaseModal
+      isOpen={isOpen}
+      onClose={onClose}
+      closeOnBackdropClick={!deleting}
+      closeOnEscape={!deleting}
+      maxWidth="max-w-md"
+      icon={<Trash2 className="w-5 h-5" />}
+      iconContainerClassName="bg-rose-500/10 border-rose-500/20 text-rose-500"
+      title={title}
+      subtitle={
+        <span>
+          Target Connector <span className="font-semibold text-foreground font-mono">#{connector.id}</span> ({connector.trigger_type})
+        </span>
+      }
+      footer={
+        <>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={deleting}
+            className="px-4 py-2 text-xs font-semibold text-foreground/80 hover:text-foreground bg-secondary hover:bg-secondary/80 rounded-lg border border-border transition-colors cursor-pointer disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={deleting}
+            className="px-4 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg shadow-sm transition-all flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+          >
+            {deleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+            <span>
+              {connector.status === 'draft' || connector.status === 'pending_approval'
+                ? 'Confirm Delete'
+                : connector.status === 'live'
+                ? isAdmin
+                  ? 'Permanently Delete Live'
+                  : 'Submit Takedown & Delete'
+                : isAdmin
+                ? 'Permanently Delete'
+                : 'Submit Deletion Request'}
+            </span>
+          </button>
+        </>
+      }
+    >
+      <div className="p-5 space-y-4">
         <p className="text-xs text-muted-foreground leading-relaxed">
           {connector.status === 'draft' ? (
             <>
@@ -71,37 +116,10 @@ export const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
             </>
           )}
         </p>
-
-        <div className="flex justify-end gap-2 pt-2">
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={deleting}
-            className="px-4 py-2 rounded-xl border border-zinc-200 dark:border-white/10 text-xs font-semibold hover:bg-zinc-100 dark:hover:bg-white/5 transition-all cursor-pointer"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={deleting}
-            className="px-4 py-2 rounded-xl bg-rose-600 text-white text-xs font-semibold hover:bg-rose-500 transition-all flex items-center gap-1.5 shadow-sm cursor-pointer"
-          >
-            {deleting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-            {connector.status === 'draft' || connector.status === 'pending_approval'
-              ? 'Confirm Delete'
-              : connector.status === 'live'
-              ? isAdmin
-                ? 'Permanently Delete Live'
-                : 'Submit Takedown & Delete'
-              : isAdmin
-              ? 'Permanently Delete'
-              : 'Submit Deletion Request'}
-          </button>
-        </div>
       </div>
-    </div>
+    </BaseModal>
   );
 };
 
 export default DeleteConfirmModal;
+
