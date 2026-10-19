@@ -9,7 +9,6 @@ import {
   Terminal, 
   TrendingUp, 
   Layers,
-  Server,
   BarChart3,
   ShieldCheck,
   AlertTriangle,
@@ -49,11 +48,10 @@ export default function LlmAnalytics() {
 
   const [startDate, setStartDate] = useState<string>(getFirstDayOfCurrentMonth());
   const [endDate, setEndDate] = useState<string>(getLastDayOfCurrentMonth());
-  const [filterProvider, setFilterProvider] = useState('All');
   const [filterModel, setFilterModel] = useState('All');
   const [filterCaller, setFilterCaller] = useState('All');
 
-  const { selectedClientId } = useAppState();
+  const { selectedClientId, isAdmin } = useAppState();
 
   const fetchMetrics = async (
     isRefresh = false, 
@@ -107,8 +105,6 @@ export default function LlmAnalytics() {
     avg_latency: 0.0
   };
 
-  const providers = metrics?.providers || [];
-  const models = metrics?.models || [];
   const callers = metrics?.callers || [];
   const logs = metrics?.logs || [];
   const budget = metrics?.budget || { budget: null, spent: 0, percent: null, status: 'unlimited' };
@@ -133,41 +129,14 @@ export default function LlmAnalytics() {
 
   // Filter logs for rendering
   const filteredLogs = logs.filter((log: any) => {
-    const logProvider = (log.provider || 'groq').toLowerCase();
-    const matchesProvider = filterProvider === 'All' || logProvider === filterProvider.toLowerCase();
     const matchesModel = filterModel === 'All' || log.model_name === filterModel;
     const matchesCaller = filterCaller === 'All' || log.caller_function === filterCaller;
-    return matchesProvider && matchesModel && matchesCaller;
+    return matchesModel && matchesCaller;
   });
 
   // Unique lists for filters
-  const uniqueProviders = Array.from(new Set(logs.map((l: any) => (l.provider || 'groq').toLowerCase())));
   const uniqueModels = Array.from(new Set(logs.map((l: any) => l.model_name)));
   const uniqueCallers = Array.from(new Set(logs.map((l: any) => l.caller_function)));
-
-  const getProviderBadge = (prov: string) => {
-    const p = (prov || 'groq').toLowerCase();
-    switch (p) {
-      case 'openai':
-        return 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
-      case 'anthropic':
-      case 'claude':
-        return 'bg-amber-500/10 text-amber-400 border-amber-500/20';
-      case 'gemini':
-        return 'bg-blue-500/10 text-blue-400 border-blue-500/20';
-      case 'grok':
-        return 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
-      case 'deepseek':
-        return 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20';
-      case 'azure':
-        return 'bg-sky-500/10 text-sky-400 border-sky-500/20';
-      case 'ollama':
-        return 'bg-zinc-500/10 text-zinc-300 border-zinc-500/20';
-      case 'groq':
-      default:
-        return 'bg-orange-500/10 text-orange-400 border-orange-500/20';
-    }
-  };
 
   const maxDailyCost = Math.max(...dailyTrends.map((d: any) => d.cost), 0.001);
 
@@ -431,9 +400,11 @@ export default function LlmAnalytics() {
             <span className="text-xs px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-mono font-semibold border border-emerald-500/20">
               {tokenEconomics.total_conversations} threads tracked
             </span>
-            <span className="text-xs px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 font-mono font-semibold border border-amber-500/20">
-              Guardrail Tax: {Number(tokenEconomics.guardrail_overhead_ratio || 0).toFixed(1)}%
-            </span>
+            {isAdmin && (
+              <span className="text-xs px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 font-mono font-semibold border border-amber-500/20">
+                Guardrail Tax: {Number(tokenEconomics.guardrail_overhead_ratio || 0).toFixed(1)}%
+              </span>
+            )}
           </div>
         </div>
 
@@ -678,177 +649,107 @@ export default function LlmAnalytics() {
         )}
       </div>
 
-      {/* Guardrail Tax vs Productive Generation Split */}
-      <div className="win11-card p-5 rounded-lg shadow-2xs space-y-4">
-        <div className="flex justify-between items-center">
-          <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
-            <ShieldCheck className="w-4 h-4 text-emerald-500" /> Guardrail Tax vs. Productive Generation
-          </h3>
-          <span className="text-xs font-mono text-muted-foreground">
-            Guardrail Overhead: <strong className="text-foreground">{guardrail.guardrail_tax_percent}%</strong>
-          </span>
-        </div>
+      {/* Guardrail Tax vs Productive Generation Split (Admin Only) */}
+      {isAdmin && (
+        <div className="win11-card p-5 rounded-lg shadow-2xs space-y-4">
+          <div className="flex justify-between items-center">
+            <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-500" /> Guardrail Tax vs. Productive Generation
+            </h3>
+            <span className="text-xs font-mono text-muted-foreground">
+              Guardrail Overhead: <strong className="text-foreground">{guardrail.guardrail_tax_percent}%</strong>
+            </span>
+          </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="p-4 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500" /> Productive Operations
-              </span>
-              <span className="text-xs text-muted-foreground font-mono">{guardrail.productive_requests} calls</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="p-4 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" /> Productive Operations
+                </span>
+                <span className="text-xs text-muted-foreground font-mono">{guardrail.productive_requests} calls</span>
+              </div>
+              <p className="text-xl font-bold font-mono text-foreground">${guardrail.productive_cost.toFixed(5)}</p>
+              <p className="text-[11px] text-muted-foreground">
+                Reply draft generation, customer intent classification, and resolution flows.
+              </p>
             </div>
-            <p className="text-xl font-bold font-mono text-foreground">${guardrail.productive_cost.toFixed(5)}</p>
-            <p className="text-[11px] text-muted-foreground">
-              Reply draft generation, customer intent classification, and resolution flows.
-            </p>
-          </div>
 
-          <div className="p-4 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-2">
-            <div className="flex justify-between items-center">
-              <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-amber-500" /> Guardrail &amp; Evaluation Tax
-              </span>
-              <span className="text-xs text-muted-foreground font-mono">{guardrail.guardrail_requests} calls</span>
+            <div className="p-4 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.02] space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 flex items-center gap-1.5">
+                  <span className="w-2 h-2 rounded-full bg-amber-500" /> Guardrail &amp; Evaluation Tax
+                </span>
+                <span className="text-xs text-muted-foreground font-mono">{guardrail.guardrail_requests} calls</span>
+              </div>
+              <p className="text-xl font-bold font-mono text-foreground">${guardrail.guardrail_cost.toFixed(5)}</p>
+              <p className="text-[11px] text-muted-foreground">
+                Quality scoring, hallucination guards, thread summarization, and issue scanning.
+              </p>
             </div>
-            <p className="text-xl font-bold font-mono text-foreground">${guardrail.guardrail_cost.toFixed(5)}</p>
-            <p className="text-[11px] text-muted-foreground">
-              Quality scoring, hallucination guards, thread summarization, and issue scanning.
-            </p>
+          </div>
+
+          {/* Visual Split Bar */}
+          <div className="space-y-1">
+            <div className="w-full bg-black/[0.06] dark:bg-white/[0.08] h-3 rounded-full overflow-hidden flex">
+              <div 
+                className="bg-emerald-500 h-full transition-all" 
+                style={{ width: `${Math.max(0, 100 - guardrail.guardrail_tax_percent)}%` }} 
+                title={`Productive: ${(100 - guardrail.guardrail_tax_percent).toFixed(1)}%`}
+              />
+              <div 
+                className="bg-amber-500 h-full transition-all" 
+                style={{ width: `${guardrail.guardrail_tax_percent}%` }} 
+                title={`Guardrails: ${guardrail.guardrail_tax_percent}%`}
+              />
+            </div>
+            <div className="flex justify-between text-[11px] text-muted-foreground">
+              <span>Productive: {(100 - guardrail.guardrail_tax_percent).toFixed(1)}%</span>
+              <span>Guardrail Evaluation: {guardrail.guardrail_tax_percent}%</span>
+            </div>
           </div>
         </div>
+      )}
 
-        {/* Visual Split Bar */}
-        <div className="space-y-1">
-          <div className="w-full bg-black/[0.06] dark:bg-white/[0.08] h-3 rounded-full overflow-hidden flex">
-            <div 
-              className="bg-emerald-500 h-full transition-all" 
-              style={{ width: `${Math.max(0, 100 - guardrail.guardrail_tax_percent)}%` }} 
-              title={`Productive: ${(100 - guardrail.guardrail_tax_percent).toFixed(1)}%`}
-            />
-            <div 
-              className="bg-amber-500 h-full transition-all" 
-              style={{ width: `${guardrail.guardrail_tax_percent}%` }} 
-              title={`Guardrails: ${guardrail.guardrail_tax_percent}%`}
-            />
-          </div>
-          <div className="flex justify-between text-[11px] text-muted-foreground">
-            <span>Productive: {(100 - guardrail.guardrail_tax_percent).toFixed(1)}%</span>
-            <span>Guardrail Evaluation: {guardrail.guardrail_tax_percent}%</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Multi-Provider Breakdown */}
+      {/* Subsystem Node Volume & Costs */}
       <div className="win11-card p-5 rounded-lg shadow-2xs">
         <h3 className="text-base font-semibold text-foreground mb-4 flex items-center gap-2">
-          <Server className="w-4 h-4 text-primary" /> Multi-Provider Token &amp; Cost Breakdown
+          <Terminal className="w-4 h-4 text-accent" /> Subsystem Node Volume &amp; Costs
         </h3>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-          {providers.length > 0 ? (
-            providers.map((p: any) => (
-              <div key={p.provider} className="p-3.5 rounded-lg border border-black/[0.06] dark:border-white/[0.08] bg-black/[0.02] dark:bg-white/[0.03] space-y-2.5">
-                <div className="flex items-center justify-between">
-                  <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider", getProviderBadge(p.provider))}>
-                    {p.provider}
-                  </span>
-                  <span className="text-xs text-muted-foreground font-mono">{p.requests} calls</span>
-                </div>
-                <div className="space-y-0.5">
-                  <p className="text-lg font-bold font-mono text-foreground">${p.cost.toFixed(5)}</p>
-                  <p className="text-[11px] text-muted-foreground flex items-center justify-between">
-                    <span>Tokens: {(p.prompt_tokens + p.completion_tokens).toLocaleString()}</span>
-                    <span className="font-mono">{p.avg_latency.toFixed(0)} ms</span>
-                  </p>
-                </div>
-              </div>
-            ))
-          ) : (
-            <div className="col-span-full py-6 text-center text-muted-foreground text-xs">
-              No provider telemetry recorded for this time window.
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Model & Caller Tables */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <div className="win11-card p-5 rounded-lg shadow-2xs">
-          <h3 className="text-base font-semibold text-foreground mb-4 flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-primary" /> Model Volume &amp; Cost Breakdown
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead>
-                <tr className="border-b border-black/[0.06] dark:border-white/[0.08] text-muted-foreground font-semibold pb-2">
-                  <th className="pb-2.5 pr-2">Model Name</th>
-                  <th className="pb-2.5 text-center">Requests</th>
-                  <th className="pb-2.5 text-right">Prompt</th>
-                  <th className="pb-2.5 text-right">Completion</th>
-                  <th className="pb-2.5 text-right">Avg Latency</th>
-                  <th className="pb-2.5 text-right">Cost</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.05]">
-                {models.length > 0 ? (
-                  models.map((model: any) => (
-                    <tr key={model.model_name} className="hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors">
-                      <td className="py-2.5 font-mono text-foreground font-medium truncate max-w-[150px]">{model.model_name}</td>
-                      <td className="py-2.5 text-center text-foreground font-mono">{model.requests}</td>
-                      <td className="py-2.5 text-right font-mono text-muted-foreground">{model.prompt_tokens}</td>
-                      <td className="py-2.5 text-right font-mono text-muted-foreground">{model.completion_tokens}</td>
-                      <td className="py-2.5 text-right font-mono text-muted-foreground">{model.avg_latency.toFixed(0)} ms</td>
-                      <td className="py-2.5 text-right text-primary font-semibold font-mono">${model.cost.toFixed(5)}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={6} className="py-6 text-center text-muted-foreground text-xs">No model analytics recorded for this period.</td>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead>
+              <tr className="border-b border-black/[0.06] dark:border-white/[0.08] text-muted-foreground font-semibold pb-2">
+                <th className="pb-2.5">Subsystem Node</th>
+                <th className="pb-2.5 text-center">Calls</th>
+                <th className="pb-2.5 text-right">Prompt</th>
+                <th className="pb-2.5 text-right">Completion</th>
+                <th className="pb-2.5 text-right">Avg Latency</th>
+                <th className="pb-2.5 text-right">Cost</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.05]">
+              {callers.length > 0 ? (
+                callers.map((caller: any) => (
+                  <tr key={caller.caller_function} className="hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors">
+                    <td className="py-2.5 text-foreground font-medium flex items-center gap-1.5">
+                      <span className="w-1.5 h-1.5 rounded-full bg-primary" />
+                      {caller.caller_display}
+                    </td>
+                    <td className="py-2.5 text-center text-foreground font-mono">{caller.requests}</td>
+                    <td className="py-2.5 text-right font-mono text-muted-foreground">{caller.prompt_tokens}</td>
+                    <td className="py-2.5 text-right font-mono text-muted-foreground">{caller.completion_tokens}</td>
+                    <td className="py-2.5 text-right font-mono text-muted-foreground">{caller.avg_latency.toFixed(0)} ms</td>
+                    <td className="py-2.5 text-right text-primary font-semibold font-mono">${caller.cost.toFixed(5)}</td>
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <div className="win11-card p-5 rounded-lg shadow-2xs">
-          <h3 className="text-base font-semibold text-foreground mb-4 flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-accent" /> Subsystem Node Volume &amp; Costs
-          </h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead>
-                <tr className="border-b border-black/[0.06] dark:border-white/[0.08] text-muted-foreground font-semibold pb-2">
-                  <th className="pb-2.5">Subsystem Node</th>
-                  <th className="pb-2.5 text-center">Calls</th>
-                  <th className="pb-2.5 text-right">Prompt</th>
-                  <th className="pb-2.5 text-right">Completion</th>
-                  <th className="pb-2.5 text-right">Avg Latency</th>
-                  <th className="pb-2.5 text-right">Cost</th>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6} className="py-6 text-center text-muted-foreground text-xs">No caller logs tracked for this period.</td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-black/[0.04] dark:divide-white/[0.05]">
-                {callers.length > 0 ? (
-                  callers.map((caller: any) => (
-                    <tr key={caller.caller_function} className="hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors">
-                      <td className="py-2.5 text-foreground font-medium flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-primary" />
-                        {caller.caller_display}
-                      </td>
-                      <td className="py-2.5 text-center text-foreground font-mono">{caller.requests}</td>
-                      <td className="py-2.5 text-right font-mono text-muted-foreground">{caller.prompt_tokens}</td>
-                      <td className="py-2.5 text-right font-mono text-muted-foreground">{caller.completion_tokens}</td>
-                      <td className="py-2.5 text-right font-mono text-muted-foreground">{caller.avg_latency.toFixed(0)} ms</td>
-                      <td className="py-2.5 text-right text-primary font-semibold font-mono">${caller.cost.toFixed(5)}</td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={6} className="py-6 text-center text-muted-foreground text-xs">No caller logs tracked for this period.</td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+              )}
+            </tbody>
+          </table>
         </div>
       </div>
 
@@ -860,21 +761,6 @@ export default function LlmAnalytics() {
           </h3>
           
           <div className="flex gap-2.5 flex-wrap">
-            {uniqueProviders.length > 0 && (
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="text-muted-foreground">Provider:</span>
-                <select 
-                  value={filterProvider}
-                  onChange={(e) => setFilterProvider(e.target.value)}
-                  className="bg-white dark:bg-white/[0.05] border border-black/[0.08] dark:border-white/[0.08] rounded-md px-2 py-1 text-xs text-foreground focus:outline-none focus:border-b-2 focus:border-b-primary cursor-pointer"
-                >
-                  <option value="All" className="bg-card text-foreground">All Providers</option>
-                  {uniqueProviders.map((p: any) => (
-                    <option key={p} value={p} className="bg-card text-foreground">{p.toUpperCase()}</option>
-                  ))}
-                </select>
-              </div>
-            )}
 
             {uniqueModels.length > 0 && (
               <div className="flex items-center gap-1.5 text-xs">
@@ -922,7 +808,6 @@ export default function LlmAnalytics() {
             <thead>
               <tr className="border-b border-black/[0.06] dark:border-white/[0.08] text-muted-foreground font-semibold sticky top-0 bg-white/95 dark:bg-[#2C2C2C]/95 backdrop-blur pb-2.5">
                 <th className="pb-2.5">Timestamp</th>
-                <th className="pb-2.5">Provider</th>
                 <th className="pb-2.5">Subsystem Node</th>
                 <th className="pb-2.5">Attribution</th>
                 <th className="pb-2.5">Model</th>
@@ -937,11 +822,6 @@ export default function LlmAnalytics() {
                 filteredLogs.map((log: any) => (
                   <tr key={log.id} className="hover:bg-black/[0.03] dark:hover:bg-white/[0.04] transition-colors">
                     <td className="py-2.5 text-muted-foreground whitespace-nowrap">{log.created_at}</td>
-                    <td className="py-2.5">
-                      <span className={cn("text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider", getProviderBadge(log.provider))}>
-                        {log.provider || 'groq'}
-                      </span>
-                    </td>
                     <td className="py-2.5 font-medium text-foreground">
                       {log.caller_display}
                     </td>
@@ -968,7 +848,7 @@ export default function LlmAnalytics() {
                 ))
               ) : (
                 <tr>
-                  <td colSpan={9} className="py-6 text-center text-muted-foreground text-xs">No individual log records found matching filters for this period.</td>
+                  <td colSpan={8} className="py-6 text-center text-muted-foreground text-xs">No individual log records found matching filters for this period.</td>
                 </tr>
               )}
             </tbody>

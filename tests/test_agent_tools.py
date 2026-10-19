@@ -6,13 +6,12 @@ from app.pipeline.tools import SUPPORT_TOOLS, execute_tool_call
 class TestAgentTools(unittest.TestCase):
 
     def test_01_tool_schemas(self):
-        """SUPPORT_TOOLS must declare all 6 functional tools with valid JSON schemas"""
-        self.assertEqual(len(SUPPORT_TOOLS), 6)
+        """SUPPORT_TOOLS must declare 5 primary functional tools with valid JSON schemas"""
+        self.assertEqual(len(SUPPORT_TOOLS), 5)
         tool_names = [t["function"]["name"] for t in SUPPORT_TOOLS]
         self.assertIn("lookup_order_status", tool_names)
         self.assertIn("lookup_payment_status", tool_names)
         self.assertIn("lookup_ticket_status", tool_names)
-        self.assertIn("lookup_ticket_or_order_status", tool_names)
         self.assertIn("search_knowledge_base", tool_names)
         self.assertIn("escalate_and_create_ticket", tool_names)
 
@@ -111,6 +110,180 @@ class TestAgentTools(unittest.TestCase):
             self.assertEqual(decision, "auto_send")
             self.assertEqual(score, 70)
 
+    def test_07_concurrent_tool_execution(self):
+        """When the LLM emits multiple tool calls in a single turn, they must execute concurrently."""
+        from app.pipeline.agent import run_support_agent
+
+        ctx = PipelineContext.from_task_data("test-task-concurrent", {
+            "client_id": "CLI-TEST",
+            "from_email": "customer@example.com",
+            "subject": "Order and Policy Check",
+            "body": "Check my order 101 and search return policy"
+        })
+
+        mock_tool_call_1 = MagicMock()
+        mock_tool_call_1.id = "call_kb_1"
+        mock_tool_call_1.function.name = "search_knowledge_base"
+        mock_tool_call_1.function.arguments = '{"query": "return policy"}'
+
+        mock_tool_call_2 = MagicMock()
+        mock_tool_call_2.id = "call_order_2"
+        mock_tool_call_2.function.name = "lookup_order_status"
+        mock_tool_call_2.function.arguments = '{"order_id": "101"}'
+
+        mock_resp_round_1 = MagicMock()
+        mock_choice_1 = MagicMock()
+        mock_choice_1.message.content = None
+        mock_choice_1.message.tool_calls = [mock_tool_call_1, mock_tool_call_2]
+        mock_resp_round_1.choices = [mock_choice_1]
+
+        mock_resp_round_2 = MagicMock()
+        mock_choice_2 = MagicMock()
+        mock_choice_2.message.content = "Here is your order status and return policy details."
+        mock_choice_2.message.tool_calls = []
+        mock_resp_round_2.choices = [mock_choice_2]
+
+        with patch("app.pipeline.agent.client.chat.completions.create", side_effect=[mock_resp_round_1, mock_resp_round_2]), \
+             patch("app.pipeline.agent.execute_tool_call") as mock_exec:
+            mock_exec.side_effect = [
+                {"status": "success", "results_found": True, "content": "30-day return policy"},
+                {"status": "found", "order_id": "101", "details": {"status": "shipped"}}
+            ]
+            res_ctx = run_support_agent(ctx)
+            self.assertEqual(mock_exec.call_count, 2)
+            self.assertTrue(res_ctx.draft_reply.startswith("Here is your order status and return policy details."))
+
+    def test_08_cross_lingual_indic_keyword_extraction(self):
+        """extract_indic_keywords must strip Romanized Indic filler and leave dense technical search terms."""
+        from app.text_cleaning import extract_indic_keywords, has_indic_filler
+
+        # Romanized Indic queries
+        self.assertTrue(has_indic_filler("mai CZ dialer ke bare me janna chahata hu"))
+        self.assertEqual(extract_indic_keywords("mai CZ dialer ke bare me janna chahata hu"), "CZ dialer")
+
+        self.assertTrue(has_indic_filler("password reset kaise karein"))
+        self.assertEqual(extract_indic_keywords("password reset kaise karein"), "password reset")
+
+        self.assertTrue(has_indic_filler("dialer me call connect nahi ho raha hai"))
+        self.assertEqual(extract_indic_keywords("dialer me call connect nahi ho raha hai"), "dialer call connect")
+
+        # English queries should not be touched
+        self.assertFalse(has_indic_filler("How do I configure CZ Dialer?"))
+        self.assertEqual(extract_indic_keywords("How do I configure CZ Dialer?"), "How do I configure CZ Dialer?")
+
+        self.assertFalse(has_indic_filler("Where is my order #1001?"))
+        self.assertEqual(extract_indic_keywords("Where is my order #1001?"), "Where is my order #1001?")
+
+    def test_09_clean_rag_query_bridges_cross_lingual_gap(self):
+        """clean_rag_query must remove conversational Hinglish boilerplate to produce dense keywords."""
+        from app.pipeline.tools import clean_rag_query
+
+        raw_inquiry = "Hi Support Team,\n\nmai CZ dialer ke bare me janna chahata hu.\n\nThanks,\nYazdani"
+        cleaned = clean_rag_query(raw_inquiry)
+        self.assertEqual(cleaned, "CZ dialer")
+
+    def test_10_general_query_escalation_denied(self):
+        """escalate_and_create_ticket must reject escalation when intent is general_query"""
+        ctx = PipelineContext.from_task_data("test-general-escalate", {
+            "client_id": "CLI-4159FFCF",
+            "from_email": "customer@example.com",
+            "subject": "tell me about cz omni",
+            "body": "tell me about cz omni"
+        })
+        ctx.intent = "general_query"
+        res = execute_tool_call("escalate_and_create_ticket", {"issue_summary": "product question"}, ctx)
+        self.assertEqual(res.get("status"), "escalation_denied")
+        self.assertEqual(res.get("reason"), "intent_not_eligible_for_escalation")
+
+    def test_11_duplicate_ticket_escalation_blocked(self):
+        """escalate_and_create_ticket must block duplicate ticket creation if thread already has a ticket"""
+        ctx = PipelineContext.from_task_data("test-duplicate-ticket", {
+            "client_id": "CLI-4159FFCF",
+            "from_email": "customer@example.com",
+            "subject": "Re: Ticket Update: 275424000000582153",
+            "body": "any update?"
+        })
+        ctx.ticket_id = "275424000000582153"
+        ctx.intent = "technical_support"
+        res = execute_tool_call("escalate_and_create_ticket", {"issue_summary": "ongoing issue"}, ctx)
+        self.assertEqual(res.get("status"), "ticket_already_exists")
+        self.assertEqual(res.get("ticket_id"), "275424000000582153")
+
+    def test_12_general_query_preserves_troubleshooting_step(self):
+        """general_query inquiries calling search_knowledge_base must NOT increment troubleshooting_step"""
+        from app.pipeline.agent import run_support_agent
+
+        ctx = PipelineContext.from_task_data("test-step-preservation", {
+            "client_id": "CLI-4159FFCF",
+            "from_email": "customer@example.com",
+            "subject": "Product question",
+            "body": "tell me about cz omni"
+        })
+        ctx.intent = "general_query"
+        ctx.troubleshooting_step = 0
+
+        mock_tool_call = MagicMock()
+        mock_tool_call.id = "call_kb_omni"
+        mock_tool_call.function.name = "search_knowledge_base"
+        mock_tool_call.function.arguments = '{"query": "CZ Omni"}'
+
+        mock_resp_1 = MagicMock()
+        mock_choice_1 = MagicMock()
+        mock_choice_1.message.content = None
+        mock_choice_1.message.tool_calls = [mock_tool_call]
+        mock_resp_1.choices = [mock_choice_1]
+
+        mock_resp_2 = MagicMock()
+        mock_choice_2 = MagicMock()
+        mock_choice_2.message.content = "CZ Omni is an omnichannel contact center platform."
+        mock_choice_2.message.tool_calls = []
+        mock_resp_2.choices = [mock_choice_2]
+
+        with patch("app.pipeline.agent.client.chat.completions.create", side_effect=[mock_resp_1, mock_resp_2]), \
+             patch("app.pipeline.agent.execute_tool_call", return_value={"status": "success", "results_found": True, "content": "CZ Omni overview"}):
+            res_ctx = run_support_agent(ctx)
+            # troubleshooting_step must stay 0 for general_query
+            self.assertEqual(res_ctx.troubleshooting_step, 0)
+            self.assertNotIn("Troubleshooting_Step_1", res_ctx.execution_steps)
+
+    def test_13_extract_scoring_query_clean_subject(self):
+        """extract_scoring_query must strip ticket update prefixes and avoid polluting LLM scoring input"""
+        from app.pipeline.agent import extract_scoring_query
+
+        res = extract_scoring_query("Re: Ticket Update: 275424000000582153", "tell me about cz dialer")
+        self.assertEqual(res, "tell me about cz dialer")
+
+        res2 = extract_scoring_query("Fwd: Ticket #12345: Urgent", "how do I reset password?")
+        self.assertEqual(res2, "Subject: Urgent\n\nhow do I reset password?")
+
+    def test_14_evaluator_general_query_bypasses_ticket_creation(self):
+        """General queries with knowledge retrieval must auto_send at score >= 60 and never create tickets"""
+        from app.pipeline.evaluator import evaluate_draft_and_decide
+
+        with patch("app.pipeline.evaluator.llm_score", return_value=65):
+            score, decision = evaluate_draft_and_decide(
+                client_id="CLI-TEST",
+                reply="CZ Dialer is our outbound dialing system.",
+                query="tell me about cz dialer",
+                context_succeeded=True,
+                intent="general_query"
+            )
+            self.assertEqual(decision, "auto_send")
+            self.assertEqual(score, 65)
+
+        with patch("app.pipeline.evaluator.llm_score", return_value=45):
+            score, decision = evaluate_draft_and_decide(
+                client_id="CLI-TEST",
+                reply="Short answer.",
+                query="tell me about cz dialer",
+                context_succeeded=True,
+                intent="general_query"
+            )
+            self.assertEqual(decision, "draft_mode")
+            self.assertEqual(score, 45)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

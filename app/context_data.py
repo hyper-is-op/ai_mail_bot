@@ -68,7 +68,7 @@ def _strip_boilerplate(text: str) -> str:
     return res if res else text.strip()
 
 
-def format_conversation_thread(history: list, current_body: str, max_messages: int = 4) -> str:
+def format_conversation_thread(history: list, current_body: str, max_messages: int = 12) -> str:
     """
     Builds a clean, structured conversation thread for CRM ticket descriptions.
     - If history is empty, returns the latest customer message directly.

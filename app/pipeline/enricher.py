@@ -136,9 +136,21 @@ def fetch_rag_context(client_id: str, query: str, rag_id: Optional[str] = None) 
     try:
         if target_client_id and target_client_id != "ALL":
             context = query_knowledge(target_client_id, query, top_k=3)
+            if not context:
+                from app.text_cleaning import extract_indic_keywords
+                keyword_query = extract_indic_keywords(query)
+                if keyword_query and keyword_query.lower() != query.lower():
+                    logger.info(f"🔄 Retrying RAG with extracted keywords: '{keyword_query}'")
+                    context = query_knowledge(target_client_id, keyword_query, top_k=3)
         elif rag_id:
             rag_res = query_rag(rag_id, query)
             context = rag_res.get("answer", "")
+            if not context or "No context found" in context:
+                from app.text_cleaning import extract_indic_keywords
+                keyword_query = extract_indic_keywords(query)
+                if keyword_query and keyword_query.lower() != query.lower():
+                    rag_res = query_rag(rag_id, keyword_query)
+                    context = rag_res.get("answer", "")
 
         succeeded = bool(context and "No context found" not in context)
         return context, succeeded, rag_id

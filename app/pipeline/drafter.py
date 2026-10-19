@@ -90,15 +90,26 @@ def generate_ticket_status_reply(
         from app.llm_config import client, resolve_model
         from app.llm_utils import strip_reasoning_and_think_tags
 
-        prompt = f"""Write a polite email reply to {customer_name} regarding support ticket #{display_ticket_id}.
+        prompt = f"""Write a polite, helpful email reply to {customer_name} regarding support ticket #{display_ticket_id}.
+
 CRITICAL MULTILINGUAL INSTRUCTION:
-- Detect the customer's language from their incoming message and reply in that EXACT SAME language.
-- The ticket currently has status: '{raw_status}' (Closed / Resolved).
-- Inform them that ticket #{display_ticket_id} is already marked as '{raw_status}'. If they still need help, they can reply directly.
-- Conclude with:
+- Detect the primary language of the customer's incoming message and compose your entire reply in that EXACT SAME language.
+- Keep proper nouns and ticket reference #{display_ticket_id} unchanged.
+
+TICKET DETAILS:
+- Ticket Reference: #{display_ticket_id}
+- Current Status: '{raw_status}' (Closed / Resolved)
+
+REQUIREMENTS:
+1. Greet {customer_name} politely.
+2. Inform them clearly that support ticket #{display_ticket_id} is currently marked as resolved/closed ('{raw_status}').
+3. Let them know that if their issue is still occurring or if they have any follow-up questions, they can simply reply directly to this email with the details and our team will be happy to help.
+4. Conclude naturally in the customer's language with:
 {signoff_text}
 
-Write ONLY the final plain text email."""
+OUTPUT CONSTRAINTS:
+- Write ONLY the final plain-text email body.
+- Do NOT include a "Subject:" line, markdown formatting, or meta-commentary."""
         try:
             res = client.chat.completions.create(
                 model=resolve_model(client_id, "generate_reply_llm"),
@@ -133,17 +144,28 @@ Write ONLY the final plain text email."""
         from app.llm_config import client, resolve_model
         from app.llm_utils import strip_reasoning_and_think_tags
 
-        prompt = f"""Write a prompt, courteous status update email to {customer_name}.
+        prompt = f"""Write a prompt, courteous status update email to {customer_name} regarding support ticket #{display_ticket_id}.
+
 CRITICAL MULTILINGUAL INSTRUCTION:
-- Detect the customer's language from their incoming message and reply in that EXACT SAME language.
+- Detect the primary language of the customer's incoming message and compose your entire reply in that EXACT SAME language.
+- Keep proper nouns, ticket reference #{display_ticket_id}, and any URLs or tracking links unchanged.
+
+TICKET DETAILS:
 - Ticket Reference: #{display_ticket_id}
 - Current Status: '{raw_status}'
 {tracking_block}
-- Inform them their ticket is currently in '{raw_status}' status and actively under review.
-- Conclude with:
+
+REQUIREMENTS:
+1. Greet {customer_name} politely.
+2. Inform them that ticket #{display_ticket_id} is currently in '{raw_status}' status and is actively under review by our support team.
+3. If tracking or additional status details are provided above, include them clearly without inventing any extra dates, links, or promises.
+4. Let them know we will follow up as soon as there is a new update, and they can reply directly to this email if they need to add any further information.
+5. Conclude naturally in the customer's language with:
 {signoff_text}
 
-Write ONLY the final plain text email."""
+OUTPUT CONSTRAINTS:
+- Write ONLY the final plain-text email body.
+- Do NOT include a "Subject:" line, markdown formatting, or meta-commentary."""
         try:
             res = client.chat.completions.create(
                 model=resolve_model(client_id, "generate_reply_llm"),

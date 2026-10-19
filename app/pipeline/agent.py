@@ -12,15 +12,34 @@ from app.llm import extract_name_from_email, get_llm_config_for_client, client
 logger = logging.getLogger(__name__)
 
 RESOLUTION_PATTERNS = [
+    # English resolution indicators
     r"\b((it|that|this)\s+(worked|works|is\s+working)|issue\s+(is\s+)?(fixed|resolved)|solved|problem\s+(is\s+)?(fixed|resolved)|all\s+good\s+now|working\s+(fine|now|again|properly)|that\s+helped|resolved\s+now)\b",
     r"\b(thank\s+you\s+(so\s+much|very\s+much)?\s*[,.]?\s*(it\s+is\s+working|it\s+works|all\s+set|that\s+did\s+it))\b",
+    # Romanized Hindi / Hinglish resolution indicators
+    r"\b((issue|problem|samasya)\s+(solve|theek|fixed)\s+ho\s+(gaya|gayi)|(kaam|audio|call|phone|system|login)\s+(theek|chal|kaam\s+kar)\s+raha\s+hai|theek\s+ho\s+gaya|chal\s+gaya|kaam\s+ho\s+gaya|kaam\s+kar\s+raha\s+hai|sab\s+theek\s+hai|solve\s+ho\s+gaya|solve\s+ho\s+gayi)\b",
+    # Devanagari Hindi resolution indicators
+    r"(समस्या\s+(हल|ठीक)\s+हो\s+गई|समाधान\s+हो\s+गया|ठीक\s+(हो\s+गया|चल\s+रहा\s+है|काम\s+कर\s+रहा\s+है)|हल\s+हो\s+गई|काम\s+हो\s+गया|आवाज़\s+आ\s+रही\s+है|काम\s+कर\s+रहा\s+है)",
 ]
 
 def check_customer_resolution(text: str) -> bool:
     if not text:
         return False
     lower = text.lower()
-    return any(re.search(pat, lower) for pat in RESOLUTION_PATTERNS)
+    return any(re.search(pat, lower, re.IGNORECASE) for pat in RESOLUTION_PATTERNS)
+
+
+def extract_scoring_query(subject: str, body: str) -> str:
+    """
+    Cleans email threading artifacts (e.g., 'Re:', 'Ticket Update: 12345') from subject
+    before forming the query evaluated by llm_score, avoiding false scoring penalties.
+    """
+    subj = (subject or "").strip()
+    subj = re.sub(r'(?i)\b(?:re|fwd|fw):\s*', '', subj)
+    subj = re.sub(r'(?i)\bticket\s+update:\s*\d+\b', '', subj)
+    subj = re.sub(r'(?i)\b(?:ticket|case|ref)\s*#?\s*\d+\b', '', subj).strip(' :-\t\n')
+    if subj and subj.lower() not in (body or "").lower():
+        return f"Subject: {subj}\n\n{body}"
+    return body or ""
 
 
 class ParsedFunction:
@@ -90,7 +109,15 @@ def build_system_prompt(ctx: PipelineContext) -> str:
         signoff_lines.append(f"Company: {company_name}")
     signoff_text = "\n".join(signoff_lines)
 
-    step_info = f"Current troubleshooting attempt: Step {ctx.troubleshooting_step + 1} of 3." if ctx.troubleshooting_step > 0 else ""
+    from app.pipeline.evaluator import DEFAULT_MAX_TROUBLESHOOTING_STEPS
+    max_steps = DEFAULT_MAX_TROUBLESHOOTING_STEPS
+
+    if ctx.troubleshooting_step >= max_steps:
+        step_info = f"NOTE: {max_steps} troubleshooting diagnostic steps have already been attempted without success. Diagnostic attempts are EXHAUSTED. You MUST call 'escalate_and_create_ticket' to escalate this thread to a technical specialist and log a formal CRM ticket."
+    elif ctx.troubleshooting_step > 0:
+        step_info = f"Active troubleshooting in progress: Currently on diagnostic step {ctx.troubleshooting_step + 1} of {max_steps}. Search knowledge base and provide the next troubleshooting step to the customer. Do NOT escalate to a ticket yet because active diagnostics are still underway."
+    else:
+        step_info = ""
 
     resolution_instruction = ""
     if ctx.is_resolved:
@@ -144,8 +171,8 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
         {"role": "system", "content": system_prompt}
     ]
 
-    # Incorporate history if available
-    for h in ctx.history[-6:]:
+    # Incorporate history if available (up to 16 messages / 8 full back-and-forth turns)
+    for h in ctx.history[-16:]:
         role = "user" if h.get("role") == "customer" else "assistant"
         body = h.get("body", "")
         if body:
@@ -155,73 +182,92 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
     user_query = f"Subject: {ctx.subject}\n\n{ctx.body}"
     messages.append({"role": "user", "content": user_query})
 
-    # 3. Round 1: Let the model decide whether to call tools
-    try:
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            tools=SUPPORT_TOOLS,
-            tool_choice="auto",
-            temperature=0.1,
-            caller="run_support_agent"
-        )
-    except Exception as e:
-        err_str = str(e)
-        if ("tool calling" in err_str.lower() or "404" in err_str) and provider == "groq" and model_name != system_env_model:
-            logger.warning(f"⚠️ Model {model_name} failed tool calling on Groq, retrying with fallback model {system_env_model}")
-            model_name = system_env_model
-            try:
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    tools=SUPPORT_TOOLS,
-                    tool_choice="auto",
-                    temperature=0.1,
-                    caller="run_support_agent"
-                )
-            except Exception as retry_err:
-                logger.error(f"❌ [Agent Loop] Tool calling retry failed: {retry_err}")
-                ctx.log_step(f"Agent_Completion_Error:{str(retry_err)[:50]}")
-                cust_name = extract_name_from_email(ctx.from_email)
-                fallback_msg = (
-                    f"Dear {cust_name},\n\n"
-                    f"Thank you for contacting us. We have received your inquiry regarding '{ctx.subject}'. "
-                    f"Our support team is currently reviewing your message and will get back to you shortly.\n\n"
-                    f"Thanks & Regards,\nSupport Team"
-                )
-                ctx.draft_reply = append_client_disclaimers(ctx.client_id, fallback_msg)
-                ctx.score = 50
-                ctx.response_action = "draft_mode"
-                return ctx
-        else:
-            logger.error(f"❌ [Agent Loop] Primary completion failed: {e}. Falling back to default customer acknowledgement.")
-            ctx.log_step(f"Agent_Completion_Error:{str(e)[:50]}")
-            cust_name = extract_name_from_email(ctx.from_email)
-            fallback_msg = (
-                f"Dear {cust_name},\n\n"
-                f"Thank you for contacting us. We have received your inquiry regarding '{ctx.subject}'. "
-                f"Our support team is currently reviewing your message and will get back to you shortly.\n\n"
-                f"Thanks & Regards,\nSupport Team"
-            )
-            ctx.draft_reply = append_client_disclaimers(ctx.client_id, fallback_msg)
-            ctx.score = 50
-            ctx.response_action = "draft_mode"
-            return ctx
-
-    msg = response.choices[0].message
-    tool_calls = getattr(msg, "tool_calls", None)
-    is_text_tool_calls = False
-    if not tool_calls and msg.content and ("<tool_call>" in msg.content or "<function=" in msg.content):
-        extracted = extract_text_tool_calls(msg.content)
-        if extracted:
-            tool_calls = extracted
-            is_text_tool_calls = True
-
-    # 4. Handle Tool Calls
+    # 3. Multi-Turn ReAct Tool Loop (Up to max_tool_turns)
     from app.llm import strip_reasoning_and_think_tags
-    if tool_calls:
-        logger.info(f"⚡ [Agent Loop] Model emitted {len(tool_calls)} tool call(s)")
-        # Append assistant message with tool calls
+    from concurrent.futures import ThreadPoolExecutor
+
+    max_tool_turns = 3
+    turn = 0
+    all_executed_tool_names = []
+    ticket_escalated = False
+    final_draft = ""
+
+    while turn < max_tool_turns:
+        turn += 1
+        logger.info(f"🔄 [Agent Loop] Starting ReAct Turn {turn}/{max_tool_turns} for client={ctx.client_id}")
+
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                tools=SUPPORT_TOOLS,
+                tool_choice="auto",
+                temperature=0.1,
+                caller="run_support_agent"
+            )
+        except Exception as e:
+            err_str = str(e)
+            if ("tool calling" in err_str.lower() or "404" in err_str) and provider == "groq" and model_name != system_env_model:
+                logger.warning(f"⚠️ Model {model_name} failed tool calling on Groq, retrying with fallback model {system_env_model}")
+                model_name = system_env_model
+                try:
+                    response = client.chat.completions.create(
+                        model=model_name,
+                        messages=messages,
+                        tools=SUPPORT_TOOLS,
+                        tool_choice="auto",
+                        temperature=0.1,
+                        caller="run_support_agent"
+                    )
+                except Exception as retry_err:
+                    logger.error(f"❌ [Agent Loop] Tool calling retry failed: {retry_err}")
+                    ctx.log_step(f"Agent_Completion_Error:{str(retry_err)[:50]}")
+                    if not final_draft:
+                        cust_name = extract_name_from_email(ctx.from_email)
+                        fallback_msg = (
+                            f"Dear {cust_name},\n\n"
+                            f"Thank you for contacting us. We have received your inquiry regarding '{ctx.subject}'. "
+                            f"Our support team is currently reviewing your message and will get back to you shortly.\n\n"
+                            f"Thanks & Regards,\nSupport Team"
+                        )
+                        ctx.draft_reply = append_client_disclaimers(ctx.client_id, fallback_msg)
+                        ctx.score = 50
+                        ctx.response_action = "draft_mode"
+                    return ctx
+            else:
+                logger.error(f"❌ [Agent Loop] Completion failed on turn {turn}: {e}")
+                ctx.log_step(f"Agent_Completion_Error:{str(e)[:50]}")
+                if not final_draft:
+                    cust_name = extract_name_from_email(ctx.from_email)
+                    fallback_msg = (
+                        f"Dear {cust_name},\n\n"
+                        f"Thank you for contacting us. We have received your inquiry regarding '{ctx.subject}'. "
+                        f"Our support team is currently reviewing your message and will get back to you shortly.\n\n"
+                        f"Thanks & Regards,\nSupport Team"
+                    )
+                    ctx.draft_reply = append_client_disclaimers(ctx.client_id, fallback_msg)
+                    ctx.score = 50
+                    ctx.response_action = "draft_mode"
+                return ctx
+
+        msg = response.choices[0].message
+        tool_calls = getattr(msg, "tool_calls", None)
+        is_text_tool_calls = False
+        if not tool_calls and msg.content and ("<tool_call>" in msg.content or "<function=" in msg.content):
+            extracted = extract_text_tool_calls(msg.content)
+            if extracted:
+                tool_calls = extracted
+                is_text_tool_calls = True
+
+        if not tool_calls:
+            logger.info(f"ℹ️ [Agent Loop] Model concluded reasoning on turn {turn} without requesting further tools")
+            raw_content = msg.content or ""
+            raw_content = re.sub(r"<tool_call>.*?</tool_call>", "", raw_content, flags=re.DOTALL | re.IGNORECASE).strip()
+            final_draft = strip_reasoning_and_think_tags(raw_content)
+            break
+
+        # Process tool calls
+        logger.info(f"⚡ [Agent Loop] Turn {turn}: Model emitted {len(tool_calls)} tool call(s)")
         if is_text_tool_calls:
             messages.append({
                 "role": "assistant",
@@ -241,8 +287,8 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
         else:
             messages.append(msg)
 
-        ticket_escalated = False
-        for tc in tool_calls:
+        if len(tool_calls) == 1:
+            tc = tool_calls[0]
             tool_name = tc.function.name
             raw_args = tc.function.arguments or "{}"
             try:
@@ -251,7 +297,7 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
                 parsed_args = {}
 
             tool_result = execute_tool_call(tool_name, parsed_args, ctx, cursor)
-
+            all_executed_tool_names.append(tool_name)
             if tool_name == "escalate_and_create_ticket" and tool_result.get("status") == "ticket_created":
                 ticket_escalated = True
 
@@ -260,13 +306,49 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
                 "tool_call_id": tc.id,
                 "content": json.dumps(tool_result)
             })
+        else:
+            logger.info(f"⚡ [Agent Loop] Turn {turn}: Dispatching {len(tool_calls)} tool calls concurrently")
 
-        # If ticket was already created and reply dispatched by the tool, return early
+            def _run_single_tool(tc_item):
+                t_name = tc_item.function.name
+                t_args_raw = tc_item.function.arguments or "{}"
+                try:
+                    t_args = json.loads(t_args_raw) if isinstance(t_args_raw, str) else t_args_raw
+                except Exception:
+                    t_args = {}
+
+                from app.db import get_db_ctx
+                try:
+                    with get_db_ctx() as thread_db:
+                        with thread_db.cursor() as thread_cur:
+                            res = execute_tool_call(t_name, t_args, ctx, thread_cur)
+                            return tc_item.id, t_name, res
+                except Exception as ex:
+                    logger.warning(f"⚠️ Tool {t_name} thread execution failed: {ex}")
+                    res = execute_tool_call(t_name, t_args, ctx, None)
+                    return tc_item.id, t_name, res
+
+            with ThreadPoolExecutor(max_workers=min(len(tool_calls), 4)) as executor:
+                results = list(executor.map(_run_single_tool, tool_calls))
+
+            for t_id, t_name, tool_result in results:
+                all_executed_tool_names.append(t_name)
+                if t_name == "escalate_and_create_ticket" and tool_result.get("status") == "ticket_created":
+                    ticket_escalated = True
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": t_id,
+                    "content": json.dumps(tool_result)
+                })
+
+        # Early return if ticket created and outbox reply handled
         if ticket_escalated and ctx.status in ("ticket_created_and_sent", "ticket_created_draft_pending"):
             logger.info("✅ [Agent Loop] Ticket escalation completed and reply formulated by outbox.")
             return ctx
 
-        # Round 2: Model synthesizes final answer with tool outputs
+    # If loop completed via max turns without emitting text, synthesize final reply
+    if not final_draft:
+        logger.info(f"⚡ [Agent Loop] Synthesizing final answer after {turn} turn(s)")
         messages.append({
             "role": "user",
             "content": "Using the knowledge and tool results above, provide your final helpful troubleshooting response to the customer. Do not call any further tools or output tool tags."
@@ -282,31 +364,33 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
             raw_content = re.sub(r"<tool_call>.*?</tool_call>", "", raw_content, flags=re.DOTALL | re.IGNORECASE).strip()
             final_draft = strip_reasoning_and_think_tags(raw_content)
         except Exception as e2:
-            logger.error(f"❌ [Agent Loop] Secondary synthesis failed: {e2}")
+            logger.error(f"❌ [Agent Loop] Synthesis failed: {e2}")
             final_draft = "Thank you for contacting us. We have received your inquiry and our support team is reviewing your request."
 
-    else:
-        # Direct response without tool calls (greeting, casual pleasantry, or direct clarification)
-        logger.info("ℹ️ [Agent Loop] Model answered directly without invoking external tools")
-        final_draft = strip_reasoning_and_think_tags(msg.content or "")
-
     # Increment troubleshooting step if diagnostic tool called and issue not resolved / escalated
-    tool_names_called = [tc.function.name for tc in (tool_calls or [])]
-    if "search_knowledge_base" in tool_names_called and not ticket_escalated and not ctx.is_resolved:
+    # General informational queries must NEVER increment diagnostic troubleshooting steps
+    if (
+        "search_knowledge_base" in all_executed_tool_names
+        and not ticket_escalated
+        and not ctx.is_resolved
+        and ctx.intent not in ("general_query", "marketing_promotional", "greeting")
+    ):
         ctx.troubleshooting_step += 1
         ctx.log_step(f"Troubleshooting_Step_{ctx.troubleshooting_step}")
 
-    # 5. Post-Processing: Disclaimers and Evaluation
+    # 4. Post-Processing: Disclaimers and Evaluation
     final_draft = append_client_disclaimers(ctx.client_id, final_draft)
     is_not_found = bool(isinstance(ctx.context_data, dict) and ctx.context_data.get("status") == "not_found")
+    scoring_query = extract_scoring_query(ctx.subject, ctx.body)
     score, decision = evaluate_draft_and_decide(
         client_id=ctx.client_id,
         reply=final_draft,
-        query=user_query,
-        context_succeeded=bool(ctx.context_text or ctx.context_data or not tool_calls or ctx.is_resolved),
+        query=scoring_query,
+        context_succeeded=bool(ctx.context_text or ctx.context_data or not all_executed_tool_names or ctx.is_resolved),
         is_resolved=ctx.is_resolved,
         troubleshooting_step=ctx.troubleshooting_step,
-        is_not_found=is_not_found
+        is_not_found=is_not_found,
+        intent=ctx.intent
     )
 
     ctx.draft_reply = final_draft

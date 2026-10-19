@@ -72,17 +72,40 @@ def _set_query_cache(key: str, vector: list[float]):
     _MEM_QUERY_CACHE[key] = vector
 
 
+_session = None
+_session_pid = None
+
+
+def _get_session() -> requests.Session:
+    """Returns a process-isolated requests.Session equipped with connection retries."""
+    global _session, _session_pid
+    current_pid = os.getpid()
+    if _session is None or _session_pid != current_pid:
+        _session = requests.Session()
+        from urllib3.util import Retry
+        from requests.adapters import HTTPAdapter
+        retries = Retry(total=2, backoff_factor=0.3, status_forcelist=[502, 503, 504])
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=10, pool_maxsize=10)
+        _session.mount("http://", adapter)
+        _session.mount("https://", adapter)
+        _session_pid = current_pid
+    return _session
+
+
 def _post_embed(texts: list[str]) -> list[list[float]] | None:
     if not texts:
         return []
     all_vectors: list[list[float]] = []
+    session = _get_session()
+    timeout_tuple = (3.0, float(EMBED_TIMEOUT_SECONDS))
+
     for i in range(0, len(texts), BATCH_SIZE):
         batch = texts[i:i + BATCH_SIZE]
         try:
-            resp = requests.post(
+            resp = session.post(
                 f"{EMBED_SERVICE_URL}/embed",
                 json={"texts": batch},
-                timeout=EMBED_TIMEOUT_SECONDS,
+                timeout=timeout_tuple,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -104,6 +127,7 @@ def _post_embed(texts: list[str]) -> list[list[float]] | None:
             logger.error(f"❌ embed_service call failed unexpectedly: {e} — degrading gracefully")
             return None
     return all_vectors
+
 
 
 def embed_passages(texts: list[str]) -> list[list[float]] | None:
@@ -137,8 +161,9 @@ def embed_query(text: str) -> list[float] | None:
 
 def embed_service_healthy() -> bool:
     try:
-        resp = requests.get(f"{EMBED_SERVICE_URL}/health", timeout=3)
+        resp = _get_session().get(f"{EMBED_SERVICE_URL}/health", timeout=(2.0, 3.0))
         return resp.status_code == 200
     except Exception:
         return False
+
 

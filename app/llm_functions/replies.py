@@ -87,14 +87,25 @@ def generate_reply_llm(
             }
             team_name = agent_team_map.get(agent_type_override, "Support Team")
 
+        # Extract effective customer message from query or dialogue history
+        effective_customer_msg = (query or "").strip()
+        if not effective_customer_msg and history:
+            for h in reversed(history):
+                if h.get("role") == "customer" and h.get("body"):
+                    effective_customer_msg = h.get("body").strip()
+                    break
+
         from app.prompt_service import format_prompt
         prompt = format_prompt(
             client_id=client_id,
             prompt_key="escalation_reply_prompt",
             customer_name=customer_name,
             ticket_id=ticket_id or "N/A",
-            team_name=team_name
+            team_name=team_name,
+            customer_message=effective_customer_msg or "Customer Technical Support Inquiry",
+            issue_summary=context or "Technical Support Ticket"
         )
+
 
     # ==========================================
     # 💬 General Reply

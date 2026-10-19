@@ -192,3 +192,80 @@ def extract_clean_text_from_html(html_content: str) -> str:
 
     cleaned_text = "\n".join(non_empty_lines).strip()
     return cleaned_text
+
+
+_INDIC_MARKERS = re.compile(
+    r"\b(mai|main|mujhe|mujhko|mera|meri|mere|aapka|aapki|aapke|tumhara|"
+    r"kaise|kyu|kyun|kahan|hain|hoga|hogi|"
+    r"chahiye|chahta|chahti|chahte|chahata|chahati|janna|bataye|batayein|bataiye|"
+    r"karna|karein|karega|karegi|"
+    r"nahi|nhi|"
+    r"ke\s+bare\s+me|ke\s+baare\s+mein)\b|[\u0900-\u097F]",
+    re.IGNORECASE,
+)
+
+_INDIC_FILLER = re.compile(
+    r"\b(mai|main|mujhe|mujhko|mera|meri|mere|hum|hume|humko|aap|aapka|aapki|aapke|tum|tumhara|"
+    r"kya|kyu|kyun|kaise|kab|kaha|kahan|hai|hain|tha|thi|the|ho|hoga|hogi|hote|"
+    r"chahiye|chahta|chahti|chahte|chahata|chahati|janna|batao|bataye|batayein|bataiye|"
+    r"ke\s+bare\s+me|ke\s+baare\s+mein|bare\s+me|baare\s+mein|se\s+related|"
+    r"karna|kare|karein|karega|karegi|karta|karti|karte|"
+    r"nahi|nhi|na|mat|plz|please|bhai|sir|madam|ji|"
+    r"ho\s+raha|ho\s+rahi|raha\s+hai|rahi\s+hai|rahe\s+hain|raha|rahi|rahe|"
+    r"me|mein|hu|hoon|h)\b",
+    re.IGNORECASE,
+)
+
+
+def has_indic_filler(text: str) -> bool:
+    """Detects if text contains Romanized Indic phrases or Devanagari script."""
+    if not text or not isinstance(text, str):
+        return False
+    return bool(_INDIC_MARKERS.search(text))
+
+
+def extract_indic_keywords(text: str) -> str:
+    """
+    Strips Romanized Indic conversational filler from search queries, leaving
+    dense keywords (e.g. 'mai CZ dialer ke bare me janna chahata hu' -> 'CZ dialer')
+    to bridge the cross-lingual semantic gap when querying English knowledge bases.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    if not has_indic_filler(text):
+        return text
+    stripped = _INDIC_FILLER.sub(" ", text)
+    cleaned = " ".join(stripped.split()).strip()
+    cleaned = cleaned.strip(". ,;?!-–—")
+    return cleaned if len(cleaned) >= 2 else text
+
+
+_CONVERSATIONAL_PREFIXES = re.compile(
+    r"^(?:(?:can|could|would)\s+(?:you\s+)?(?:please\s+)?)?"
+    r"(?:(?:please\s+)?(?:tell|explain|inform|brief|guide|help)\s+(?:me|us)\s+(?:about|regarding|on)\s+|"
+    r"(?:what|how)\s+(?:is|are|does|do)\s+|"
+    r"(?:i|we)\s+(?:want|would\s+like|need)\s+to\s+know\s+(?:about|regarding|on)\s+|"
+    r"(?:give|provide)\s+(?:me|us)?\s*(?:some\s+)?(?:information|info|details|overview)\s+(?:about|regarding|on)\s+)",
+    re.IGNORECASE
+)
+
+
+def clean_conversational_query(text: str) -> str:
+    """
+    Strips English and Indic conversational starter phrases from search queries:
+      - 'tell me about CZ Dialer' -> 'CZ Dialer'
+      - 'can you please explain CZ Dialer features' -> 'CZ Dialer features'
+      - 'what is CZ Omni' -> 'CZ Omni'
+      - 'mai CZ dialer ke bare me janna chahata hu' -> 'CZ dialer'
+    Returns condensed, dense entity keywords optimized for both vector and keyword retrieval.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    cleaned = text.strip()
+    # 1. Strip Indic filler if present
+    if has_indic_filler(cleaned):
+        cleaned = extract_indic_keywords(cleaned)
+    # 2. Strip English conversational prefixes
+    cleaned = _CONVERSATIONAL_PREFIXES.sub("", cleaned).strip()
+    cleaned = cleaned.strip(". ,;?!-–—")
+    return cleaned if len(cleaned) >= 2 else text.strip()

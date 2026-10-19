@@ -196,6 +196,134 @@ class TestWorkerTasks(unittest.TestCase):
                 ("Fresh generated summary", 555)
             )
 
+    def test_06_embed_service_gate_immediate_healthy(self):
+        """Readiness gate must proceed immediately when embed_service is already healthy"""
+        from worker.celery_worker import wait_for_embed_service_ready
+
+        with patch("app.embed_client.embed_service_healthy", return_value=True) as mock_healthy, \
+             patch("time.sleep") as mock_sleep:
+            wait_for_embed_service_ready()
+            mock_healthy.assert_called_once()
+            mock_sleep.assert_not_called()
+
+    def test_07_embed_service_gate_retry_then_succeed(self):
+        """Readiness gate must poll and succeed once embed_service finishes loading"""
+        from worker.celery_worker import wait_for_embed_service_ready
+
+        # Returns False on first check, False on attempt 1, True on attempt 2
+        with patch("app.embed_client.embed_service_healthy", side_effect=[False, False, True]) as mock_healthy, \
+             patch("time.sleep") as mock_sleep:
+            wait_for_embed_service_ready()
+            self.assertEqual(mock_healthy.call_count, 3)
+            self.assertEqual(mock_sleep.call_count, 2)
+
+    def test_08_embed_service_gate_timeout_degrades(self):
+        """Readiness gate must timeout and fall back to degraded mode after max_wait_seconds"""
+        from worker.celery_worker import wait_for_embed_service_ready
+
+        # Always unhealthy
+        with patch("app.embed_client.embed_service_healthy", return_value=False) as mock_healthy, \
+             patch("time.sleep") as mock_sleep:
+            wait_for_embed_service_ready()
+            # 1 initial check + 30 polls (max_wait_seconds=60, poll_interval=2)
+            self.assertEqual(mock_healthy.call_count, 31)
+            self.assertEqual(mock_sleep.call_count, 30)
+
+    def test_09_off_topic_rag_override_routes_to_agent(self):
+        """High-confidence RAG match must override off_topic_nonsense and invoke agent loop"""
+        mock_self = MagicMock()
+        mock_self.request.id = "task-rag-override-1"
+
+        preflight_db = MagicMock()
+        preflight_cursor = MagicMock()
+        preflight_cursor.__enter__.return_value = preflight_cursor
+        preflight_db.cursor.return_value = preflight_cursor
+        preflight_cursor.fetchone.return_value = None
+
+        final_db = MagicMock()
+        final_cursor = MagicMock()
+        final_cursor.__enter__.return_value = final_cursor
+        final_db.cursor.return_value = final_cursor
+        final_cursor.lastrowid = 1002
+
+        preflight_ctx = MagicMock()
+        preflight_ctx.__enter__.return_value = preflight_db
+        final_ctx = MagicMock()
+        final_ctx.__enter__.return_value = final_db
+
+        def mock_agent_exec(ctx, cursor=None):
+            self.assertEqual(ctx.intent, "general_query")
+            ctx.status = "sent"
+            ctx.draft_reply = "Product details"
+            return ctx
+
+        def mock_router(ctx, text):
+            ctx.intent = "off_topic_nonsense"
+
+        mock_rag_hit = [{"title": "CZ CallBlast Overview", "score": 0.88, "content": "CZ CallBlast is an automated voice broadcasting tool."}]
+
+        with patch("worker.tasks.get_db_ctx", side_effect=[preflight_ctx, final_ctx]), \
+             patch("worker.tasks.get_history", return_value=[]), \
+             patch("app.pipeline.router.route_intent_and_entities", side_effect=mock_router), \
+             patch("app.rag.retrieve_knowledge", return_value=mock_rag_hit), \
+             patch("worker.tasks.dispatch_or_draft_reply", return_value=("sent", True)), \
+             patch("worker.tasks.publish_email_update"), \
+             patch("worker.tasks.run_support_agent", side_effect=mock_agent_exec) as mock_agent:
+            run_task(mock_self, {
+                "client_id": "CLI-TEST",
+                "from_email": "inquirer@example.com",
+                "subject": "Tell me about cz callblast",
+                "body": "Tell me about cz callblast"
+            })
+
+            mock_agent.assert_called_once()
+
+    def test_10_off_topic_confirmed_sends_polite_reply(self):
+        """Confirmed off-topic message with low RAG score must send polite redirect and halt"""
+        mock_self = MagicMock()
+        mock_self.request.id = "task-off-topic-reply-2"
+
+        preflight_db = MagicMock()
+        preflight_cursor = MagicMock()
+        preflight_cursor.__enter__.return_value = preflight_cursor
+        preflight_db.cursor.return_value = preflight_cursor
+        preflight_cursor.fetchone.return_value = None
+
+        final_db = MagicMock()
+        final_cursor = MagicMock()
+        final_cursor.__enter__.return_value = final_cursor
+        final_db.cursor.return_value = final_cursor
+        final_cursor.lastrowid = 1003
+
+        preflight_ctx = MagicMock()
+        preflight_ctx.__enter__.return_value = preflight_db
+        final_ctx = MagicMock()
+        final_ctx.__enter__.return_value = final_db
+
+        def mock_router(ctx, text):
+            ctx.intent = "off_topic_nonsense"
+
+        with patch("worker.tasks.get_db_ctx", side_effect=[preflight_ctx, final_ctx]), \
+             patch("worker.tasks.get_history", return_value=[]), \
+             patch("app.pipeline.router.route_intent_and_entities", side_effect=mock_router), \
+             patch("app.rag.retrieve_knowledge", return_value=[]), \
+             patch("worker.tasks.generate_off_topic_reply", return_value="Polite redirect message") as mock_ot_reply, \
+             patch("worker.tasks.send_email", return_value=True) as mock_send, \
+             patch("worker.tasks.publish_email_update"), \
+             patch("worker.tasks.run_support_agent") as mock_agent:
+            run_task(mock_self, {
+                "client_id": "CLI-TEST",
+                "from_email": "spammer@example.com",
+                "subject": "Random hello",
+                "body": "asdfghjkl"
+            })
+
+            mock_agent.assert_not_called()
+            mock_ot_reply.assert_called_once()
+            mock_send.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

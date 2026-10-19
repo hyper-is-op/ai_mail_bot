@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, Tuple
 
 from worker.celery_worker import celery
 from app.db import get_db_ctx
-from app.llm import current_client_id, current_thread_id, extract_ticket_and_order_ids, generate_summary_llm
+from app.llm import current_client_id, current_thread_id, extract_ticket_and_order_ids, generate_summary_llm, generate_off_topic_reply
 from app.text_cleaning import strip_quoted_reply, strip_disclaimers, extract_clean_text_from_html, is_html_content
 from app.email_disclaimers import get_active_disclaimer_texts
 from app.mailer import send_email
@@ -204,16 +204,28 @@ def generate_and_save_summary(
         from_email = data.get("from_email")
         body = data.get("body")
 
+        thread_id = data.get("thread_id")
+
         # Step 1: Read prior rows in discrete transaction
         def _read_prior(cur):
-            cur.execute("""
-                SELECT body, reply, summary 
-                FROM email_logs 
-                WHERE client_id = %s 
-                  AND from_email = %s 
-                  AND id < %s
-                ORDER BY id DESC LIMIT 5
-            """, (client_id, from_email, log_id))
+            if thread_id:
+                cur.execute("""
+                    SELECT body, reply, summary 
+                    FROM email_logs 
+                    WHERE client_id = %s 
+                      AND thread_id = %s 
+                      AND id < %s
+                    ORDER BY id DESC LIMIT 5
+                """, (client_id, thread_id, log_id))
+            else:
+                cur.execute("""
+                    SELECT body, reply, summary 
+                    FROM email_logs 
+                    WHERE client_id = %s 
+                      AND from_email = %s 
+                      AND id < %s
+                    ORDER BY id DESC LIMIT 5
+                """, (client_id, from_email, log_id))
             return cur.fetchall()
 
         if cursor is not None:
@@ -403,7 +415,8 @@ def _finalize_task_and_log(ctx: PipelineContext, task_id: str, cursor=None, db=N
                     "client_id": ctx.client_id,
                     "from_email": ctx.from_email,
                     "subject": ctx.subject,
-                    "body": ctx.body
+                    "body": ctx.body,
+                    "thread_id": ctx.thread_id
                 },
                 context_text=ctx.context_text
             )
@@ -532,6 +545,27 @@ def process_email_task(self, data: Dict[str, Any]):
         if ticket_ids:
             ctx.ticket_id = ticket_ids[0]
 
+        # Load Conversation History from Redis (with SQL fallback and continuation-gated prior thread carryover)
+        ctx.history = get_history(client_id, ctx.from_email, last_n=10, thread_id=ctx.thread_id)
+        if not ctx.history:
+            combined_text = f"{ctx.subject} {ctx.body}".lower()
+            followup_cues = (
+                "previous", "earlier", "yesterday", "last email", "update on", "update regarding",
+                "still not", "as discussed", "ticket", "following up", "status of", "any update",
+                "same issue", "not working yet"
+            )
+            is_continuation = (
+                ctx.subject.lower().startswith("re:")
+                or bool(ctx.ticket_id)
+                or any(cue in combined_text for cue in followup_cues)
+            )
+            if is_continuation:
+                prior_history = get_history(client_id, ctx.from_email, last_n=3)
+                if prior_history:
+                    logger.info(f"📜 Carried over {len(prior_history)} background context messages from prior thread for follow-up from {ctx.from_email}")
+                    ctx.history = prior_history
+        logger.info(f"📜 Loaded {len(ctx.history)} history messages (thread={ctx.thread_id}, step={ctx.troubleshooting_step})")
+
         # Route Intent & Entities via classification
         try:
             from app.pipeline.router import route_intent_and_entities
@@ -540,8 +574,12 @@ def process_email_task(self, data: Dict[str, Any]):
             logger.warning(f"⚠️ Intent routing failed, using defaults: {route_err}")
             ctx.intent = "general_support"
 
+        # General informational inquiries are not diagnostic steps — ensure step counter is 0
+        if ctx.intent in ("general_query", "marketing_promotional", "greeting"):
+            ctx.troubleshooting_step = 0
+
         # Early exit for marketing promotional blasts or off-topic emails without explicit support inquiry or ticket
-        if ctx.intent == "marketing_promotional" and not ticket_ids and not ctx.troubleshooting_step:
+        if ctx.intent == "marketing_promotional" and not ticket_ids and not ctx.troubleshooting_step and not ctx.history:
             logger.info(f"🛑 [Client {client_id}] Inbound email classified as 'marketing_promotional' — dropping without automated ticket or reply")
             ctx.summary = f"Automated marketing/promotional message ({ctx.subject}). Dropped without reply."
             ctx.priority = "Low"
@@ -550,22 +588,50 @@ def process_email_task(self, data: Dict[str, Any]):
             return
 
         if ctx.intent == "off_topic_nonsense" and not ticket_ids and not ctx.troubleshooting_step and not ctx.history:
-            # Standalone off-topic gibberish or empty opener with zero history or ticket reference
-            logger.info(f"🛑 [Client {client_id}] Inbound email classified as 'off_topic_nonsense' without history — dropping without ticket escalation")
-            ctx.summary = f"Off-topic greeting/nonsense with no support issue ({ctx.subject}). Dropped without reply."
-            ctx.priority = "Low"
-            ctx.halt("no_action_needed", "Classified as off_topic_nonsense", "Intent_Drop:off_topic_nonsense")
-            _finalize_task_and_log(ctx, task_id=task_id)
-            return
+            # Standalone off-topic inquiry or gibberish with zero history or ticket reference
+            # RAG safety net: if knowledge base has high-confidence match, override and serve it
+            _rag_override = False
+            try:
+                from app.rag import retrieve_knowledge
+                _rag_query = f"{ctx.subject} {ctx.body}".strip()
+                _rag_results = retrieve_knowledge(client_id, _rag_query, top_k=1, min_score=0.75)
+                if _rag_results and float(_rag_results[0].get("score", 0)) >= 0.75:
+                    logger.info(
+                        f"🔁 [Client {client_id}] RAG score {_rag_results[0]['score']:.4f} ≥ 0.75 on "
+                        f"'off_topic_nonsense' email — overriding to general_query and routing to agent"
+                    )
+                    ctx.intent = "general_query"
+                    ctx.log_step("Intent_Override_RAG_Match")
+                    _rag_override = True
+            except Exception as _rag_err:
+                logger.warning(f"⚠️ RAG override check failed: {_rag_err}")
 
-        # Load Conversation History from Redis (with SQL fallback and prior thread carryover)
-        ctx.history = get_history(client_id, ctx.from_email, last_n=10, thread_id=ctx.thread_id)
-        if not ctx.history:
-            prior_history = get_history(client_id, ctx.from_email, last_n=3)
-            if prior_history:
-                logger.info(f"📜 Carried over {len(prior_history)} background context messages from expired thread for {ctx.from_email}")
-                ctx.history = prior_history
-        logger.info(f"📜 Loaded {len(ctx.history)} history messages (thread={ctx.thread_id}, step={ctx.troubleshooting_step})")
+            if not _rag_override:
+                # Still off-topic — send polite redirect (NOT silent drop)
+                logger.info(f"🛑 [Client {client_id}] Confirmed off_topic_nonsense — sending polite redirect reply")
+                try:
+                    off_topic_text = generate_off_topic_reply(
+                        from_email=ctx.from_email,
+                        subject=ctx.subject,
+                        query=ctx.body,
+                        history=[]
+                    )
+                    send_email(
+                        ctx.client_id,
+                        ctx.from_email,
+                        "Re: " + ctx.subject,
+                        off_topic_text,
+                        in_reply_to=ctx.message_id
+                    )
+                    ctx.draft_reply = off_topic_text
+                    ctx.log_step("Off_Topic_Reply_Sent")
+                except Exception as _ot_err:
+                    logger.warning(f"⚠️ Failed to send off_topic redirect reply: {_ot_err}")
+                ctx.summary = f"Off-topic message with no product match ({ctx.subject}). Polite redirect sent."
+                ctx.priority = "Low"
+                ctx.halt("no_action_needed", "Classified as off_topic_nonsense", "Intent_Drop:off_topic_nonsense")
+                _finalize_task_and_log(ctx, task_id=task_id)
+                return
 
         # Autonomous Support Agent Loop (No DB held across 10-30s LLM / Tool execution)
         ctx = run_support_agent(ctx, cursor=None)
@@ -574,32 +640,58 @@ def process_email_task(self, data: Dict[str, Any]):
         if ctx.status in ("ticket_created_and_sent", "ticket_created_draft_pending"):
             logger.info(f"🎫 Ticket escalation finalized by agent tool ({ctx.status})")
         elif ctx.response_action == "create_ticket" and not ctx.is_resolved:
-            logger.info("🎫 Evaluator decided to escalate and create ticket")
-            reply, outgoing_ticket_id, status = create_ticket_and_reply(
-                data=ctx.to_task_data(),
-                client_id=client_id,
-                context=ctx.draft_reply or ctx.body,
-                history=ctx.history,
-                cursor=None,
-                sentiment=ctx.sentiment,
-                priority=ctx.priority,
-                features=ctx.features
-            )
-            ctx.draft_reply = reply
-            ctx.ticket_id = outgoing_ticket_id
-            ctx.status = status
-            if status == "ticket_creation_failed":
-                logger.error("❌ Ticket creation failed — holding for manual review")
-                ctx.log_step("Ticket_Creation_Failed")
-                ctx.status = "pending_manual_review"
+            if ctx.intent in ("general_query", "marketing_promotional", "greeting") or ctx.ticket_id:
+                logger.info(f"ℹ️ Ticket escalation bypassed (intent={ctx.intent}, ticket_id={ctx.ticket_id}) — dispatching draft reply")
+                status, save_history = dispatch_or_draft_reply(
+                    client_id=client_id,
+                    from_email=ctx.from_email,
+                    subject=ctx.subject,
+                    reply_body=ctx.draft_reply,
+                    features=ctx.features,
+                    confidence_score=ctx.score,
+                    intent=ctx.intent or "general_query",
+                    sentiment=ctx.sentiment,
+                    priority=ctx.priority,
+                    ticket_id=ctx.ticket_id,
+                    original_body=ctx.body,
+                    in_reply_to=ctx.message_id,
+                    message_id=ctx.message_id,
+                    sender_name=ctx.sender_name,
+                    execution_steps=ctx.execution_steps
+                )
+                ctx.status = status
+                if save_history:
+                    push_message(client_id=client_id, from_email=ctx.from_email, role="customer",
+                                 subject=ctx.subject, body=ctx.body, ticket_id=ctx.ticket_id or "", thread_id=ctx.thread_id)
+                    push_message(client_id=client_id, from_email=ctx.from_email, role="support",
+                                 subject="Re: " + ctx.subject, body=ctx.draft_reply, ticket_id=ctx.ticket_id or "", thread_id=ctx.thread_id)
             else:
-                try:
-                    summary = generate_summary_llm(context="", customer_body=ctx.body, history=ctx.history, old_summary="")
-                    upsert_ticket_history(client_id=client_id, ticket_id=outgoing_ticket_id,
-                                          customer_email=ctx.from_email, summary=summary,
-                                          priority=ctx.priority, status="NEW")
-                except Exception as up_err:
-                    logger.warning(f"⚠️ Failed to upsert ticket history: {up_err}")
+                logger.info("🎫 Evaluator decided to escalate and create ticket")
+                reply, outgoing_ticket_id, status = create_ticket_and_reply(
+                    data=ctx.to_task_data(),
+                    client_id=client_id,
+                    context=ctx.draft_reply or ctx.body,
+                    history=ctx.history,
+                    cursor=None,
+                    sentiment=ctx.sentiment,
+                    priority=ctx.priority,
+                    features=ctx.features
+                )
+                ctx.draft_reply = reply
+                ctx.ticket_id = outgoing_ticket_id
+                ctx.status = status
+                if status == "ticket_creation_failed":
+                    logger.error("❌ Ticket creation failed — holding for manual review")
+                    ctx.log_step("Ticket_Creation_Failed")
+                    ctx.status = "pending_manual_review"
+                else:
+                    try:
+                        summary = generate_summary_llm(context="", customer_body=ctx.body, history=ctx.history, old_summary="")
+                        upsert_ticket_history(client_id=client_id, ticket_id=outgoing_ticket_id,
+                                              customer_email=ctx.from_email, summary=summary,
+                                              priority=ctx.priority, status="NEW")
+                    except Exception as up_err:
+                        logger.warning(f"⚠️ Failed to upsert ticket history: {up_err}")
         elif ctx.draft_reply:
             status, save_history = dispatch_or_draft_reply(
                 client_id=client_id,

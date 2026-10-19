@@ -1,7 +1,8 @@
 import os
+import time
 import logging
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_init, worker_process_init
 from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
@@ -44,19 +45,53 @@ celery.conf.update(
 )
 
 
+@worker_init.connect
+def wait_for_embed_service_ready(**kwargs):
+    """
+    Blocks Celery parent process startup until embed_service finishes loading
+    its PyTorch model (~40s cold load), or until timeout (60s).
+    Guarantees no emails are consumed from Redis in degraded RAG mode.
+    """
+    try:
+        from app.embed_client import embed_service_healthy
+    except Exception as e:
+        logger.warning(f"⚠️ Could not import embed_service_healthy: {e}")
+        return
+
+    max_wait_seconds = 60
+    poll_interval = 2
+    elapsed = 0
+
+    # Quick check first to avoid wait/logs if already healthy
+    if embed_service_healthy():
+        logger.info("✅ [Startup Gate] embed_service is already healthy — proceeding with worker startup")
+        return
+
+    logger.info("⏳ [Startup Gate] Waiting for embed_service to be ready (PyTorch model loading)...")
+
+    while elapsed < max_wait_seconds:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+        if embed_service_healthy():
+            logger.info(f"✅ [Startup Gate] embed_service is ready (waited {elapsed}s). Launching Celery workers.")
+            return
+
+    logger.warning(
+        f"⚠️ [Startup Gate] embed_service NOT ready after {max_wait_seconds}s — starting Celery in degraded RAG mode"
+    )
+
+
 @worker_process_init.connect
 def warm_embed_service_connection(**kwargs):
     """
-    Fires once per worker process on startup (NOT lazily on first task).
-    Embedding itself is no longer preloaded here — that lives entirely in
-    embed_service. This just does a cheap health check against
-    embed_service so a cold/misconfigured embed_service is visible in
-    worker logs at boot rather than silently on the first customer email.
+    Fires once per child worker process on fork. Since the parent process
+    already gated startup via wait_for_embed_service_ready, this is an instant
+    confirmation.
     """
     try:
         from app.embed_client import embed_service_healthy
         if embed_service_healthy():
-            logger.info("✅ embed_service reachable at worker startup")
+            logger.info("✅ embed_service reachable at worker process initialization")
         else:
             logger.warning("⚠️ embed_service NOT reachable at worker startup — RAG will degrade to fallback/tickets until it recovers")
     except Exception as e:

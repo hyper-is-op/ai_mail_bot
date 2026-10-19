@@ -228,10 +228,21 @@ def create_ticket_and_reply(
     )
 
     # 4. Dispatch reply or create draft
+    # Preserve customer thread subject across all email clients (including Outlook / Apple Mail)
+    raw_subj = (data.get("subject") or effective_subject or "Support Request").strip()
+    clean_subj = re.sub(r"^(?:re\s*:\s*|fwd\s*:\s*)+", "", raw_subj, flags=re.IGNORECASE).strip()
+    if not clean_subj:
+        clean_subj = "Support Request"
+
+    if str(outgoing_ticket_id) not in clean_subj:
+        thread_subject = f"{clean_subj} [Ticket #{outgoing_ticket_id}]"
+    else:
+        thread_subject = clean_subj
+
     status_code, sent_ok = dispatch_or_draft_reply(
         client_id=client_id,
         from_email=data["from_email"],
-        subject=f"Ticket Update: {outgoing_ticket_id}",
+        subject=thread_subject,
         reply_body=reply,
         features=features,
         confidence_score=90,

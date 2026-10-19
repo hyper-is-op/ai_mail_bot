@@ -29,16 +29,22 @@ VECTOR_SIZE = 384  # intfloat/multilingual-e5-small
 DEFAULT_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.68"))
 
 _qdrant_client: QdrantClient | None = None
+_qdrant_client_pid: int | None = None
 
 
 def get_qdrant_client() -> QdrantClient | None:
     """
-    Returns a singleton QdrantClient, or None if the connection cannot be
-    established. Callers MUST treat None as "Qdrant is down" and fall back
-    to the JSON fallback store — never let a Qdrant outage propagate as an
-    unhandled exception into worker/tasks.py.
+    Returns a singleton QdrantClient scoped to the current process PID.
+    Automatically resets across Celery worker process forks to prevent
+    TCP socket sharing and connection pool corruption.
     """
-    global _qdrant_client
+    global _qdrant_client, _qdrant_client_pid
+    current_pid = os.getpid()
+
+    if _qdrant_client_pid is not None and _qdrant_client_pid != current_pid:
+        logger.info(f"🔄 Celery worker process forked (PID {_qdrant_client_pid} -> {current_pid}) — resetting QdrantClient")
+        _qdrant_client = None
+
     if _qdrant_client is not None:
         return _qdrant_client
 
@@ -47,7 +53,8 @@ def get_qdrant_client() -> QdrantClient | None:
         # Cheap connectivity check
         client.get_collections()
         _qdrant_client = client
-        logger.info(f"✅ Connected to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}")
+        _qdrant_client_pid = current_pid
+        logger.info(f"✅ Connected to Qdrant at {QDRANT_HOST}:{QDRANT_PORT} (PID {current_pid})")
         return _qdrant_client
     except Exception as e:
         logger.error(f"❌ Failed to connect to Qdrant at {QDRANT_HOST}:{QDRANT_PORT}: {e}")
@@ -135,7 +142,7 @@ def _validate_tenant_id(client_id: str, op_name: str) -> str:
     clean_id = client_id.strip()
     if not clean_id or clean_id.upper() == "ALL":
         raise ValueError(f"Vector store operation '{op_name}' cannot be called with empty or 'ALL' client_id")
-    return clean_id
+    return clean_id.upper()
 
 
 def upsert_chunks(
@@ -211,7 +218,14 @@ def search(
             collection_name=COLLECTION_NAME,
             query=query_vector,
             query_filter=qmodels.Filter(
-                must=[qmodels.FieldCondition(key="client_id", match=qmodels.MatchValue(value=client_id))]
+                must=[
+                    qmodels.Filter(
+                        should=[
+                            qmodels.FieldCondition(key="client_id", match=qmodels.MatchValue(value=client_id)),
+                            qmodels.FieldCondition(key="client_id", match=qmodels.MatchValue(value=client_id.lower())),
+                        ]
+                    )
+                ]
             ),
             limit=top_k,
         )

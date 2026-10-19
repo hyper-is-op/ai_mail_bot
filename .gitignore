@@ -23,3 +23,7 @@ dump.rdb
 
 # Test virtual environments
 .Test_files/venv/
+
+# Scratch & temporary diagnostic scripts
+scratch/
+check_352.py

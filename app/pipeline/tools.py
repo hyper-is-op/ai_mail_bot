@@ -44,6 +44,10 @@ def clean_rag_query(raw_text: str) -> str:
     for sp in sig_patterns:
         text = re.sub(sp, "", text, flags=re.DOTALL)
 
+    # Remove email subject prefixes and CRM ticket metadata
+    text = re.sub(r"(?i)\b(?:re|fwd|fw)\s*:\s*", "", text)
+    text = re.sub(r"(?i)(?:ticket\s+(?:update|reference|id|number)?\s*[:#-]?\s*\d+|\[(?:ticket\s*)?#?\d+\])", "", text)
+
     cleaned = " ".join(text.split()).strip()
     # Keep query focused: if it's over 400 characters, extract first 2-3 substantive sentences
     if len(cleaned) > 400:
@@ -56,6 +60,9 @@ def clean_rag_query(raw_text: str) -> str:
                 break
         if shortened:
             cleaned = shortened
+
+    from app.text_cleaning import extract_indic_keywords
+    cleaned = extract_indic_keywords(cleaned)
 
     return cleaned or raw_text[:300].strip()
 
@@ -115,23 +122,7 @@ SUPPORT_TOOLS = [
             }
         }
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "lookup_ticket_or_order_status",
-            "description": "Legacy combined tool: Look up status of an existing ticket or order docket number from CRM or store.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ticket_id": {
-                        "type": "string",
-                        "description": "The exact ticket reference or order ID mentioned by the customer (e.g., 'T-260526-00431', 'ORD10294', '#120', '275424000000446001')."
-                    }
-                },
-                "required": ["ticket_id"]
-            }
-        }
-    },
+
     {
         "type": "function",
         "function": {
@@ -142,7 +133,7 @@ SUPPORT_TOOLS = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query string to look up in the vector knowledge base."
+                        "description": "The search query string to look up in the vector knowledge base. Extract specific product names, error codes, features, or technical terms (e.g., 'CZ Dialer', 'SIP_408_TIMEOUT'). Do not include conversational filler like 'tell me about'."
                     }
                 },
                 "required": ["query"]
@@ -413,6 +404,44 @@ def execute_tool_call(
                 raw_query = ctx.body or ctx.subject
             query = clean_rag_query(raw_query)
             context_text, succeeded, rag_id = fetch_rag_context(ctx.client_id, query)
+
+            # Stage 2 Fallback: Entity keyword extraction (conversational phrases stripped)
+            from app.text_cleaning import clean_conversational_query
+            stripped_query = ""
+            if not succeeded or not context_text:
+                candidate = raw_query or ctx.body or ctx.subject
+                stripped_query = clean_conversational_query(candidate)
+                if stripped_query and stripped_query.lower() != query.lower():
+                    logger.info(f"🔄 [RAG Fallback 1] Primary query '{query}' yielded 0 results. Retrying with stripped entity '{stripped_query}'")
+                    fb_context, fb_succeeded, fb_rag_id = fetch_rag_context(ctx.client_id, stripped_query)
+                    if fb_succeeded and fb_context:
+                        context_text = fb_context
+                        succeeded = fb_succeeded
+                        rag_id = fb_rag_id or rag_id
+
+            # Stage 3 Fallback: Customer raw body if distinct
+            if (not succeeded or not context_text) and ctx.body:
+                body_candidate = clean_rag_query(ctx.body)
+                if body_candidate and body_candidate.lower() not in (query.lower(), (stripped_query or "").lower()):
+                    logger.info(f"🔄 [RAG Fallback 2] Retrying with customer body text '{body_candidate}'")
+                    fb_context, fb_succeeded, fb_rag_id = fetch_rag_context(ctx.client_id, body_candidate)
+                    if fb_succeeded and fb_context:
+                        context_text = fb_context
+                        succeeded = fb_succeeded
+                        rag_id = fb_rag_id or rag_id
+
+            # Stage 4 Fallback: Subject line if substantive
+            if (not succeeded or not context_text) and ctx.subject:
+                subj_clean = clean_rag_query(ctx.subject)
+                generic_subjects = ("general question", "support request", "inquiry", "(no subject)", "help", "hello")
+                if subj_clean and subj_clean.lower() not in generic_subjects:
+                    logger.info(f"🔄 [RAG Fallback 3] Retrying with substantive subject '{subj_clean}'")
+                    fb_context, fb_succeeded, fb_rag_id = fetch_rag_context(ctx.client_id, subj_clean)
+                    if fb_succeeded and fb_context:
+                        context_text = fb_context
+                        succeeded = fb_succeeded
+                        rag_id = fb_rag_id or rag_id
+
             ctx.rag_id = rag_id
             ctx.context_text = context_text
 
@@ -429,10 +458,28 @@ def execute_tool_call(
                     "status": "empty",
                     "results_found": False,
                     "content": "No relevant policy or documentation found in knowledge base for this inquiry.",
-                    "hint": "If the knowledge base does not cover this inquiry, escalate and create a ticket or inform the customer that their issue has been noted for support review."
+                    "hint": "No specific documentation chunk was found. For general informational inquiries, provide a helpful high-level response based on general product knowledge or ask a clarifying question. Do NOT call 'escalate_and_create_ticket' for general product inquiries."
                 }
 
         elif tool_name == "escalate_and_create_ticket":
+            # 1. Guard against false escalations on general informational / marketing / greeting inquiries
+            if ctx.intent in ("general_query", "marketing_promotional", "greeting"):
+                logger.info(f"🛑 [Agent Tool Call] Blocked ticket escalation for intent '{ctx.intent}' on client {ctx.client_id}")
+                return {
+                    "status": "escalation_denied",
+                    "reason": "intent_not_eligible_for_escalation",
+                    "message": "General product, informational, or greeting inquiries must not create support tickets. Please provide a helpful, direct answer or request clarification from the customer."
+                }
+
+            # 2. Guard against duplicate ticket creation loops on threads that already have a ticket
+            if ctx.ticket_id:
+                logger.info(f"🛑 [Agent Tool Call] Thread already has ticket #{ctx.ticket_id} for client {ctx.client_id} — preventing duplicate creation")
+                return {
+                    "status": "ticket_already_exists",
+                    "ticket_id": ctx.ticket_id,
+                    "message": f"Support ticket #{ctx.ticket_id} is already open for this thread. Do not create a duplicate ticket."
+                }
+
             issue_summary = (arguments.get("issue_summary") or "").strip() or ctx.subject
             priority = arguments.get("priority", ctx.priority or "Medium")
             remarks = (arguments.get("remarks") or "").strip()
@@ -440,7 +487,7 @@ def execute_tool_call(
             troubleshooting_notes = ""
             if ctx.history:
                 troubleshooting_notes = "\n\nTroubleshooting History:\n" + "\n".join(
-                    f"- {h.get('role', 'msg').title()}: {h.get('body', '')[:120]}" for h in ctx.history[-4:]
+                    f"- {h.get('role', 'msg').title()}: {h.get('body', '')[:120]}" for h in ctx.history[-12:]
                 )
             context_to_send = f"{issue_summary}"
             if remarks:

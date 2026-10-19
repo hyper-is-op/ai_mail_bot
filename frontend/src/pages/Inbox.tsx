@@ -145,8 +145,10 @@ export default function Inbox() {
     }
     let ws: WebSocket | null = null;
     let reconnectTimeout: any = null;
+    let isCleanedUp = false;
 
     const connectWS = () => {
+      if (isCleanedUp) return;
       try {
         const rawUser = localStorage.getItem('user');
         let token = '';
@@ -165,9 +167,14 @@ export default function Inbox() {
         const authenticatedWsUrl = `${wsUrl}${wsUrl.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
         ws = new WebSocket(authenticatedWsUrl);
         ws.onopen = () => {
+          if (isCleanedUp) {
+            try { ws?.close(1000, "Component unmounted"); } catch {}
+            return;
+          }
           console.log("⚡ Real-time WebSocket connected for inbox sync");
         };
         ws.onmessage = (event) => {
+          if (isCleanedUp) return;
           try {
             const message = JSON.parse(event.data);
             if (message.type === 'NEW_EMAIL' && (selectedClientId === 'ALL' || message.client_id === selectedClientId)) {
@@ -182,9 +189,12 @@ export default function Inbox() {
           }
         };
         ws.onerror = (err) => {
-          console.warn("WebSocket error, falling back to live poll:", err);
+          if (!isCleanedUp) {
+            console.warn("WebSocket error, falling back to live poll:", err);
+          }
         };
         ws.onclose = (event) => {
+          if (isCleanedUp) return;
           // If closed due to authentication failure (4001) or normal closure (1000), do not loop reconnect
           if (event.code === 4001) {
             console.warn("WebSocket authentication failed (code 4001). Reconnect aborted.");
@@ -195,7 +205,9 @@ export default function Inbox() {
           }
         };
       } catch (err) {
-        console.warn("WebSocket connection failed:", err);
+        if (!isCleanedUp) {
+          console.warn("WebSocket connection failed:", err);
+        }
       }
     };
 
@@ -210,8 +222,21 @@ export default function Inbox() {
     }, 3500);
 
     return () => {
-      if (ws) ws.close();
-      if (reconnectTimeout) clearTimeout(reconnectTimeout);
+      isCleanedUp = true;
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+      }
+      if (ws) {
+        ws.onclose = null;
+        ws.onerror = null;
+        ws.onmessage = null;
+        ws.onopen = null;
+        try {
+          ws.close(1000, "Component unmounted");
+        } catch {}
+        ws = null;
+      }
       clearInterval(pollInterval);
     };
   }, [selectedClientId]);

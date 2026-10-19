@@ -55,7 +55,7 @@ function DeltaBadge({ value, isPctPoint = false, inverse = false }: { value?: nu
 export default function Dashboard() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { theme, selectedClientId, setSelectedClientId, clients } = useAppState();
+  const { theme, selectedClientId, setSelectedClientId, clients, isAdmin } = useAppState();
 
   const activeTab = searchParams.get('tab') === 'llm' ? 'llm' : 'email';
 
@@ -1398,8 +1398,8 @@ export default function Dashboard() {
 
           {/* Conversational Performance, CRR Deflection & Sentiment Health */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            {/* Left 7 Cols: CRR Deflection & Multi-Turn Conversation Metrics */}
-            <div className="lg:col-span-7">
+            {/* Left 7 Cols (or 12 Cols if not admin): CRR Deflection & Multi-Turn Conversation Metrics */}
+            <div className={isAdmin ? "lg:col-span-7" : "lg:col-span-12"}>
               <SettingsCard
                 title="Customer Resolution Rate (CRR) & Conversational Deflection"
                 description="Analysis of multi-turn inquiries resolved automatically without creating human support tickets"
@@ -1575,92 +1575,94 @@ export default function Dashboard() {
               </SettingsCard>
             </div>
 
-            {/* Right 5 Cols: Customer Sentiment Trajectory & AI-Inferred CSAT */}
-            <div className="lg:col-span-5 space-y-4">
-              <SettingsCard
-                title="Customer Sentiment & AI-Inferred CSAT"
-                description="Conversational mood progression, net sentiment range, and AI satisfaction"
-              >
-                <div className="p-4 space-y-4">
-                  {/* Inferred CSAT Hero Badge & Net Sentiment Score */}
-                  <div className="p-4 rounded-xl bg-gradient-to-br from-primary/10 via-primary/5 to-transparent border border-primary/20 flex items-center justify-between">
-                    <div>
-                      <span className="text-xs font-semibold text-primary">AI-Inferred CSAT Rating</span>
-                      <div className="text-3xl font-bold font-mono tracking-tight text-foreground flex items-center gap-1.5 mt-1">
-                        <span>★</span>
-                        <span>{metrics.conversational_performance?.inferred_csat ?? 5.0}</span>
-                        <span className="text-xs font-normal text-muted-foreground">/ 5.0</span>
+            {/* Right 5 Cols: Customer Sentiment Trajectory & AI-Inferred CSAT (Admin Only) */}
+            {isAdmin && (
+              <div className="lg:col-span-5 space-y-4">
+                <SettingsCard
+                  title="Customer Sentiment & AI-Inferred CSAT"
+                  description="Conversational mood progression, net sentiment range, and AI satisfaction"
+                >
+                  <div className="p-4 space-y-4">
+                    {/* Inferred CSAT Hero Badge & Net Sentiment Score */}
+                    <div className="p-4 rounded-xl bg-gradient-to-br from-primary/10 via-primary/5 to-transparent border border-primary/20 flex items-center justify-between">
+                      <div>
+                        <span className="text-xs font-semibold text-primary">AI-Inferred CSAT Rating</span>
+                        <div className="text-3xl font-bold font-mono tracking-tight text-foreground flex items-center gap-1.5 mt-1">
+                          <span>★</span>
+                          <span>{metrics.conversational_performance?.inferred_csat ?? 5.0}</span>
+                          <span className="text-xs font-normal text-muted-foreground">/ 5.0</span>
+                        </div>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          Derived from resolution deflection &amp; final interaction tone
+                        </p>
                       </div>
-                      <p className="text-[10px] text-muted-foreground mt-0.5">
-                        Derived from resolution deflection &amp; final interaction tone
-                      </p>
+
+                      <div className="text-right space-y-1">
+                        <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 inline-block">
+                          High Satisfaction
+                        </span>
+                        <div className="text-[10px] font-mono text-muted-foreground">
+                          NSS: <strong className={cn(
+                            (metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0) >= 0 
+                              ? "text-emerald-600 dark:text-emerald-400" 
+                              : "text-rose-600 dark:text-rose-400"
+                          )}>
+                            {(metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0) > 0 ? '+' : ''}
+                            {metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0}%
+                          </strong>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="text-right space-y-1">
-                      <span className="px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 inline-block">
-                        High Satisfaction
+                    {/* Sentiment Trajectory Breakdown */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-xs font-semibold text-foreground">
+                        <span>Conversational Sentiment Range</span>
+                        <span className="text-[10px] text-muted-foreground font-normal">Full dialogue lifecycle</span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
+                          <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">Positive</div>
+                          <div className="text-lg font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
+                            {metrics.conversational_performance?.sentiment_trajectory?.improved ?? 0}
+                          </div>
+                          <div className="text-[9px] text-muted-foreground mt-0.5">Satisfied / Delighted</div>
+                        </div>
+
+                        <div className="p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
+                          <div className="text-[10px] text-blue-600 dark:text-blue-400 font-semibold">Neutral</div>
+                          <div className="text-lg font-bold font-mono text-blue-600 dark:text-blue-400 mt-0.5">
+                            {metrics.conversational_performance?.sentiment_trajectory?.neutral_stable ?? 0}
+                          </div>
+                          <div className="text-[9px] text-muted-foreground mt-0.5">Standard Inquiries</div>
+                        </div>
+
+                        <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20">
+                          <div className="text-[10px] text-rose-600 dark:text-rose-400 font-semibold">Frustrated</div>
+                          <div className="text-lg font-bold font-mono text-rose-600 dark:text-rose-400 mt-0.5">
+                            {metrics.conversational_performance?.sentiment_trajectory?.deteriorated ?? 0}
+                          </div>
+                          <div className="text-[9px] text-muted-foreground mt-0.5">Urgent Escalations</div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Quick Link to Detailed Ticketing & Resolution Reports */}
+                    <button
+                      onClick={() => navigate('/reports')}
+                      className="w-full flex items-center justify-between p-2.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-semibold text-primary hover:bg-primary/20 transition-all cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <FileSpreadsheet className="w-4 h-4" />
+                        <span>Open Resolution Reports &amp; CSV Export</span>
                       </span>
-                      <div className="text-[10px] font-mono text-muted-foreground">
-                        NSS: <strong className={cn(
-                          (metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0) >= 0 
-                            ? "text-emerald-600 dark:text-emerald-400" 
-                            : "text-rose-600 dark:text-rose-400"
-                        )}>
-                          {(metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0) > 0 ? '+' : ''}
-                          {metrics.conversational_performance?.sentiment_distribution?.net_score ?? 0}%
-                        </strong>
-                      </div>
-                    </div>
+                      <ArrowUpRight className="w-4 h-4" />
+                    </button>
                   </div>
-
-                  {/* Sentiment Trajectory Breakdown */}
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between text-xs font-semibold text-foreground">
-                      <span>Conversational Sentiment Range</span>
-                      <span className="text-[10px] text-muted-foreground font-normal">Full dialogue lifecycle</span>
-                    </div>
-
-                    <div className="grid grid-cols-3 gap-2 text-center">
-                      <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20">
-                        <div className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">Positive</div>
-                        <div className="text-lg font-bold font-mono text-emerald-600 dark:text-emerald-400 mt-0.5">
-                          {metrics.conversational_performance?.sentiment_trajectory?.improved ?? 0}
-                        </div>
-                        <div className="text-[9px] text-muted-foreground mt-0.5">Satisfied / Delighted</div>
-                      </div>
-
-                      <div className="p-2.5 rounded-lg bg-blue-500/10 border border-blue-500/20">
-                        <div className="text-[10px] text-blue-600 dark:text-blue-400 font-semibold">Neutral</div>
-                        <div className="text-lg font-bold font-mono text-blue-600 dark:text-blue-400 mt-0.5">
-                          {metrics.conversational_performance?.sentiment_trajectory?.neutral_stable ?? 0}
-                        </div>
-                        <div className="text-[9px] text-muted-foreground mt-0.5">Standard Inquiries</div>
-                      </div>
-
-                      <div className="p-2.5 rounded-lg bg-rose-500/10 border border-rose-500/20">
-                        <div className="text-[10px] text-rose-600 dark:text-rose-400 font-semibold">Frustrated</div>
-                        <div className="text-lg font-bold font-mono text-rose-600 dark:text-rose-400 mt-0.5">
-                          {metrics.conversational_performance?.sentiment_trajectory?.deteriorated ?? 0}
-                        </div>
-                        <div className="text-[9px] text-muted-foreground mt-0.5">Urgent Escalations</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Quick Link to Detailed Ticketing & Resolution Reports */}
-                  <button
-                    onClick={() => navigate('/reports')}
-                    className="w-full flex items-center justify-between p-2.5 rounded-lg bg-primary/10 border border-primary/20 text-xs font-semibold text-primary hover:bg-primary/20 transition-all cursor-pointer"
-                  >
-                    <span className="flex items-center gap-2">
-                      <FileSpreadsheet className="w-4 h-4" />
-                      <span>Open Resolution Reports &amp; CSV Export</span>
-                    </span>
-                    <ArrowUpRight className="w-4 h-4" />
-                  </button>
-                </div>
-              </SettingsCard>
-            </div>
+                </SettingsCard>
+              </div>
+            )}
           </div>
 
           {/* Technical Intent Automation & Deflection Matrix */}

@@ -95,12 +95,23 @@ def load_fallback_db(client_id: str | None = None) -> list[dict] | dict:
                 fcntl.flock(f.fileno(), fcntl.LOCK_SH)
                 try:
                     data = json.load(f)
-                    return data if isinstance(data, list) else []
+                    if isinstance(data, list) and len(data) > 0:
+                        return data
                 finally:
                     fcntl.flock(f.fileno(), fcntl.LOCK_UN)
         except Exception as e:
             logger.error(f"❌ Failed to load fallback DB for client_id={client_id}: {e}")
             return []
+
+    # Auto-hydrate fallback JSON from Qdrant if file is missing or empty
+    try:
+        q_docs = qdrant_get_client_documents(client_id)
+        if q_docs:
+            save_fallback_db(client_id, q_docs)
+            logger.info(f"💾 Auto-hydrated fallback JSON for client_id={client_id} with {len(q_docs)} documents from Qdrant")
+            return q_docs
+    except Exception as q_err:
+        logger.warning(f"⚠️ Could not auto-hydrate fallback from Qdrant for client_id={client_id}: {q_err}")
 
     # One-time migration: check legacy fallback_db.json if it exists
     if os.path.exists(FALLBACK_DB_PATH):
@@ -175,6 +186,7 @@ def load_all_fallback_docs() -> list[dict]:
                                 for d in docs:
                                     all_docs.append({
                                         "id": d.get("id"),
+                                        "doc_id": d.get("doc_id") or d.get("id"),
                                         "title": f"[{cid}] {d.get('title', 'Untitled')}",
                                         "content": d.get("content", ""),
                                         "client_id": cid,
@@ -186,6 +198,70 @@ def load_all_fallback_docs() -> list[dict]:
     return all_docs
 
 
+def _group_fallback_chunks_into_documents(chunks: list[dict]) -> list[dict]:
+    """
+    Groups flat fallback chunk records by doc_id into the same schema
+    that Qdrant's get_client_documents() / get_all_documents() returns:
+    {id: doc_id, title: str, chunks_count: int, content: str, client_id?: str}
+    """
+    grouped: dict[str, dict] = {}
+    for chunk in chunks:
+        doc_id = chunk.get("doc_id") or chunk.get("id", "")
+        if not doc_id:
+            continue
+        group_key = f"{chunk.get('client_id', '')}:{doc_id}" if chunk.get("client_id") else doc_id
+        if group_key not in grouped:
+            item = {
+                "id": doc_id,
+                "title": chunk.get("title", "Untitled Document"),
+                "chunks_count": 1,
+                "content": chunk.get("content", ""),
+            }
+            if chunk.get("client_id"):
+                item["client_id"] = chunk["client_id"]
+            grouped[group_key] = item
+        else:
+            grouped[group_key]["chunks_count"] += 1
+            if len(grouped[group_key]["content"]) < 300:
+                grouped[group_key]["content"] += "\n" + chunk.get("content", "")
+    return list(grouped.values())
+
+
+def purge_client_fallback(client_id: str) -> bool:
+    """Physically removes the tenant's fallback JSON file from disk and cleans legacy store."""
+    if not client_id or client_id == "ALL":
+        return False
+    path = get_fallback_path(client_id)
+    removed = False
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+            logger.info(f"🗑️ Purged fallback JSON for client_id={client_id}: {path}")
+            removed = True
+    except Exception as e:
+        logger.error(f"❌ Failed to purge fallback JSON for client_id={client_id}: {e}")
+
+    # Also clean up legacy fallback_db.json if present
+    if os.path.exists(FALLBACK_DB_PATH):
+        try:
+            with open(FALLBACK_DB_PATH, 'r+', encoding='utf-8') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    legacy_data = json.load(f)
+                    if isinstance(legacy_data, dict) and client_id in legacy_data:
+                        del legacy_data[client_id]
+                        f.seek(0)
+                        json.dump(legacy_data, f, indent=2, ensure_ascii=False)
+                        f.truncate()
+                        removed = True
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+        except Exception as e:
+            logger.warning(f"⚠️ Could not purge client {client_id} from legacy fallback_db.json: {e}")
+
+    return removed
+
+
 def jaccard_similarity(text1: str, text2: str) -> float:
     """Computes pure token-level Jaccard similarity."""
     words1 = set(text1.lower().split())
@@ -195,10 +271,18 @@ def jaccard_similarity(text1: str, text2: str) -> float:
     return len(words1.intersection(words2)) / len(words1.union(words2))
 
 
+FALLBACK_STOPWORDS = {
+    "tell", "me", "about", "what", "is", "are", "how", "do", "does", "can", "you",
+    "please", "give", "provide", "want", "to", "know", "the", "a", "an", "in", "on",
+    "of", "for", "with", "regarding", "help", "information", "detail", "details"
+}
+
+
 def calculate_fallback_score(query: str, content: str) -> float:
     """
     Hybrid scoring for the fallback store: combines word-overlap Jaccard
-    with exact substring and keyword bonuses (e.g. error codes, SKUs).
+    with exact substring and keyword bonuses (e.g. error codes, SKUs),
+    filtering conversational stopwords so natural language queries don't get diluted.
     """
     if not query or not content:
         return 0.0
@@ -209,7 +293,11 @@ def calculate_fallback_score(query: str, content: str) -> float:
     if len(q_lower) >= 4 and q_lower in c_lower:
         return 1.0
 
-    q_words = [w for w in re.findall(r"\w+", q_lower) if len(w) > 1]
+    raw_q_words = [w for w in re.findall(r"\w+", q_lower) if len(w) > 1]
+    # Filter stopwords for recall calculation if substantive terms remain
+    substantive_q_words = [w for w in raw_q_words if w not in FALLBACK_STOPWORDS]
+    q_words = substantive_q_words if substantive_q_words else raw_q_words
+
     c_words = set(re.findall(r"\w+", c_lower))
     if not q_words or not c_words:
         return 0.0
@@ -377,11 +465,20 @@ def add_knowledge(client_id: str, title: str, content: str) -> str:
     else:
         logger.warning("⚠️ Embedding or Qdrant unavailable — falling back to JSON store")
 
-    if not saved_successfully:
-        docs = load_fallback_db(client_id)
-        docs.append({"id": doc_id, "title": title, "content": content})
-        save_fallback_db(client_id, docs)
-        logger.info(f"✅ Saved to Fallback JSON Database for client_id={client_id}")
+    # Always persist chunked documents to the local fallback store so offline/degraded mode mirrors Qdrant
+    docs = load_fallback_db(client_id)
+    docs = [d for d in docs if d.get("doc_id") != doc_id and d.get("id") != doc_id]
+    for i, ch in enumerate(chunks):
+        docs.append({
+            "id": f"{doc_id}_{i}",
+            "doc_id": doc_id,
+            "title": title,
+            "chunk_index": i,
+            "chunks_count": len(chunks),
+            "content": ch
+        })
+    save_fallback_db(client_id, docs)
+    logger.info(f"✅ Synced {len(chunks)} chunk(s) to Fallback JSON Database for client_id={client_id}")
 
     _link_client_in_db(client_id)
     return doc_id
@@ -395,13 +492,13 @@ def get_knowledge_base(client_id: str) -> list[dict]:
         docs = qdrant_get_all_documents()
         if docs:
             return docs
-        return load_all_fallback_docs()
+        return _group_fallback_chunks_into_documents(load_all_fallback_docs())
 
     docs = qdrant_get_client_documents(client_id)
     if docs:
         return docs
 
-    return load_fallback_db(client_id)
+    return _group_fallback_chunks_into_documents(load_fallback_db(client_id))
 
 
 def delete_knowledge(client_id: str, doc_id: str) -> bool:
@@ -412,7 +509,12 @@ def delete_knowledge(client_id: str, doc_id: str) -> bool:
     deleted_fallback = False
     docs = load_fallback_db(client_id)
     initial_len = len(docs)
-    new_docs = [doc for doc in docs if doc.get("id") != doc_id]
+    new_docs = [
+        doc for doc in docs
+        if doc.get("id") != doc_id
+        and doc.get("doc_id") != doc_id
+        and not str(doc.get("id", "")).startswith(f"{doc_id}_")
+    ]
     if len(new_docs) < initial_len:
         save_fallback_db(client_id, new_docs)
         deleted_fallback = True
@@ -428,7 +530,12 @@ def delete_knowledge(client_id: str, doc_id: str) -> bool:
                     if isinstance(legacy_data, dict) and client_id in legacy_data:
                         legacy_docs = legacy_data[client_id]
                         if isinstance(legacy_docs, list):
-                            new_legacy = [d for d in legacy_docs if d.get("id") != doc_id]
+                            new_legacy = [
+                                d for d in legacy_docs
+                                if d.get("id") != doc_id
+                                and d.get("doc_id") != doc_id
+                                and not str(d.get("id", "")).startswith(f"{doc_id}_")
+                            ]
                             if len(new_legacy) < len(legacy_docs):
                                 legacy_data[client_id] = new_legacy
                                 f.seek(0)
@@ -463,6 +570,19 @@ def query_knowledge(client_id: str, query: str, top_k: int = 3, min_score: float
             if context:
                 logger.info(f"✅ Qdrant RAG retrieved {len(results)} chunks exceeding min_score={effective_min_score} (length: {len(context)})")
                 return context
+
+        # Cross-lingual semantic fallback: Regional languages / Romanized text (e.g. Hinglish)
+        # naturally have lower cosine similarity (0.50-0.67) against English documentation.
+        # If strict threshold yielded 0 results, retry with cross-lingual tolerance floor (0.52).
+        if effective_min_score > 0.55:
+            fallback_score = max(0.52, effective_min_score - 0.16)
+            cross_results = qdrant_search(client_id, query_vector, top_k=top_k, min_score=fallback_score)
+            if cross_results:
+                context = "\n---\n".join(r["content"] for r in cross_results if r.get("content"))
+                if context:
+                    logger.info(f"✅ Qdrant RAG cross-lingual match: {len(cross_results)} chunks exceeding relaxed score={fallback_score} (length: {len(context)})")
+                    return context
+
         logger.warning(f"⚠️ Qdrant returned no results >= min_score {effective_min_score} for client_id={client_id} — falling back to JSON")
     else:
         logger.warning("⚠️ embed_service unavailable — falling back to JSON")
@@ -472,7 +592,10 @@ def query_knowledge(client_id: str, query: str, top_k: int = 3, min_score: float
     if not docs:
         return ""
 
-    ranked = [(calculate_fallback_score(query, doc.get("content", "")), doc.get("content", "")) for doc in docs]
+    ranked = [
+        (calculate_fallback_score(query, f"{doc.get('title', '')}\n{doc.get('content', '')}"), doc.get("content", ""))
+        for doc in docs
+    ]
     ranked.sort(key=lambda x: x[0], reverse=True)
     # Require at least 0.20 score in fallback to eliminate spurious matches
     top_matches = [doc[1] for doc in ranked[:top_k] if doc[0] >= 0.20]
@@ -513,10 +636,16 @@ def retrieve_knowledge(client_id: str, query: str, top_k: int = 3, min_score: fl
         fallback_results = []
         for doc in all_docs:
             cid = doc.get("client_id", "")
-            score = calculate_fallback_score(query, doc.get("content", ""))
+            title_text = doc.get("title", "")
+            content_text = doc.get("content", "")
+            score = calculate_fallback_score(query, f"{title_text}\n{content_text}")
             fallback_results.append({
-                "id": doc.get("id"), "title": doc.get("title", ""), "doc_id": doc.get("id"),
-                "content": doc.get("content", ""), "score": round(score, 3), "client_id": cid
+                "id": doc.get("id"),
+                "title": title_text,
+                "doc_id": doc.get("doc_id") or doc.get("id"),
+                "content": content_text,
+                "score": round(score, 3),
+                "client_id": cid,
             })
         fallback_results.sort(key=lambda x: x["score"], reverse=True)
         return [r for r in fallback_results[:top_k] if r["score"] >= 0.20]
@@ -532,8 +661,13 @@ def retrieve_knowledge(client_id: str, query: str, top_k: int = 3, min_score: fl
         return []
 
     ranked = [
-        {"id": doc.get("id", ""), "title": doc.get("title", ""), "doc_id": doc.get("id", ""),
-         "content": doc.get("content", ""), "score": round(calculate_fallback_score(query, doc.get("content", "")), 3)}
+        {
+            "id": doc.get("id", ""),
+            "title": doc.get("title", ""),
+            "doc_id": doc.get("doc_id") or doc.get("id", ""),
+            "content": doc.get("content", ""),
+            "score": round(calculate_fallback_score(query, f"{doc.get('title', '')}\n{doc.get('content', '')}"), 3),
+        }
         for doc in docs
     ]
     ranked.sort(key=lambda x: x["score"], reverse=True)
@@ -671,3 +805,131 @@ def parse_uploaded_file(file_name: str, file_content: bytes) -> tuple[str, str]:
 
     else:
         raise ValueError(f"Unsupported file format: .{ext}. Only .md, .txt, .docx, .doc, and .pdf files are allowed.")
+
+
+def reconcile_and_sync_knowledge(client_id: str) -> dict:
+    """
+    Two-pass zero-data-loss reconciliation between Fallback JSON and Qdrant.
+    
+    Pass 1 (Upstream Recovery): Finds chunks in fallback JSON that are missing
+    from Qdrant (e.g. uploaded during an embed_service outage), embeds them,
+    and upserts into Qdrant. No file lock held during network calls.
+    
+    Pass 2 (Downstream Snapshot): Scrolls all confirmed points from Qdrant
+    (paginated, not truncated at 256) and writes an atomic snapshot to
+    fallback_<client_id>.json.
+    
+    If client_id == "ALL", discovers tenants from both MySQL and disk, then
+    reconciles each one.
+    """
+    if client_id == "ALL":
+        tenant_ids = set()
+        try:
+            from app.db import get_db_ctx
+            with get_db_ctx() as db:
+                with db.cursor() as cursor:
+                    cursor.execute("SELECT DISTINCT client_id FROM email_accounts")
+                    for row in cursor.fetchall():
+                        if row[0]:
+                            tenant_ids.add(row[0].strip().upper())
+        except Exception as e:
+            logger.warning(f"⚠️ Could not discover tenants from DB: {e}")
+
+        if os.path.exists(FALLBACK_PATH):
+            for fname in os.listdir(FALLBACK_PATH):
+                if fname.startswith("fallback_") and fname.endswith(".json") and fname != "fallback_db.json":
+                    cid = fname[len("fallback_"):-len(".json")]
+                    if cid:
+                        tenant_ids.add(cid.strip().upper())
+
+        results = {}
+        for tid in sorted(tenant_ids):
+            results[tid] = reconcile_and_sync_knowledge(tid)
+        return {"tenants_reconciled": len(results), "details": results}
+
+    qdrant_cid = client_id.strip().upper()
+    result = {"client_id": qdrant_cid, "pass1_promoted": 0, "pass2_snapshot_chunks": 0, "errors": []}
+
+    # --- Pass 1: Fallback -> Qdrant (promote unindexed documents) ---
+    try:
+        fallback_chunks = load_fallback_db(client_id)
+        if fallback_chunks:
+            fb_doc_ids = set()
+            for chunk in fallback_chunks:
+                did = chunk.get("doc_id") or chunk.get("id", "")
+                if did:
+                    fb_doc_ids.add(did)
+
+            qdrant_docs = qdrant_get_client_documents(qdrant_cid)
+            qdrant_doc_ids = {d["id"] for d in qdrant_docs} if qdrant_docs else set()
+
+            missing_doc_ids = fb_doc_ids - qdrant_doc_ids
+
+            for doc_id in missing_doc_ids:
+                doc_chunks = [c for c in fallback_chunks if (c.get("doc_id") or c.get("id", "")) == doc_id]
+                if not doc_chunks:
+                    continue
+                doc_chunks.sort(key=lambda c: c.get("chunk_index", 0))
+                texts = [c.get("content", "") for c in doc_chunks]
+                title = doc_chunks[0].get("title", "Untitled Document")
+
+                vectors = embed_passages(texts)
+                if vectors is not None and ensure_collection():
+                    ok = upsert_chunks(qdrant_cid, doc_id, title, texts, vectors)
+                    if ok:
+                        result["pass1_promoted"] += 1
+                        logger.info(f"✅ Reconciliation promoted doc_id={doc_id} ({len(texts)} chunks) to Qdrant")
+                    else:
+                        result["errors"].append(f"Upsert failed for doc_id={doc_id}")
+                else:
+                    result["errors"].append(f"Embedding unavailable for doc_id={doc_id}")
+    except Exception as e:
+        result["errors"].append(f"Pass 1 error: {str(e)}")
+        logger.error(f"❌ Reconciliation Pass 1 failed for {qdrant_cid}: {e}")
+
+    # --- Pass 2: Qdrant -> Fallback (authoritative snapshot) ---
+    try:
+        from qdrant_client import models as qmodels
+        from app.vector_store import get_qdrant_client, COLLECTION_NAME
+
+        qclient = get_qdrant_client()
+        if qclient is not None:
+            all_chunks = []
+            next_offset = None
+            while True:
+                points, next_offset = qclient.scroll(
+                    collection_name=COLLECTION_NAME,
+                    scroll_filter=qmodels.Filter(
+                        must=[qmodels.FieldCondition(key="client_id", match=qmodels.MatchValue(value=qdrant_cid))]
+                    ),
+                    limit=256,
+                    offset=next_offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+                for p in points:
+                    payload = p.payload or {}
+                    all_chunks.append({
+                        "id": str(p.id),
+                        "doc_id": str(payload.get("doc_id", "")),
+                        "title": payload.get("title", ""),
+                        "chunk_index": payload.get("chunk_index", 0),
+                        "chunks_count": payload.get("chunks_count", 1),
+                        "content": payload.get("content", ""),
+                    })
+                if next_offset is None:
+                    break
+
+            if all_chunks:
+                save_fallback_db(client_id, all_chunks)
+                result["pass2_snapshot_chunks"] = len(all_chunks)
+                logger.info(f"✅ Reconciliation snapshot: {len(all_chunks)} chunks written to fallback for {qdrant_cid}")
+            else:
+                logger.info(f"ℹ️ Qdrant has 0 chunks for {qdrant_cid} — fallback not overwritten")
+        else:
+            result["errors"].append("Qdrant client unavailable for Pass 2")
+    except Exception as e:
+        result["errors"].append(f"Pass 2 error: {str(e)}")
+        logger.error(f"❌ Reconciliation Pass 2 failed for {qdrant_cid}: {e}")
+
+    return result

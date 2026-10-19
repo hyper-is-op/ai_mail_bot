@@ -432,8 +432,15 @@ def delete_client_account(client_id: str) -> dict:
         try:
             from app.vector_store import delete_client_data
             if not delete_client_data(client_id):
-                print(f"Qdrant purge returned False for client_id={client_id} (Qdrant may be down — fallback JSON entries, if any, are not purged by this path)")
+                print(f"Qdrant purge returned False for client_id={client_id} (Qdrant may be down)")
         except Exception as rag_err:
             print(f"Qdrant purge error: {rag_err}")
+
+        # purge fallback JSON file from disk
+        try:
+            from app.rag import purge_client_fallback
+            purge_client_fallback(client_id)
+        except Exception as fb_err:
+            print(f"Fallback JSON purge error: {fb_err}")
 
         return {"success": True, "message": f"Client {client_id} deleted successfully"}

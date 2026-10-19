@@ -85,12 +85,13 @@ class TestAnalyticsDeep(unittest.TestCase):
 
     @classmethod
     def _seed_fixtures(cls):
-        now = datetime.utcnow()
-        yesterday = now - timedelta(days=1)
-        last_week = now - timedelta(days=8)
-
         with get_db_ctx() as db:
             with db.cursor() as cursor:
+                cursor.execute("SELECT NOW()")
+                now = cursor.fetchone()[0]
+                yesterday = now - timedelta(days=1)
+                last_week = now - timedelta(days=8)
+
                 # 1. Email Accounts (Tenant A starts week on monday, Tenant B on sunday)
                 cursor.execute("""
                     INSERT INTO email_accounts 

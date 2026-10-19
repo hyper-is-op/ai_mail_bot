@@ -59,7 +59,8 @@ services:
       - ./worker:/app/worker
       - ./tests:/app/tests
       - ./knowledge_fallback:/app/knowledge_fallback   # shared JSON fallback store
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8024 --reload
+      - ./diagnostic_tools:/app/diagnostic_tools
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8024 --reload --reload-dir app
     mem_limit: 512m
     depends_on:
       redis:
@@ -85,6 +86,7 @@ services:
       - ./worker:/app/worker
       - ./tests:/app/tests
       - ./knowledge_fallback:/app/knowledge_fallback   # shared JSON fallback store
+      - ./diagnostic_tools:/app/diagnostic_tools
     mem_limit: 2g
     depends_on:
       redis:

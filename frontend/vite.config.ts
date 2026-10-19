@@ -22,7 +22,15 @@ export default defineConfig({
       '/ws': {
         target: 'ws://127.0.0.1:8024',
         ws: true,
-        changeOrigin: true
+        changeOrigin: true,
+        configure: (proxy) => {
+          proxy.on('error', (err: any) => {
+            if (err?.code === 'ECONNRESET' || err?.code === 'ECONNREFUSED' || err?.message?.includes('socket hang up')) {
+              return;
+            }
+            console.warn('[vite] ws proxy error:', err?.message || err);
+          });
+        }
       }
     }
   },

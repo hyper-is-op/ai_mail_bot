@@ -13,29 +13,48 @@ logger = logging.getLogger(__name__)
 # ==============================
 def detect_intent_llm(query: str) -> dict:
     prompt = f"""
-You are a query classifier. Your only job is to analyze the user query and return structured JSON.
+You are a deterministic customer support query classifier. Analyze the user query and return ONLY a single valid JSON object matching the exact schema below.
 
 ## Task
-Classify the query into exactly one intent, extract ALL ticket_ids/order_ids if present, perform sentiment analysis, and assign a priority level.
+1. Classify the query into Set-1 Intent (`intent`).
+2. Extract all support ticket IDs, order IDs, or transaction/invoice reference IDs (`ticket_ids`).
+3. Classify customer sentiment (`sentiment`).
+4. Assign a support priority level (`priority`).
 
-## Intents
-- `issue_resolved`: Customer explicitly indicates that their problem, issue, ticket, or inquiry has been resolved, fixed, sorted out, is working fine now, or they no longer need assistance (with no new questions or pending problems).
-- `off_topic_nonsense`: Standalone greetings/casual openers with no issue described (e.g. "hello", "hi there", "hello ladies", "hey guys", "good morning"), unintelligible gibberish, keyboard mash, spam, test text, blank/random characters, or completely off-topic emails unrelated to company support, products, or services.
-- `ticket_create`: User is explicitly asking to create, open, raise, or log a new ticket/complaint/case, or asking support to create a ticket for their issue
-- `ticket_status`: User is asking about status of an existing ticket, order, complaint, delivery, or support request
-- `marketing_promotional`: Marketing email, promotional campaign, newsletter, job alert blast, webinar invite, discount/sale offer, automated digest, or educational course advertisement (requiring no customer support action)
-- `general_query`: Genuine customer support query, product question, policy inquiry, technical issue, or problem description requiring an answer (MUST contain an actual question, problem, or inquiry).
+## Intents (Choose Exactly ONE)
+- `issue_resolved`: Customer explicitly confirms that their problem, ticket, or inquiry is resolved, fixed, or no longer needs help, AND asks NO new questions or pending requests.
+- `off_topic_nonsense`: ONLY standalone greetings with no question asked (e.g., "hello", "hi there"), unintelligible gibberish/keyboard mash ("asdf123"), blank/test messages, or completely unrelated non-business topics (e.g., sports, cooking, weather). NEVER choose this for inquiries about products, features, or services—even if the product name is unfamiliar.
+- `ticket_create`: Customer explicitly asks to create, open, raise, or log a new support ticket/complaint/case, or explicitly requests escalation to a human agent.
+- `ticket_status`: Customer asks for the status, tracking, or update on an existing support ticket, order, delivery, refund, or complaint (or replies with only an order/ticket reference number).
+- `marketing_promotional`: Inbound marketing email, promotional blast, newsletter, job alert, webinar invite, cold sales pitch, or automated digest requiring no support reply.
+- `general_query`: Genuine customer support question, product inquiry, feature inquiry (e.g., "tell me about X", "what is X?", "how does X work?"), policy question, billing question, or technical problem description requiring troubleshooting or an answer.
 
-## Sentiment Analysis
-Classify user sentiment into exactly one of: `Angry`, `Neutral`, `Happy`.
+## Precedence Rules (When Multiple Signals Exist)
+1. Any message asking for information, explanation, or overview of a named product, feature, tool, or service (e.g., "Tell me about CZ CallBlast", "What does CZ Omni do?") is ALWAYS `general_query`, NEVER `off_topic_nonsense`—even if the product name is unrecognized.
+2. If the message contains ANY unresolved question, new issue, or status check alongside a "thank you" or resolved note, NEVER choose `issue_resolved`—choose `ticket_create`, `ticket_status`, or `general_query` based on the active request.
+3. If the customer describes a problem AND explicitly asks to open/raise a ticket or speak to a human, choose `ticket_create`.
+4. If the customer asks about an existing order, delivery, payment, or ticket status, choose `ticket_status`.
 
-## Priority Tagging
-Classify priority level into exactly one of: `Critical`, `High`, `Medium`, `Low`.
+## ID Extraction (`ticket_ids`)
+- Extract all order numbers, ticket references, or invoice/transaction IDs exactly as written (e.g., "#1001", "ORD-9201", "T-260526-00431", "10294").
+- Do NOT extract phone numbers, dates, street numbers, zip codes, or monetary amounts.
+- If no reference IDs are present, return an empty array `[]`.
 
-## Output Format
+## Sentiment Analysis (`sentiment`)
+- `Angry`: Frustrated, upset, demanding, threatening cancellation/chargeback, using all-caps complaints, or expressing dissatisfaction with delays/service.
+- `Happy`: Expressing gratitude, praise, satisfaction, or relief that an issue worked out.
+- `Neutral`: Matter-of-fact inquiry, problem report, or status check without strong positive or negative emotion.
+
+## Priority Tagging (`priority`)
+- `Critical`: System outage, blocked payment/checkout, security/account breach, unauthorized charge, or severe escalation threat.
+- `High`: Angry sentiment, failed delivery, defective/damaged order, billing/refund dispute, or repeated unresolved follow-up.
+- `Medium`: Standard technical issue, order/ticket status check, or account/product troubleshooting.
+- `Low`: General FAQ/policy question, feature inquiry, resolved confirmation, off-topic message, or promotional email.
+
+## Output Format (Raw JSON Only — No Markdown Fences, No Explanation)
 {{
   "intent": "issue_resolved" | "off_topic_nonsense" | "ticket_create" | "ticket_status" | "marketing_promotional" | "general_query",
-  "ticket_ids": ["<id1>", "<id2>"] | [],
+  "ticket_ids": ["<id1>", "<id2>"],
   "sentiment": "Angry" | "Neutral" | "Happy",
   "priority": "Critical" | "High" | "Medium" | "Low"
 }}

@@ -12,6 +12,7 @@ from app.rag import (
     query_knowledge,
     retrieve_knowledge,
     parse_uploaded_file,
+    reconcile_and_sync_knowledge,
 )
 from app.db import get_db_ctx
 
@@ -145,6 +146,15 @@ async def upload_rag_file_endpoint(
         return {"status": "success", "doc_id": doc_id, "title": title}
     except ValueError as val_err:
         raise HTTPException(status_code=400, detail=str(val_err))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/admin/rag/reconcile/{client_id}", dependencies=[Depends(RedisRateLimiter(limit=3, window=300))])
+def reconcile_rag_endpoint(client_id: str, user: dict = Depends(require_admin())):
+    try:
+        result = reconcile_and_sync_knowledge(client_id)
+        return {"status": "success", **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

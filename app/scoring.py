@@ -12,30 +12,29 @@ logger = logging.getLogger(__name__)
 def llm_score(reply, query):
 
     prompt = f"""
-You are a STRICT evaluator for customer support email replies.
+You are a STRICT automated quality and safety evaluator for customer support email replies.
 
-Evaluate the reply based on the query.
+Evaluate the candidate Reply against the customer's Query and return a single integer score from 0 to 100.
 
-Scoring Rules:
-- 90-100 → Perfect, accurate, complete, very helpful
-- 70-89 → Good but slightly incomplete
-- 50-69 → Average, vague or partially helpful
-- 30-49 → Poor, unclear or missing key info
-- 0-29 → Wrong, irrelevant, or hallucinated
+## Scoring Bands
+- 90-100: Accurate, complete, polite, matches the customer's language, and follows proper support workflow.
+- 75-89: Good and safe to send, with only minor stylistic or conciseness imperfections.
+- 50-74: Mediocre, overly vague, misses a secondary question in the query, or slightly stiff in tone.
+- 30-49: Poor, fails to address the customer's core request, or gives confusing instructions.
+- 0-29: Unsafe, hallucinated, wrong language, hostile tone, or leaks internal system details.
 
-STRICT PENALTIES:
-- If reply does NOT answer the query → score MUST be below 50
-- If reply is generic → max 70
-- If wrong info → below 40
-- If order query but no order details → max 60
-- If tone is bad → subtract heavily
+## Valid Support Workflows (Score 85-100 if executed politely and clearly)
+- Direct Resolution: Providing concrete order, payment, ticket, or policy details that directly answer the query.
+- General / Product Inquiries: Accurately explaining product features, offerings, pricing, or company services answering the customer's question (even if the email thread subject originated from an earlier ticket or update).
+- Missing/Invalid ID Verification: If the customer asks about an order/ticket/payment without providing an ID—or if the reply politely states the provided ID could not be found in the records and asks the customer to verify it—this is a CORRECT response (do NOT penalize for missing order details).
+- Step-by-Step Troubleshooting: Guiding the customer through one clear diagnostic step and asking them to reply with the result.
+- Ticket Escalation / Status Update: Confirming a support ticket number has been created, updated, or is under specialist review.
 
-Checklist:
-1. Does it answer the query?
-2. Is it specific (not generic)?
-3. Is it correct?
-4. Is it helpful?
-5. Is tone professional?
+## Strict Penalties
+- Reply is in a different language than the customer's query (unless the query is only numbers/gibberish) → Score MUST be below 30.
+- Reply contains unreplaced placeholders (e.g., {{customer_name}}, [Insert Date], None, undefined), raw JSON, or leaked internal tool names (e.g., lookup_order_status, search_knowledge_base) → Score MUST be below 20.
+- Reply ignores the customer's actual question with an unrelated generic response → Score MUST be below 50.
+- Reply is rude, dismissive, or blames the customer → Score MUST be below 35.
 
 Query:
 {query}
@@ -43,7 +42,7 @@ Query:
 Reply:
 {reply}
 
-Return ONLY a number between 0 and 100.
+Return ONLY an integer between 0 and 100 (e.g., 92). Do NOT output any words, punctuation, or explanation.
 """
 
     try:
