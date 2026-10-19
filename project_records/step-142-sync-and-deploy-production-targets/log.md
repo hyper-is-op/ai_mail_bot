@@ -1,0 +1,11 @@
+# Step 142 Log: Sync and Deploy Production Targets
+
+- **2026-10-19T17:15:00+05:30**: Inspected git repository status in `/home/hyper_is_op/mail_ai_automation`, `/Czentrix/apps/Smart_Mail_Agent_BE`, `/home/hyper_is_op/Smart_Mail_Agent_FE`, and `/var/www/html/Smart_Mail_Agent`.
+- **2026-10-19T17:18:20+05:30**: Executed Sync 1 (GitHub): Committed workspace changes (`34e2745`) and pushed `origin main` to `git@github.com:hyper-is-op/ai_mail_bot.git`. Working tree clean.
+- **2026-10-19T17:22:15+05:30**: Executed Sync 2 (Backend Target): Synced workspace to `/Czentrix/apps/Smart_Mail_Agent_BE` using `rsync` with standard production exclusions (`.git`, `.env*`, `chroma_db`, `qdrant_storage`, `frontend`, `.agents`, `project_records`, `tests`, `scratch`, `backups`, `check_352.py`, `Email_Bot_Architecture.pdf`, `__pycache__`, `.venv`). Committed staged changes as `715cb1e`.
+- **2026-10-19T17:26:40+05:30**: Executed Sync 3 (Frontend Source & Build): Synced `frontend/` to `/home/hyper_is_op/Smart_Mail_Agent_FE/` preserving `public/config.js`. Executed `pnpm run build` in `/home/hyper_is_op/Smart_Mail_Agent_FE` producing production bundle: `dist/assets/index-CceJZypa.css` (76.15 kB), `dist/assets/index--8EETgOw.js` (1.36 MB), and `dist/index.html` with zero build errors.
+- **2026-10-19T17:32:00+05:30**: Formulated Sync 4 verification plan and requested explicit confirmation before modifying web root per user requirement.
+- **2026-10-19T17:36:45+05:30**: Received user confirmation to proceed with Sync 4.
+- **2026-10-19T17:37:02+05:30**: Deployed `dist/index.html` and `dist/assets/` into `/var/www/html/Smart_Mail_Agent/`. Preserved `/var/www/html/Smart_Mail_Agent/config.js` (`BASENAME: "/Smart_Mail_Agent"`). Purged obsolete bundles (`index-Co8xsKA7.js`, `index-kJ5uIDLg.css`, `index-CPgZvGmr.js`, `index-DiN-GRIX.css`).
+- **2026-10-19T17:37:26+05:30**: Committed production assets in `/var/www/html/Smart_Mail_Agent` as `c212bc2` (`deploy: update production frontend build to bundle -8EETgOw`).
+- **2026-10-19T17:37:46+05:30**: Verified HTTP 200 OK responses on `http://172.16.3.215/Smart_Mail_Agent/`, `http://172.16.3.215/Smart_Mail_Agent/config.js`, and `http://172.16.3.215/Smart_Mail_Agent/assets/index--8EETgOw.js`.
