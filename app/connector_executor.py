@@ -405,7 +405,21 @@ def execute_connector(
         logger.info(f"📥 Connector Response [{response.status_code}]: {response_json}")
 
         mapped = _apply_response_mapping(response_json, config.get("response_mapping"))
-        return {"success": True, "data": mapped}
+
+        # BOLA / Owner Email Extraction from raw response or mapped data
+        owner_email = None
+        owner_email_path = config.get("owner_email_path")
+        if owner_email_path:
+            try:
+                owner_email = jmespath.search(owner_email_path, response_json)
+                if not owner_email and isinstance(mapped, dict):
+                    owner_email = jmespath.search(owner_email_path, mapped)
+                if owner_email:
+                    owner_email = str(owner_email).strip().lower()
+            except Exception as jmes_err:
+                logger.warning(f"⚠️ Failed to evaluate owner_email_path '{owner_email_path}': {jmes_err}")
+
+        return {"success": True, "data": mapped, "owner_email": owner_email}
 
     except ExecutorError as e:
         logger.error(f"❌ Executor error: {e}")
@@ -420,10 +434,13 @@ def execute_connector(
             except Exception:
                 pass
         logger.error(f"❌ Executor HTTP call failed: {e}{resp_text}")
+        is_timeout = isinstance(e, requests.exceptions.Timeout)
+        is_5xx = bool(status_code is not None and status_code >= 500)
         return {
             "success": False,
             "status_code": status_code,
             "not_found": (status_code == 404),
+            "upstream_outage": (is_timeout or is_5xx),
             "error": f"{e}{resp_text}"
         }
     except Exception as e:

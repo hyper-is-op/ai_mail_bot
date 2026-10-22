@@ -373,74 +373,112 @@ def get_all_users():
 
 
 def delete_client_account(client_id: str) -> dict:
+    """
+    Hardened two-stage tenant deletion:
+    1. Immediate decommissioning: Mark client 'deleting' and purge Redis auth/session tokens.
+    2. Dynamic DB purge: Query information_schema to discover all tables containing client_id
+       and purge operational records in a transactional sweep (preserving global configs, users last).
+    3. External state purge: Vector store embeddings and disk fallback JSON.
+    """
+    client_id_clean = client_id.strip() if client_id else ""
+    if not client_id_clean or client_id_clean == "GLOBAL":
+        return {"success": False, "error": "Invalid client_id for deletion"}
+
     with get_db_ctx() as conn:
         with conn.cursor() as cursor:
-            # verify client exists
-            cursor.execute("SELECT email FROM users WHERE client_id = %s", (client_id,))
+            # 1. Verify client exists
+            cursor.execute("SELECT email, status FROM users WHERE client_id = %s", (client_id_clean,))
             row = cursor.fetchone()
             if not row:
                 return {"success": False, "error": "Client not found"}
             email = row[0]
 
-            # delete all MySQL data
-            cursor.execute("DELETE FROM celery_task_log WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM chat_history WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM client_llm_config WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM create_payload_table WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM email_accounts WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM email_customers WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM llm_logs WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM paused_emails WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM payload_get_table WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM ticket_record WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM users WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM blocked_keywords WHERE client_id = %s", (client_id,))
-            cursor.execute("DELETE FROM reply_blocked_by_keyword WHERE client_id = %s", (client_id,))
+            # Stage 1: Mark user as inactive immediately so in-flight / incoming operations reject it
+            cursor.execute("UPDATE users SET status = 'inactive' WHERE client_id = %s", (client_id_clean,))
+        conn.commit()
+
+    # Stage 1b: Purge Redis immediately to invalidate active sessions and drop IMAP cache
+    try:
+        r_sessions = _session_redis()
+        for key in r_sessions.scan_iter("session:*"):
+            raw = r_sessions.get(key)
+            if raw:
+                try:
+                    data = json.loads(raw)
+                    if data.get("client_id") == client_id_clean:
+                        r_sessions.delete(key)
+                except Exception:
+                    pass
+
+        from app.redis_pool import get_redis_main, get_redis_history
+        r_main = get_redis_main()
+        if email:
+            r_main.delete(f"reset_otp:{email}")
+
+        r_history = get_redis_history()
+        for key in r_history.scan_iter(f"chat_history:{client_id_clean}:*"):
+            r_history.delete(key)
+    except Exception as redis_err:
+        logger.error(f"Redis purge error for {client_id_clean}: {redis_err}")
+
+    # Stage 2: Dynamic MySQL purge across all tables with client_id
+    with get_db_ctx() as conn:
+        with conn.cursor() as cursor:
+            # Dynamically discover all tables containing client_id in this database
+            cursor.execute("""
+                SELECT DISTINCT table_name
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE() AND column_name = 'client_id'
+            """)
+            discovered_tables = [r[0] for r in cursor.fetchall()]
+
+            # Sort tables so 'users' is deleted strictly last
+            operational_tables = [t for t in discovered_tables if t != "users"]
+
+            purged_counts = {}
+            for table in operational_tables:
+                try:
+                    if table == "client_email_disclaimers":
+                        # Protect GLOBAL disclaimers
+                        cursor.execute(
+                            "DELETE FROM `client_email_disclaimers` WHERE client_id = %s AND client_id != 'GLOBAL'",
+                            (client_id_clean,)
+                        )
+                    else:
+                        cursor.execute(f"DELETE FROM `{table}` WHERE client_id = %s", (client_id_clean,))
+                    purged_counts[table] = cursor.rowcount
+                except Exception as table_err:
+                    logger.error(f"❌ Failed to purge table `{table}` for client `{client_id_clean}`: {table_err}")
+                    raise
+
+            # Delete parent user record last
+            cursor.execute("DELETE FROM users WHERE client_id = %s", (client_id_clean,))
+            purged_counts["users"] = cursor.rowcount
 
         conn.commit()
 
-        # purge Redis
-        try:
-            import redis as _redis_lib
+    # Stage 3: Purge external vector store and disk caches
+    rag_purged = False
+    try:
+        from app.vector_store import delete_client_data
+        rag_purged = delete_client_data(client_id_clean)
+        if not rag_purged:
+            logger.warning(f"⚠️ Vector store purge returned False for client_id={client_id_clean}")
+    except Exception as rag_err:
+        logger.error(f"❌ Qdrant purge error for client_id={client_id_clean}: {rag_err}")
 
-            # DB 2 — sessions
-            r_sessions = _session_redis()
-            for key in r_sessions.scan_iter("session:*"):
-                raw = r_sessions.get(key)
-                if raw:
-                    try:
-                        data = json.loads(raw)
-                        if data.get("client_id") == client_id:
-                            r_sessions.delete(key)
-                    except Exception:
-                        pass
+    disk_purged = False
+    try:
+        from app.rag import purge_client_fallback
+        disk_purged = purge_client_fallback(client_id_clean)
+    except Exception as fb_err:
+        logger.error(f"❌ Fallback JSON purge error for client_id={client_id_clean}: {fb_err}")
 
-            # DB 0 — reset OTP
-            from app.redis_pool import get_redis_main, get_redis_history
-            r_main = get_redis_main()
-            r_main.delete(f"reset_otp:{email}")
-
-            # DB 1 — chat history
-            r_history = get_redis_history()
-            for key in r_history.scan_iter(f"chat_history:{client_id}:*"):
-                r_history.delete(key)
-
-        except Exception as redis_err:
-            print(f"Redis purge error: {redis_err}")
-
-        # purge Qdrant RAG data — single shared collection, filtered delete by client_id
-        try:
-            from app.vector_store import delete_client_data
-            if not delete_client_data(client_id):
-                print(f"Qdrant purge returned False for client_id={client_id} (Qdrant may be down)")
-        except Exception as rag_err:
-            print(f"Qdrant purge error: {rag_err}")
-
-        # purge fallback JSON file from disk
-        try:
-            from app.rag import purge_client_fallback
-            purge_client_fallback(client_id)
-        except Exception as fb_err:
-            print(f"Fallback JSON purge error: {fb_err}")
-
-        return {"success": True, "message": f"Client {client_id} deleted successfully"}
+    logger.info(f"✅ Successfully purged client {client_id_clean}. Table counts: {purged_counts}")
+    return {
+        "success": True,
+        "message": f"Client {client_id_clean} deleted successfully",
+        "purged_tables": purged_counts,
+        "rag_purged": rag_purged,
+        "disk_purged": disk_purged,
+    }

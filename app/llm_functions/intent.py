@@ -27,13 +27,15 @@ You are a deterministic customer support query classifier. Analyze the user quer
 - `ticket_create`: Customer explicitly asks to create, open, raise, or log a new support ticket/complaint/case, or explicitly requests escalation to a human agent.
 - `ticket_status`: Customer asks for the status, tracking, or update on an existing support ticket, order, delivery, refund, or complaint (or replies with only an order/ticket reference number).
 - `marketing_promotional`: Inbound marketing email, promotional blast, newsletter, job alert, webinar invite, cold sales pitch, or automated digest requiring no support reply.
-- `general_query`: Genuine customer support question, product inquiry, feature inquiry (e.g., "tell me about X", "what is X?", "how does X work?"), policy question, billing question, or technical problem description requiring troubleshooting or an answer.
+- `technical_support`: Customer reporting an unexpected technical issue, system outage, bot unresponsive or silent, broken feature, bug/error message, hardware/software failure, integration issue, or requesting technical troubleshooting.
+- `general_query`: Genuine customer support question, product capability or feature inquiry (e.g., "tell me about X", "what is X?", "how does X work?"), pricing, documentation, policy question, billing inquiry, or how-to setup assistance where the system is not actively malfunctioning.
 
 ## Precedence Rules (When Multiple Signals Exist)
 1. Any message asking for information, explanation, or overview of a named product, feature, tool, or service (e.g., "Tell me about CZ CallBlast", "What does CZ Omni do?") is ALWAYS `general_query`, NEVER `off_topic_nonsense`—even if the product name is unrecognized.
-2. If the message contains ANY unresolved question, new issue, or status check alongside a "thank you" or resolved note, NEVER choose `issue_resolved`—choose `ticket_create`, `ticket_status`, or `general_query` based on the active request.
+2. If the message contains ANY unresolved question, new issue, or status check alongside a "thank you" or resolved note, NEVER choose `issue_resolved`—choose `ticket_create`, `ticket_status`, `technical_support`, or `general_query` based on the active request.
 3. If the customer describes a problem AND explicitly asks to open/raise a ticket or speak to a human, choose `ticket_create`.
 4. If the customer asks about an existing order, delivery, payment, or ticket status, choose `ticket_status`.
+5. If the customer reports an active malfunction, system silence, error code, broken feature, or technical problem, ALWAYS choose `technical_support`, NEVER `general_query`.
 
 ## ID Extraction (`ticket_ids`)
 - Extract all order numbers, ticket references, or invoice/transaction IDs exactly as written (e.g., "#1001", "ORD-9201", "T-260526-00431", "10294").
@@ -53,7 +55,8 @@ You are a deterministic customer support query classifier. Analyze the user quer
 
 ## Output Format (Raw JSON Only — No Markdown Fences, No Explanation)
 {{
-  "intent": "issue_resolved" | "off_topic_nonsense" | "ticket_create" | "ticket_status" | "marketing_promotional" | "general_query",
+  "intent": "issue_resolved" | "off_topic_nonsense" | "ticket_create" | "ticket_status" | "marketing_promotional" | "technical_support" | "general_query",
+  "intents": ["<primary_intent>", "<secondary_intent_if_any>"],
   "ticket_ids": ["<id1>", "<id2>"],
   "sentiment": "Angry" | "Neutral" | "Happy",
   "priority": "Critical" | "High" | "Medium" | "Low"
@@ -98,6 +101,17 @@ You are a deterministic customer support query classifier. Analyze the user quer
 
         data = json.loads(cleaned_output)
         intent = data.get("intent", "general_query")
+        raw_intents = data.get("intents", [])
+        if isinstance(raw_intents, str):
+            raw_intents = [raw_intents]
+        if not isinstance(raw_intents, list) or not raw_intents:
+            intents = [intent]
+        else:
+            intents = [str(i).strip() for i in raw_intents if str(i).strip()]
+            if intent not in intents:
+                intents.insert(0, intent)
+        is_compound = len(intents) > 1
+
         raw_ticket_ids = data.get("ticket_ids", [])
         sentiment = data.get("sentiment", "Neutral")
         priority = data.get("priority", "Medium")
@@ -119,9 +133,11 @@ You are a deterministic customer support query classifier. Analyze the user quer
                 cleaned_ticket_ids = regex_ids
                 logger.info(f"🔎 Regex supplemented ticket IDs: {cleaned_ticket_ids}")
 
-        logger.info(f"✅ Intent detected: intent={intent}, ticket_ids={cleaned_ticket_ids}, sentiment={sentiment}, priority={priority}")
+        logger.info(f"✅ Intent detected: intent={intent}, intents={intents}, compound={is_compound}, ticket_ids={cleaned_ticket_ids}, sentiment={sentiment}, priority={priority}")
         return {
             "intent": intent, 
+            "intents": intents,
+            "is_compound": is_compound,
             "ticket_ids": cleaned_ticket_ids, 
             "sentiment": sentiment, 
             "priority": priority,
@@ -156,23 +172,30 @@ You are a deterministic customer support query classifier. Analyze the user quer
             fallback_priority = "Medium"
             fallback_sentiment = "Neutral"
         else:
-            fallback_intent = "general_query"
-            if any(w in q_lower for w in ["sue", "legal", "lawyer", "court", "scam"]):
-                fallback_priority = "Critical"
-                fallback_sentiment = "Angry"
-            elif any(w in q_lower for w in ["refund", "cancel", "urgent", "wrong", "fake", "bad", "worst"]):
-                fallback_priority = "High"
-                fallback_sentiment = "Angry"
-            elif any(w in q_lower for w in ["thanks", "thank you", "great", "good", "happy"]):
-                fallback_priority = "Low"
-                fallback_sentiment = "Happy"
-            else:
-                fallback_priority = "Medium"
+            if any(w in q_lower for w in ["not working", "not responding", "unresponsive", "broken", "failing", "down", "error", "crash", "glitch", "bug", "stopped working"]):
+                fallback_intent = "technical_support"
+                fallback_priority = "High" if any(w in q_lower for w in ["all channels", "entire", "production", "urgent", "critical"]) else "Medium"
                 fallback_sentiment = "Neutral"
+            else:
+                fallback_intent = "general_query"
+                if any(w in q_lower for w in ["sue", "legal", "lawyer", "court", "scam"]):
+                    fallback_priority = "Critical"
+                    fallback_sentiment = "Angry"
+                elif any(w in q_lower for w in ["refund", "cancel", "urgent", "wrong", "fake", "bad", "worst"]):
+                    fallback_priority = "High"
+                    fallback_sentiment = "Angry"
+                elif any(w in q_lower for w in ["thanks", "thank you", "great", "good", "happy"]):
+                    fallback_priority = "Low"
+                    fallback_sentiment = "Happy"
+                else:
+                    fallback_priority = "Medium"
+                    fallback_sentiment = "Neutral"
 
         logger.info(f"🔁 Fallback intent: intent={fallback_intent}, ticket_ids={ticket_ids}, sentiment={fallback_sentiment}, priority={fallback_priority}")
         return {
             "intent": fallback_intent, 
+            "intents": [fallback_intent],
+            "is_compound": False,
             "ticket_ids": ticket_ids, 
             "sentiment": fallback_sentiment, 
             "priority": fallback_priority,

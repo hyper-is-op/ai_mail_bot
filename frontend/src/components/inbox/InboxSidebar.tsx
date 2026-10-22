@@ -11,7 +11,8 @@ import {
   Filter, 
   Smile, 
   Meh, 
-  Frown 
+  Frown,
+  Megaphone 
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { 
@@ -55,6 +56,10 @@ interface InboxSidebarProps {
     blocked: number;
   };
   onResetReplyState: () => void;
+  onToggleMarketingSender?: (email: string) => void;
+  isSenderMarketing?: (email: string) => boolean;
+  onPauseToggle?: (email: string) => void;
+  onApprovePendingReply?: (emailLogId: number) => void;
 }
 
 export const InboxSidebar: React.FC<InboxSidebarProps> = ({
@@ -79,7 +84,11 @@ export const InboxSidebar: React.FC<InboxSidebarProps> = ({
   onBulkIgnoreBlocked,
   onResumeAllPaused,
   counts,
-  onResetReplyState
+  onResetReplyState,
+  onToggleMarketingSender,
+  isSenderMarketing,
+  onPauseToggle,
+  onApprovePendingReply
 }) => {
   const handleTabChange = (tab: InboxTabType) => {
     setActiveTab(tab);
@@ -349,6 +358,10 @@ export const InboxSidebar: React.FC<InboxSidebarProps> = ({
             filteredThreads.map((thread) => {
               const isSelected = selectedThread?.key === thread.key;
               const isSenderPaused = pausedEmails.includes(thread.sender);
+              const isMarketing = isSenderMarketing ? isSenderMarketing(thread.sender) : false;
+              const latestInbound = [...thread.emails].reverse().find(e => e.body || e.preview) || thread.latest_email;
+              const displaySnippet = thread.latest_email.summary || getCleanSnippet(latestInbound.preview || latestInbound.body);
+
               return (
                 <div
                   key={thread.key}
@@ -357,7 +370,7 @@ export const InboxSidebar: React.FC<InboxSidebarProps> = ({
                     onResetReplyState();
                   }}
                   className={cn(
-                    "p-3.5 rounded-xl cursor-pointer transition-all duration-150 border text-left",
+                    "group relative p-3.5 rounded-xl cursor-pointer transition-all duration-150 border text-left",
                     isSelected 
                       ? isSenderPaused 
                         ? "bg-amber-500/10 border-amber-500/20 shadow-sm" 
@@ -369,9 +382,65 @@ export const InboxSidebar: React.FC<InboxSidebarProps> = ({
                     <span className="font-semibold text-xs text-foreground truncate pr-2">
                       {thread.sender}
                     </span>
-                    <span className="text-[10px] text-muted-foreground whitespace-nowrap">
-                      {thread.time}
-                    </span>
+                    
+                    <div className="flex items-center gap-1">
+                      {/* Normal timestamp shown when not hovering */}
+                      <span className="text-[10px] text-muted-foreground whitespace-nowrap group-hover:hidden">
+                        {thread.time}
+                      </span>
+
+                      {/* Quick Actions Bar (Shown on hover) */}
+                      <div className="hidden group-hover:flex items-center gap-1 z-10" onClick={(e) => e.stopPropagation()}>
+                        {thread.status === 'Pending Review' && onApprovePendingReply && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onApprovePendingReply(thread.latest_email.id);
+                            }}
+                            className="px-1.5 py-0.5 rounded bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 font-semibold transition-all flex items-center gap-0.5 text-[10px] shadow-2xs cursor-pointer"
+                            title="Approve & Send Draft Reply"
+                          >
+                            <CheckCheck className="w-3 h-3" />
+                            <span>Approve</span>
+                          </button>
+                        )}
+
+                        {onToggleMarketingSender && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onToggleMarketingSender(thread.sender);
+                            }}
+                            className={cn(
+                              "p-1 rounded hover:bg-black/[0.05] dark:hover:bg-white/[0.1] transition-colors cursor-pointer",
+                              isMarketing ? "text-sky-500" : "text-muted-foreground hover:text-foreground"
+                            )}
+                            title={isMarketing ? "Remove from Marketing senders" : "Mark as Marketing sender"}
+                          >
+                            <Megaphone className="w-3 h-3" />
+                          </button>
+                        )}
+
+                        {onPauseToggle && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              onPauseToggle(thread.sender);
+                            }}
+                            className={cn(
+                              "p-1 rounded hover:bg-black/[0.05] dark:hover:bg-white/[0.1] transition-colors cursor-pointer",
+                              isSenderPaused ? "text-amber-500" : "text-muted-foreground hover:text-foreground"
+                            )}
+                            title={isSenderPaused ? "Resume automation for contact" : "Pause automation for contact"}
+                          >
+                            {isSenderPaused ? <PlayCircle className="w-3 h-3" /> : <PauseCircle className="w-3 h-3" />}
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-1.5 mb-1">
@@ -386,7 +455,7 @@ export const InboxSidebar: React.FC<InboxSidebarProps> = ({
                   </div>
 
                   <p className="text-[11px] text-muted-foreground truncate line-clamp-1 mb-2">
-                    {getCleanSnippet(thread.latest_email.preview || thread.latest_email.body)}
+                    {displaySnippet}
                   </p>
 
                   <div className="flex items-center justify-between pt-1">

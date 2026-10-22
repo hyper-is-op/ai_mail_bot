@@ -9,7 +9,7 @@ from typing import Dict, Any, Optional, Tuple
 
 from worker.celery_worker import celery
 from app.db import get_db_ctx
-from app.llm import current_client_id, current_thread_id, extract_ticket_and_order_ids, generate_summary_llm, generate_off_topic_reply
+from app.llm import current_client_id, current_thread_id, extract_ticket_and_order_ids, extract_entities_categorized, generate_summary_llm, generate_off_topic_reply
 from app.text_cleaning import strip_quoted_reply, strip_disclaimers, extract_clean_text_from_html, is_html_content
 from app.email_disclaimers import get_active_disclaimer_texts
 from app.mailer import send_email
@@ -32,14 +32,28 @@ def generate_ticket_id() -> str:
     return f"T-{date_part}-{random_part}"
 
 
-def resolve_thread_id(client_id: str, from_email: str, subject: str, in_reply_to: str = "", references: str = "", cursor=None) -> tuple[str, int]:
+class ThreadResolution(tuple):
     """
-    Resolves or initiates a conversation thread and returns (thread_id, prior_step).
+    Tuple representing (thread_id, prior_step) with optional is_rfc_match metadata.
+    Backward-compatible with standard 2-tuple unpacking: thread_id, prior_step = resolve_thread_id(...)
+    """
+    def __new__(cls, thread_id: str, prior_step: int, is_rfc_match: bool = False):
+        return super().__new__(cls, (thread_id, prior_step))
+
+    def __init__(self, thread_id: str, prior_step: int, is_rfc_match: bool = False):
+        self.thread_id = thread_id
+        self.prior_step = prior_step
+        self.is_rfc_match = is_rfc_match
+
+
+def resolve_thread_id(client_id: str, from_email: str, subject: str, in_reply_to: str = "", references: str = "", cursor=None) -> ThreadResolution:
+    """
+    Resolves or initiates a conversation thread and returns ThreadResolution(thread_id, prior_step, is_rfc_match).
     Respects client inactivity_timeout_hours (default: 72h) - if previous interaction
     exceeds timeout, a fresh thread_id is initiated to keep past closed metrics clean.
-    1. Matches via in_reply_to against message_id in email_logs.
-    2. Matches via references against message_id.
-    3. Fallback: Matches same sender + normalized subject within timeout window on active threads.
+    1. Matches via in_reply_to against message_id in email_logs (is_rfc_match=True).
+    2. Matches via references against message_id (is_rfc_match=True).
+    3. Fallback: Matches same sender + normalized subject within timeout window on active threads (is_rfc_match=False).
     4. Default: Generates new thread_id 'th_' + uuid4().hex[:12].
     """
     def _do_lookup(cur):
@@ -68,8 +82,8 @@ def resolve_thread_id(client_id: str, from_email: str, subject: str, in_reply_to
                     diff = cur.fetchone()
                     if diff and diff[0] is not None and diff[0] > timeout_hours:
                         logger.info(f"⏳ Thread {row[0]} timed out ({diff[0]}h > {timeout_hours}h) — initiating new thread")
-                        return None, 0
-                return row[0], int(row[1] or 0)
+                        return None, 0, False
+                return row[0], int(row[1] or 0), True
 
         # 2. Match via references
         if references and references.strip():
@@ -89,8 +103,8 @@ def resolve_thread_id(client_id: str, from_email: str, subject: str, in_reply_to
                         diff = cur.fetchone()
                         if diff and diff[0] is not None and diff[0] > timeout_hours:
                             logger.info(f"⏳ Thread {row[0]} timed out ({diff[0]}h > {timeout_hours}h) — initiating new thread")
-                            return None, 0
-                    return row[0], int(row[1] or 0)
+                            return None, 0, False
+                    return row[0], int(row[1] or 0), True
 
         # 3. Subject-based thread matching within inactivity timeout window
         # Only apply if the incoming email is an explicit reply/forward (e.g. Re: / Fwd:)
@@ -115,33 +129,172 @@ def resolve_thread_id(client_id: str, from_email: str, subject: str, in_reply_to
             """, (client_id, from_email, f"%{clean_subj[:50]}%", timeout_hours))
             row = cur.fetchone()
             if row and row[0]:
-                return row[0], int(row[1] or 0)
+                return row[0], int(row[1] or 0), False
 
-        return None, 0
+        return None, 0, False
 
     thread_id = None
     prior_step = 0
+    is_rfc = False
     try:
         if cursor is not None:
-            thread_id, prior_step = _do_lookup(cursor)
+            thread_id, prior_step, is_rfc = _do_lookup(cursor)
         else:
             with get_db_ctx() as db:
                 with db.cursor() as cur:
-                    thread_id, prior_step = _do_lookup(cur)
+                    thread_id, prior_step, is_rfc = _do_lookup(cur)
     except Exception as e:
         logger.warning(f"⚠️ Thread resolution failed: {e}")
 
     if not thread_id:
         thread_id = f"th_{uuid.uuid4().hex[:12]}"
+        is_rfc = False
 
-    return thread_id, prior_step
+    return ThreadResolution(thread_id, prior_step, is_rfc)
+
+
+def check_and_resolve_thread_entanglement(
+    client_id: str,
+    from_email: str,
+    current_thread_id: str,
+    subject: str,
+    body: str,
+    cursor=None,
+    is_rfc_match: bool = False
+) -> Optional[Dict[str, Any]]:
+    """
+    Detects cross-thread entanglement when a customer with multiple parallel active threads
+    accidentally replies into Thread A with content/entities belonging to Thread B.
+    Option A: Automatically re-anchors to Thread B and returns details to prepend notification note.
+    Bypasses immediately (0ms overhead) if sender has <= 1 active thread.
+    Direct RFC replies (matched via In-Reply-To/References) are protected from topic-keyword
+    hijacking and will only re-anchor on explicit candidate ticket/order ID citations.
+    """
+    def _do_check(cur):
+        timeout_hours = 72
+        try:
+            cur.execute("SELECT inactivity_timeout_hours FROM email_accounts WHERE client_id = %s LIMIT 1", (client_id,))
+            acc_row = cur.fetchone()
+            if acc_row and acc_row[0] is not None:
+                timeout_hours = max(1, int(acc_row[0]))
+        except Exception:
+            pass
+
+        # Fast Gate: Find all active, unresolved threads for this sender within the timeout window
+        cur.execute("""
+            SELECT thread_id, subject, troubleshooting_step
+            FROM email_logs
+            WHERE client_id = %s AND from_email = %s
+              AND created_at >= NOW() - INTERVAL %s HOUR
+              AND is_resolved = 0
+              AND thread_id IS NOT NULL
+            ORDER BY id DESC
+        """, (client_id, from_email, timeout_hours))
+        rows = cur.fetchall()
+        if not rows:
+            return None
+
+        # Group by thread_id to identify distinct active candidate threads
+        threads_by_id: Dict[str, Dict[str, Any]] = {}
+        for r in rows:
+            th_id = r[0]
+            if th_id not in threads_by_id:
+                cand_subj = r[1] or ""
+                extracted_tids = extract_ticket_and_order_ids(cand_subj)
+                cand_ticket = extracted_tids[0] if extracted_tids else ""
+                threads_by_id[th_id] = {
+                    "thread_id": th_id,
+                    "subject": cand_subj,
+                    "troubleshooting_step": int(r[2] or 0),
+                    "ticket_id": cand_ticket
+                }
+
+        # Fast Gate: If sender has 0 or 1 active thread, there is NO entanglement risk
+        if len(threads_by_id) <= 1:
+            return None
+
+        # Clean quoted reply chains so that quoted prior threads and disclaimers do not pollute topic matching
+        clean_body = strip_quoted_reply(body)
+        email_text = f"{subject} {clean_body}".lower()
+        candidates = [t for th_id, t in threads_by_id.items() if th_id != current_thread_id]
+
+        for cand in candidates:
+            cand_ticket = (cand.get("ticket_id") or "").strip()
+            # 1. Direct Ticket ID match: customer email quotes candidate's ticket ID
+            if cand_ticket and cand_ticket.lower() in email_text:
+                topic = f"Ticket #{cand_ticket}"
+                clean_subj = re.sub(r'^(re|fwd|fw):\s*', '', cand.get("subject", ""), flags=re.IGNORECASE).strip()
+                if clean_subj:
+                    topic = f"{clean_subj} ({topic})"
+                return {
+                    "reanchored": True,
+                    "target_thread_id": cand["thread_id"],
+                    "target_step": cand["troubleshooting_step"],
+                    "target_topic": topic,
+                    "target_ticket_id": cand_ticket
+                }
+
+            # Direct RFC replies (In-Reply-To / References) are strictly protected against fuzzy topic hijacking.
+            # Only explicit ticket ID citations can re-anchor a verified direct reply.
+            if is_rfc_match:
+                continue
+
+            # 2. Distinct topic / subject keywords match (only for non-RFC-matched messages)
+            cand_subj = cand.get("subject") or ""
+            clean_cand_subj = re.sub(r'^(re|fwd|fw):\s*', '', cand_subj, flags=re.IGNORECASE).strip()
+            stopwords = {
+                # Support & Meta
+                "support", "request", "issue", "problem", "question", "update", "hello",
+                "urgent", "facing", "please", "thank", "thanks", "regards", "query", "ticket",
+                "inquiry", "email", "message", "reply", "followup", "follow-up",
+                # Conversational verbs, prepositions & generic qualifiers
+                "tell", "about", "what", "more", "give", "know", "have", "need", "want",
+                "like", "also", "with", "from", "this", "that", "there", "here", "some",
+                "which", "could", "would", "should", "does", "done", "will", "show",
+                "help", "details", "features", "overview", "information", "regarding"
+            }
+            cand_tokens = {
+                tok for tok in re.findall(r'[a-zA-Z0-9_\-#]+', clean_cand_subj.lower())
+                if len(tok) >= 4 and tok not in stopwords
+            }
+            if cand_tokens:
+                matched_tokens = {tok for tok in cand_tokens if tok in email_text}
+                current_subj = threads_by_id.get(current_thread_id, {}).get("subject", "")
+                clean_cur_subj = re.sub(r'^(re|fwd|fw):\s*', '', current_subj, flags=re.IGNORECASE).strip()
+                cur_tokens = {
+                    tok for tok in re.findall(r'[a-zA-Z0-9_\-#]+', clean_cur_subj.lower())
+                    if len(tok) >= 4 and tok not in stopwords
+                }
+                if matched_tokens and not matched_tokens.intersection(cur_tokens):
+                    strong_match = any(len(tok) >= 6 for tok in matched_tokens)
+                    if (len(matched_tokens) >= 2 or strong_match) and len(matched_tokens) >= max(1, len(cand_tokens) // 2):
+                        return {
+                            "reanchored": True,
+                            "target_thread_id": cand["thread_id"],
+                            "target_step": cand["troubleshooting_step"],
+                            "target_topic": clean_cand_subj or cand["thread_id"],
+                            "target_ticket_id": cand_ticket
+                        }
+
+        return None
+
+    try:
+        if cursor is not None:
+            return _do_check(cursor)
+        else:
+            with get_db_ctx() as db:
+                with db.cursor() as cur:
+                    return _do_check(cur)
+    except Exception as e:
+        logger.warning(f"⚠️ Entanglement resolution check error: {e}")
+        return None
 
 
 def get_client_features(cursor=None, client_id: str = "") -> Dict[str, Any]:
     defaults = {
         "feature_ticket_creation": True, "feature_auto_send": True,
         "feature_rag": True, "feature_order_tracking": True, "feature_manual_reply": True,
-        "feature_strip_disclaimers": True,
+        "feature_strip_disclaimers": True, "feature_compound_triage": True,
         "admin_bot_enabled": True, "client_bot_enabled": True,
     }
     def _query(cur):
@@ -473,7 +626,7 @@ def process_email_task(self, data: Dict[str, Any]):
                 ctx.features = features
 
                 # Resolve Thread ID and prior troubleshooting step
-                thread_id, prior_step = resolve_thread_id(
+                thread_res = resolve_thread_id(
                     client_id=client_id,
                     from_email=from_email,
                     subject=data.get("subject") or "",
@@ -481,9 +634,31 @@ def process_email_task(self, data: Dict[str, Any]):
                     references=data.get("references") or "",
                     cursor=cursor
                 )
+                thread_id = thread_res[0]
+                prior_step = thread_res[1]
+                is_rfc_match = getattr(thread_res, "is_rfc_match", False)
                 ctx.thread_id = thread_id
                 ctx.troubleshooting_step = prior_step
-                logger.info(f"🧵 [Thread Resolved] ID: {thread_id} | Prior Step: {prior_step}")
+                logger.info(f"🧵 [Thread Resolved] ID: {thread_id} | Prior Step: {prior_step} | RFC Match: {is_rfc_match}")
+
+                # Check for Thread Entanglement across active threads (Option A)
+                entanglement = check_and_resolve_thread_entanglement(
+                    client_id=client_id,
+                    from_email=from_email,
+                    current_thread_id=thread_id,
+                    subject=data.get("subject") or "",
+                    body=ctx.body,
+                    cursor=cursor,
+                    is_rfc_match=is_rfc_match
+                )
+                if entanglement and entanglement.get("reanchored"):
+                    old_th = ctx.thread_id
+                    ctx.thread_id = entanglement["target_thread_id"]
+                    ctx.troubleshooting_step = entanglement["target_step"]
+                    ctx.context_data["reanchored_target_topic"] = entanglement["target_topic"]
+                    ctx.context_data["reanchored_original_thread"] = old_th
+                    ctx.log_step(f"Thread_Entanglement_Reanchored:{old_th}->{ctx.thread_id}")
+                    logger.info(f"🔀 [Thread Entanglement] Re-anchored email from {old_th} to {ctx.thread_id} (topic: '{entanglement['target_topic']}')")
 
                 # Level 0 Fast Deterministic Gates
                 if apply_deterministic_filters(ctx, cursor):
@@ -496,6 +671,9 @@ def process_email_task(self, data: Dict[str, Any]):
         # ====================================================================
         # Phase B: Network, AI & Tools Execution (ZERO DB connection held)
         # ====================================================================
+        # Strip quoted reply chains if present so downstream agent/evaluator/RAG only sees the new text
+        ctx.body = strip_quoted_reply(ctx.body)
+
         # Normalize subject: derive from first line of body if blank
         from app.utils import normalize_subject
         ctx.subject = normalize_subject(ctx.subject, ctx.body)
@@ -510,15 +688,29 @@ def process_email_task(self, data: Dict[str, Any]):
             except Exception as e:
                 logger.warning(f"⚠️ Failed to strip disclaimers: {e}")
 
-        # Deterministic Multi-Ticket Check
+        # Deterministic Multi-Ticket / Multi-Order Check with Custom Tenant Regex Support
         email_query = f"Subject: {ctx.subject}\n\n{ctx.body}"
-        ticket_ids = extract_ticket_and_order_ids(email_query)
-        ticket_ids = list(dict.fromkeys(ticket_ids))
+        from app.connector_config import get_live_config
+        cfg_order = get_live_config(client_id, "order_status")
+        cfg_ticket = get_live_config(client_id, "ticket_status")
+        custom_order_regex = cfg_order.get("id_pattern_regex") if cfg_order else None
+        custom_ticket_regex = cfg_ticket.get("id_pattern_regex") if cfg_ticket else None
 
-        if len(ticket_ids) > 1:
-            logger.warning(f"⚠️ Multiple ticket IDs in email: {ticket_ids}")
+        entities = extract_entities_categorized(
+            email_query,
+            custom_order_regex=custom_order_regex,
+            custom_ticket_regex=custom_ticket_regex
+        )
+        order_ids = entities["orders"]
+        ticket_ids = entities["tickets"]
+        all_ids = entities.get("all") or list(dict.fromkeys(order_ids + ticket_ids))
+
+        # Only trigger clarification if multiple IDs are detected
+        if len(all_ids) > 1:
+            conflicting_ids = all_ids
+            logger.warning(f"⚠️ Multiple entity IDs in email: {conflicting_ids}")
             ctx.log_step("Clarification_Request")
-            id_list = "\n".join(f"  - {tid}" for tid in ticket_ids)
+            id_list = "\n".join(f"  - {tid}" for tid in conflicting_ids)
             clarification_reply = (
                 f"Dear Customer,\n\n"
                 f"Thank you for reaching out. We noticed your email mentions multiple ticket/order IDs:\n\n"
@@ -537,13 +729,17 @@ def process_email_task(self, data: Dict[str, Any]):
             )
             ctx.draft_reply = clarification_reply
             ctx.status = "clarification_sent"
-            ctx.summary = f"Multiple ticket IDs referenced ({', '.join(ticket_ids)}). Sent clarification request."
+            ctx.summary = f"Multiple ticket IDs referenced ({', '.join(conflicting_ids)}). Sent clarification request."
             ctx.score = 0
             _finalize_task_and_log(ctx, task_id=task_id)
             return
 
+        if order_ids:
+            ctx.order_id = order_ids[0]
         if ticket_ids:
             ctx.ticket_id = ticket_ids[0]
+        elif order_ids:
+            ctx.ticket_id = order_ids[0]
 
         # Load Conversation History from Redis (with SQL fallback and continuation-gated prior thread carryover)
         ctx.history = get_history(client_id, ctx.from_email, last_n=10, thread_id=ctx.thread_id)
@@ -574,9 +770,49 @@ def process_email_task(self, data: Dict[str, Any]):
             logger.warning(f"⚠️ Intent routing failed, using defaults: {route_err}")
             ctx.intent = "general_support"
 
-        # General informational inquiries are not diagnostic steps — ensure step counter is 0
-        if ctx.intent in ("general_query", "marketing_promotional", "greeting"):
+        # Promotional emails and standalone greetings must never have diagnostic counters
+        if ctx.intent in ("marketing_promotional", "greeting"):
             ctx.troubleshooting_step = 0
+        elif ctx.intent == "general_query" and not ctx.troubleshooting_step and not ctx.history:
+            ctx.troubleshooting_step = 0
+
+        # Compound Intent Triage Gate: handle one issue at a time
+        if ctx.is_compound_intent and len(ctx.intents) > 1 and ctx.features.get("feature_compound_triage", True):
+            INTENT_LABELS = {
+                "technical_support": "Technical troubleshooting / system malfunction",
+                "general_query": "Technical troubleshooting / product inquiry",
+                "ticket_status": "Status tracking for an existing ticket or order",
+                "ticket_create": "New ticket logging / specialist escalation",
+                "issue_resolved": "Issue resolution confirmation",
+                "marketing_promotional": "Promotional inquiry",
+                "billing": "Billing / subscription inquiry",
+                "refund": "Refund / payment dispute"
+            }
+            issue_items = [INTENT_LABELS.get(i, f"{i.replace('_', ' ').capitalize()} request") for i in ctx.intents[:3]]
+            id_list = "\n".join(f"  - {item}" for item in issue_items)
+            clarification_reply = (
+                f"Dear Customer,\n\n"
+                f"Thank you for reaching out. We noticed your message contains multiple distinct inquiries:\n\n"
+                f"{id_list}\n\n"
+                f"To ensure each matter is handled thoroughly and accurately, could you please let us know which inquiry you would like us to resolve first? "
+                f"Replying with your choice will help us assist you faster.\n\n"
+                f"Thanks & Regards,\n"
+                f"Support Team"
+            )
+            logger.info(f"🔀 [Compound Triage] Multi-intent inquiry detected ({ctx.intents}) — sending triage clarification to handle one issue at a time")
+            send_email(
+                ctx.client_id,
+                ctx.from_email,
+                "Re: " + ctx.subject,
+                clarification_reply,
+                in_reply_to=ctx.message_id
+            )
+            ctx.draft_reply = clarification_reply
+            ctx.status = "clarification_sent"
+            ctx.summary = f"Multiple distinct inquiries ({', '.join(ctx.intents)}). Sent triage clarification to handle one issue at a time."
+            ctx.score = 0
+            _finalize_task_and_log(ctx, task_id=task_id)
+            return
 
         # Early exit for marketing promotional blasts or off-topic emails without explicit support inquiry or ticket
         if ctx.intent == "marketing_promotional" and not ticket_ids and not ctx.troubleshooting_step and not ctx.history:
@@ -639,9 +875,20 @@ def process_email_task(self, data: Dict[str, Any]):
         # Post-Agent Dispatch & Outbox
         if ctx.status in ("ticket_created_and_sent", "ticket_created_draft_pending"):
             logger.info(f"🎫 Ticket escalation finalized by agent tool ({ctx.status})")
+        elif ctx.response_action == "draft_mode":
+            logger.info(f"📝 [Client {client_id}] Evaluator routed to draft_mode (RAG miss / informational) — staging in Pending Review")
+            ctx.status = "pending_manual_review"
+            ctx.log_step("Routed_To_Pending_Review:RAG_Miss")
+            push_message(client_id=client_id, from_email=ctx.from_email, role="customer",
+                         subject=ctx.subject, body=ctx.body, ticket_id=ctx.ticket_id or "", thread_id=ctx.thread_id)
         elif ctx.response_action == "create_ticket" and not ctx.is_resolved:
-            if ctx.intent in ("general_query", "marketing_promotional", "greeting") or ctx.ticket_id:
-                logger.info(f"ℹ️ Ticket escalation bypassed (intent={ctx.intent}, ticket_id={ctx.ticket_id}) — dispatching draft reply")
+            # Bypass ticket escalation only for duplicate tickets or non-technical informational inquiries without diagnostic context
+            is_pure_informational = (
+                ctx.intent in ("marketing_promotional", "greeting")
+                or (ctx.intent == "general_query" and ctx.troubleshooting_step == 0 and len(ctx.history) <= 1)
+            )
+            if is_pure_informational or ctx.ticket_id:
+                logger.info(f"ℹ️ Ticket escalation bypassed (intent={ctx.intent}, ticket_id={ctx.ticket_id}, step={ctx.troubleshooting_step}) — dispatching draft reply")
                 status, save_history = dispatch_or_draft_reply(
                     client_id=client_id,
                     from_email=ctx.from_email,

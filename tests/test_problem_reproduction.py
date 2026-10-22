@@ -55,6 +55,19 @@ def get_latest_log(client_id: str, from_email: str):
 
 class TestProblemReproduction(unittest.TestCase):
 
+    @classmethod
+    def setUpClass(cls):
+        from app.rag import save_fallback_db
+        chunks = [
+            {
+                "id": "chunk_cz_omni_01",
+                "doc_id": "doc_cz_omni",
+                "title": "CZ Omni and CZ Dialer Overview",
+                "content": "CZ Omni is an enterprise omnichannel customer engagement and contact center platform supporting voice, chat, email, and social media interactions. CZ Dialer is an automated predictive, preview, and progressive dialing solution integrated into the contact center suite for high-volume outbound campaigns."
+            }
+        ]
+        save_fallback_db(CLIENT_ID, chunks)
+
     def test_reproduce_email_407_single_turn_omni(self):
         """Email #407 ('infomation request' -> 'tell me about cz omni') must RAG search, score >= 80, auto-send, and 0 tickets"""
         payload = {

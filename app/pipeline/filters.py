@@ -119,3 +119,48 @@ def apply_deterministic_filters(ctx: PipelineContext, cursor) -> bool:
         return True
 
     return False
+
+
+# ============================================================================
+# Category 6: Conversational Drift & Edge Scenarios Guards
+# ============================================================================
+import re
+
+DIAGNOSTIC_REFUSAL_PATTERNS = [
+    r"\b(send (a )?(tech|technician|engineer|human|agent|specialist))\b",
+    r"\b(talk to (a )?(human|person|agent|manager|supervisor))\b",
+    r"\b(stop (asking|sending steps|wasting my time))\b",
+    r"\b(stop asking me to (restart|reboot|check|do))\b",
+    r"\b(refuse|not going|not gonna|won\'t) (to )?(do|restart|troubleshoot|check|reboot|follow)\b",
+    r"\b(not doing (that|this|any of (this|that|these)))\b",
+    r"\b(just fix (it|this)|just do it)\b",
+    r"\b(enough of (this|steps|troubleshooting))\b",
+]
+
+LEGAL_OR_HOSTILE_PATTERNS = [
+    r"\b(lawyer|attorney|lawsuit|legal notice|legal action|court|sue you|suing|consumer court|consumer forum|regulatory complaint|\bbbb\b|attorney general|arbitration)\b",
+    r"\b(fraud|scam|scammers|police|police report|\bfir\b|litigation)\b",
+    r"\b(taking legal action|report you to)\b",
+]
+
+
+def check_diagnostic_refusal(text: str) -> bool:
+    """
+    Detects explicit customer refusal or deadlock during troubleshooting steps.
+    Distinguishes active refusal from factual negative observations (e.g. 'No, the light is still off').
+    """
+    if not text:
+        return False
+    lower = text.lower()
+    return any(re.search(pat, lower, re.IGNORECASE) for pat in DIAGNOSTIC_REFUSAL_PATTERNS)
+
+
+def check_legal_or_hostile_threat(text: str) -> bool:
+    """
+    Detects severe legal, regulatory, or hostile threats warranting immediate human review.
+    """
+    if not text:
+        return False
+    lower = text.lower()
+    return any(re.search(pat, lower, re.IGNORECASE) for pat in LEGAL_OR_HOSTILE_PATTERNS)
+

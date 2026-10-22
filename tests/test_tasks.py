@@ -322,6 +322,60 @@ class TestWorkerTasks(unittest.TestCase):
             mock_ot_reply.assert_called_once()
             mock_send.assert_called_once()
 
+    def test_11_rag_miss_routes_to_pending_review(self):
+        """Inquiry with response_action='draft_mode' must finalize as pending_manual_review and create draft"""
+        mock_self = MagicMock()
+        mock_self.request.id = "task-rag-miss-pending-123"
+
+        preflight_db = MagicMock()
+        preflight_cursor = MagicMock()
+        preflight_cursor.__enter__.return_value = preflight_cursor
+        preflight_db.cursor.return_value = preflight_cursor
+        preflight_cursor.fetchone.return_value = None
+
+        final_db = MagicMock()
+        final_cursor = MagicMock()
+        final_cursor.__enter__.return_value = final_cursor
+        final_db.cursor.return_value = final_cursor
+        final_cursor.lastrowid = 1004
+
+        preflight_ctx = MagicMock()
+        preflight_ctx.__enter__.return_value = preflight_db
+        final_ctx = MagicMock()
+        final_ctx.__enter__.return_value = final_db
+
+        def mock_agent_loop(ctx, cursor=None):
+            ctx.draft_reply = "Here is high level info about our product."
+            ctx.response_action = "draft_mode"
+            ctx.intent = "general_query"
+            ctx.score = 50
+            return ctx
+
+        with patch("worker.tasks.get_db_ctx", side_effect=[preflight_ctx, final_ctx]), \
+             patch("worker.tasks.get_history", return_value=[]), \
+             patch("worker.tasks.run_support_agent", side_effect=mock_agent_loop), \
+             patch("worker.tasks.send_email") as mock_send, \
+             patch("app.draft_service.create_draft") as mock_create_draft, \
+             patch("worker.tasks.push_message") as mock_push, \
+             patch("worker.tasks.publish_email_update"):
+            run_task(mock_self, {
+                "client_id": "CLI-TEST",
+                "from_email": "prospect@example.com",
+                "subject": "Tell me about Model X specs",
+                "body": "Does Model X support 220V power input?"
+            })
+
+            # Must NOT auto-send via SMTP
+            mock_send.assert_not_called()
+            # Must auto-create draft in draft_emails for operator review
+            mock_create_draft.assert_called_once()
+            call_kwargs = mock_create_draft.call_args[1]
+            self.assertEqual(call_kwargs["client_id"], "CLI-TEST")
+            self.assertEqual(call_kwargs["email_log_id"], 1004)
+            self.assertEqual(call_kwargs["intent"], "general_query")
+            # Push message should record customer question in conversation history
+            mock_push.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -115,6 +115,7 @@ export const analyticsApi = {
       escalation_reason?: string;
       search?: string;
       search_field?: string;
+      columns?: string[];
     } = {}
   ) {
     const query = new URLSearchParams();
@@ -126,6 +127,7 @@ export const analyticsApi = {
     if (params.escalation_reason && params.escalation_reason !== 'all') query.set('escalation_reason', params.escalation_reason);
     if (params.search) query.set('search', params.search);
     if (params.search_field && params.search_field !== 'all') query.set('search_field', params.search_field);
+    if (params.columns && params.columns.length > 0) query.set('columns', params.columns.join(','));
 
     const res = await fetch(`${BASE_URL}/reports/export/${clientId}?${query.toString()}`, {
       headers: authHeaders(),
@@ -133,7 +135,44 @@ export const analyticsApi = {
     if (!res.ok) throw new Error('Failed to export CSV report');
     return res.blob();
   },
+
+  async getReportProfiles(clientId: string): Promise<ReportProfilesResponse> {
+    const res = await fetch(`${BASE_URL}/reports/profiles/${clientId}`, {
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to fetch report profiles');
+  },
+
+  async createReportProfile(clientId: string, data: { name: string; columns: string[] }): Promise<ReportColumnProfile> {
+    const res = await fetch(`${BASE_URL}/reports/profiles/${clientId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      body: JSON.stringify(data),
+    });
+    return safeJson(res, 'Failed to create report profile');
+  },
+
+  async deleteReportProfile(clientId: string, profileId: number | string): Promise<{ status: string; id: number | string }> {
+    const res = await fetch(`${BASE_URL}/reports/profiles/${clientId}/${profileId}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    return safeJson(res, 'Failed to delete report profile');
+  },
 };
+
+export interface ReportColumnProfile {
+  id: string | number;
+  name: string;
+  is_default: boolean;
+  columns: string[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface ReportProfilesResponse {
+  profiles: ReportColumnProfile[];
+}
 
 export interface InboundHealth {
   total_inbound: number;

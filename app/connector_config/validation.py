@@ -83,3 +83,19 @@ def _strip_unmapped_fields(request_template: dict) -> dict:
         k: v for k, v in request_template.items()
         if isinstance(v, str) and _PLACEHOLDER_RE.search(v)
     }
+
+
+def validate_id_pattern_regex(regex_str: Optional[str]) -> None:
+    """
+    Validates that a custom tenant ID regex compiles safely.
+    Rejects patterns that fail re.compile or exceed 255 characters.
+    """
+    if not regex_str:
+        return
+    if len(regex_str) > 255:
+        raise TemplateValidationError("id_pattern_regex cannot exceed 255 characters.")
+    try:
+        re.compile(regex_str)
+    except re.error as e:
+        raise TemplateValidationError(f"Invalid id_pattern_regex '{regex_str}': {e}")
+

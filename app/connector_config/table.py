@@ -27,6 +27,8 @@ def ensure_connector_configs_table():
                     auth_field_name       VARCHAR(100) NULL,
                     payload_encoding        ENUM('plain','base64_query') NOT NULL DEFAULT 'plain',
                     base64_query_param_name VARCHAR(50) NULL,
+                    id_pattern_regex        VARCHAR(255) NULL,
+                    owner_email_path        VARCHAR(255) NULL,
                     status                ENUM('draft','pending_approval','live','disabled','pending_deletion') NOT NULL DEFAULT 'draft',
                     version               INT NOT NULL DEFAULT 1,
                     created_by            VARCHAR(50),
@@ -76,6 +78,24 @@ def ensure_connector_configs_table():
                 cursor.execute("""
                     ALTER TABLE connector_configs
                     MODIFY COLUMN status ENUM('draft','pending_approval','live','disabled','pending_deletion') NOT NULL DEFAULT 'draft'
+                """)
+            except Exception:
+                pass
+
+            # Category 4 Hardening: id_pattern_regex migration for tenant custom patterns
+            try:
+                cursor.execute("""
+                    ALTER TABLE connector_configs
+                    ADD COLUMN id_pattern_regex VARCHAR(255) NULL
+                """)
+            except Exception:
+                pass
+
+            # Category 4 Hardening: owner_email_path migration for BOLA verification
+            try:
+                cursor.execute("""
+                    ALTER TABLE connector_configs
+                    ADD COLUMN owner_email_path VARCHAR(255) NULL
                 """)
             except Exception:
                 pass

@@ -66,7 +66,10 @@ export type InboxTabType = 'All' | 'Marketing' | 'Replied' | 'Processing' | 'Fai
 
 export const getCleanSnippet = (text?: string): string => {
   if (!text) return '';
-  return text
+  // Strip quoted reply chains (On ... wrote:, -----Original Message-----, lines starting with >)
+  const firstSection = text.split(/\n\s*On\s+.+?wrote:|\n\s*---+\s*Original Message\s*---+|\n\s*From:\s+/i)[0];
+  return firstSection
+    .replace(/^>.*$/gm, '')
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
     .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '')

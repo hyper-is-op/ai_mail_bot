@@ -1,0 +1,4 @@
+- 2026-10-20T23:13:40+05:30: Initiated Step 147 to update default client ID from purged tenant CLI-4159FFCF to active tenant CLI-4B46C071 across diagnostic tools.
+- 2026-10-20T23:13:45+05:30: Modified diagnostic_tools/inspect_rag.py to set default client_id="CLI-4B46C071".
+- 2026-10-20T23:13:48+05:30: Modified diagnostic_tools/inspect_thread.py help documentation to cite CLI-4B46C071.
+- 2026-10-20T23:13:52+05:30: Executed python3 diagnostic_tools/inspect_rag.py "tell me about cz dialer" without --client-id; verified successful retrieval (score 0.8896, 5 chunks returned).

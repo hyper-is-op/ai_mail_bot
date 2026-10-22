@@ -6,6 +6,50 @@ from app.db import get_db
 logger = logging.getLogger(__name__)
 
 
+def check_connector_rate_limit(client_id: str, from_email: str, max_calls: int = 5, window_seconds: int = 600) -> bool:
+    """
+    Sliding window rate limit check for connector execution per (client_id, from_email).
+    Returns True if allowed, False if limit exceeded.
+    """
+    if not from_email or not client_id:
+        return True
+    try:
+        from app.redis_pool import get_redis_main
+        r = get_redis_main()
+        key = f"rate_limit:connector:{client_id}:{from_email.lower().strip()}"
+        current = r.incr(key)
+        if current == 1:
+            r.expire(key, window_seconds)
+        if current > max_calls:
+            logger.warning(f"⚠️ Connector rate limit exceeded for {from_email} (client={client_id}, calls={current}/{max_calls})")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"❌ Redis rate limit error, allowing by default: {e}")
+        return True
+
+
+def redact_sensitive_pii(data: dict) -> dict:
+    """
+    Masks sensitive PII in connector response when email ownership is unverified.
+    """
+    if not isinstance(data, dict):
+        return data
+    redacted = dict(data)
+    sensitive_keys = (
+        "email", "customer_email", "phone", "mobile", "address", "shipping_address",
+        "billing_address", "recipient", "customer_name", "tracking_url", "name"
+    )
+    for k, v in list(redacted.items()):
+        lower_k = k.lower()
+        if any(s in lower_k for s in sensitive_keys) and isinstance(v, str) and v.strip():
+            if len(v) <= 4:
+                redacted[k] = "***"
+            else:
+                redacted[k] = f"{v[:2]}***{v[-2:]}"
+    return redacted
+
+
 def get_live_config(client_id: str, trigger_type: str) -> Optional[dict]:
     """
     Fetches the live connector_configs row for (client_id, trigger_type),
@@ -20,7 +64,7 @@ def get_live_config(client_id: str, trigger_type: str) -> Optional[dict]:
                 SELECT url, http_method, headers_template, request_template,
                        response_mapping, auth_type, auth_secret_encrypted,
                        auth_field_name, payload_encoding, base64_query_param_name,
-                       trigger_type
+                       trigger_type, id_pattern_regex, owner_email_path
                 FROM connector_configs
                 WHERE client_id=%s AND trigger_type=%s AND status='live'
                 LIMIT 1
@@ -36,6 +80,8 @@ def get_live_config(client_id: str, trigger_type: str) -> Optional[dict]:
                 "auth_field_name": row[7], "payload_encoding": row[8],
                 "base64_query_param_name": row[9],
                 "trigger_type": row[10],
+                "id_pattern_regex": row[11] if len(row) > 11 else None,
+                "owner_email_path": row[12] if len(row) > 12 else None,
             }
     finally:
         conn.close()
@@ -124,6 +170,13 @@ def run_payment_status_lookup(
         }
 
     ref = str(payment_id or order_id or "").strip()
+    if from_email and not check_connector_rate_limit(client_id, from_email):
+        return {
+            "success": False,
+            "rate_limited": True,
+            "error": "Connector rate limit exceeded (max 5 lookups per 10 minutes). Held for review."
+        }
+
     context_base = build_context_data_base(
         client_id=client_id,
         from_email=from_email,
@@ -145,6 +198,7 @@ def run_payment_status_lookup(
         return {
             "success": False,
             "not_found": bool(result.get("not_found")),
+            "upstream_outage": bool(result.get("upstream_outage")),
             "status_code": result.get("status_code"),
             "error": result.get("error", "Unknown payment connector failure")
         }
@@ -154,7 +208,15 @@ def run_payment_status_lookup(
     if not has_record:
         return {"success": False, "not_found": True, "error": f"No matching payment record found for reference '{ref}'"}
 
-    return {"success": True, "data": data}
+    owner_email = result.get("owner_email")
+    ownership_verified = True
+    if owner_email and from_email:
+        if from_email.strip().lower() != owner_email.strip().lower():
+            logger.warning(f"🔒 BOLA ownership mismatch for payment '{ref}': from={from_email} vs record_owner={owner_email}")
+            ownership_verified = False
+            data = redact_sensitive_pii(data)
+
+    return {"success": True, "data": data, "ownership_verified": ownership_verified}
 
 
 def run_ticket_status_lookup(
@@ -183,6 +245,13 @@ def run_ticket_status_lookup(
     if not cfg_ticket:
         return {"success": False, "error": f"No live ticket_status connector config for client_id={client_id}"}
 
+    if from_email and not check_connector_rate_limit(client_id, from_email):
+        return {
+            "success": False,
+            "rate_limited": True,
+            "error": "Connector rate limit exceeded (max 5 lookups per 10 minutes). Held for review."
+        }
+
     clean_ticket_id = str(ticket_id or "").strip().lstrip("#")
     context_base = build_context_data_base(
         client_id=client_id, from_email=from_email, subject=subject,
@@ -197,6 +266,7 @@ def run_ticket_status_lookup(
         return {
             "success": False,
             "not_found": bool(result.get("not_found")),
+            "upstream_outage": bool(result.get("upstream_outage")),
             "status_code": result.get("status_code"),
             "error": result.get("error", "Unknown executor failure")
         }
@@ -206,7 +276,15 @@ def run_ticket_status_lookup(
     if not has_record:
         return {"success": False, "not_found": True, "error": f"No matching ticket record found for '{ticket_id}'"}
 
-    return {"success": True, "data": data}
+    owner_email = result.get("owner_email")
+    ownership_verified = True
+    if owner_email and from_email:
+        if from_email.strip().lower() != owner_email.strip().lower():
+            logger.warning(f"🔒 BOLA ownership mismatch for ticket '{ticket_id}': from={from_email} vs record_owner={owner_email}")
+            ownership_verified = False
+            data = redact_sensitive_pii(data)
+
+    return {"success": True, "data": data, "ownership_verified": ownership_verified}
 
 
 def run_order_status_lookup(
@@ -237,6 +315,13 @@ def run_order_status_lookup(
     if not selected_config:
         return {"success": False, "error": f"No live order_status connector config for client_id={client_id}"}
 
+    if from_email and not check_connector_rate_limit(client_id, from_email):
+        return {
+            "success": False,
+            "rate_limited": True,
+            "error": "Connector rate limit exceeded (max 5 lookups per 10 minutes). Held for review."
+        }
+
     context_base = build_context_data_base(
         client_id=client_id, from_email=from_email, subject=subject,
         body=body, cleaned_body=body, ticket_id=clean_order_id,
@@ -250,6 +335,7 @@ def run_order_status_lookup(
         return {
             "success": False,
             "not_found": bool(result.get("not_found")),
+            "upstream_outage": bool(result.get("upstream_outage")),
             "status_code": result.get("status_code"),
             "error": result.get("error", "Unknown executor failure")
         }
@@ -266,7 +352,14 @@ def run_order_status_lookup(
         if result_hash.get("success"):
             data_hash = result_hash.get("data", {})
             if any(data_hash.get(k) for k in ("docket_no", "ticket_status", "ticket_id", "status", "order_id")):
-                return {"success": True, "data": data_hash}
+                owner_email = result_hash.get("owner_email")
+                ownership_verified = True
+                if owner_email and from_email:
+                    if from_email.strip().lower() != owner_email.strip().lower():
+                        logger.warning(f"🔒 BOLA ownership mismatch for order '{clean_order_id}': from={from_email} vs record_owner={owner_email}")
+                        ownership_verified = False
+                        data_hash = redact_sensitive_pii(data_hash)
+                return {"success": True, "data": data_hash, "ownership_verified": ownership_verified}
 
     if not has_record:
         return {
@@ -275,4 +368,12 @@ def run_order_status_lookup(
             "error": f"No matching record found for '{clean_order_id}' in {selected_config.get('trigger_type')} system response"
         }
 
-    return {"success": True, "data": data}
+    owner_email = result.get("owner_email")
+    ownership_verified = True
+    if owner_email and from_email:
+        if from_email.strip().lower() != owner_email.strip().lower():
+            logger.warning(f"🔒 BOLA ownership mismatch for order '{clean_order_id}': from={from_email} vs record_owner={owner_email}")
+            ownership_verified = False
+            data = redact_sensitive_pii(data)
+
+    return {"success": True, "data": data, "ownership_verified": ownership_verified}

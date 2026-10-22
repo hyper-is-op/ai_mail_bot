@@ -230,6 +230,21 @@ class TestRAGPipeline(unittest.TestCase):
         self.assertEqual(score_step3, 0)
         self.assertEqual(decision_step3, "create_ticket")
 
+    @patch("app.pipeline.evaluator.llm_score", return_value=75)
+    def test_11_evaluator_rag_miss_general_query_routes_to_draft_mode(self, mock_score):
+        """General informational query with empty RAG context must route to draft_mode."""
+        score, decision = evaluate_draft_and_decide(
+            client_id="CLI-TEST",
+            reply="CZ Dialer is an enterprise telephony platform.",
+            query="tell me about CZ Dialer specs",
+            context_succeeded=False,
+            troubleshooting_step=0,
+            is_resolved=False,
+            intent="general_query"
+        )
+        self.assertEqual(decision, "draft_mode")
+        self.assertEqual(score, 75)
+
 
 if __name__ == "__main__":
     unittest.main()

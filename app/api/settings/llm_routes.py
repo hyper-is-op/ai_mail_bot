@@ -45,6 +45,8 @@ def set_client_llm_config(data: ClientLlmConfigRequest, user: dict = Depends(req
                 data.global_config_id, data.provider, enc_api_key, data.base_url, data.model_name, data.api_version
             ))
             db.commit()
+    from app.llm_config import invalidate_llm_cache
+    invalidate_llm_cache(data.global_config_id)
     return {"status": "success"}
 
 
@@ -415,6 +417,8 @@ def save_globally_available_llm_config_endpoint(data: GloballyAvailableLlmConfig
                         VALUES (%s, %s, %s, %s, %s, %s)
                     """, (data.name, data.provider, enc_api_key, data.base_url, data.model_name, data.api_version))
             db.commit()
+        from app.llm_config import invalidate_llm_cache
+        invalidate_llm_cache(data.id if data.id else None)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -427,6 +431,8 @@ def delete_globally_available_llm_config_endpoint(config_id: int, user: dict = D
             with db.cursor() as cursor:
                 cursor.execute("DELETE FROM globally_available_llm_configs WHERE id=%s", (config_id,))
             db.commit()
+        from app.llm_config import invalidate_llm_cache
+        invalidate_llm_cache(config_id)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

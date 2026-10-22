@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { InboxLayoutSkeleton } from '@/components/common/Skeleton';
 import { api } from '@/lib/api';
@@ -213,13 +213,13 @@ export default function Inbox() {
 
     connectWS();
 
-    // Fast background polling fallback (every 3.5s) to guarantee real-time updates under all conditions
+    // Background polling fallback (15s; real-time updates pushed instantly via WebSocket)
     const pollInterval = setInterval(() => {
       fetchEmails(true, selectedClientId);
       fetchPausedHistory(selectedClientId);
       fetchBlockedEmails(selectedClientId);
       fetchPausedEmails(selectedClientId);
-    }, 3500);
+    }, 15000);
 
     return () => {
       isCleanedUp = true;
@@ -241,13 +241,15 @@ export default function Inbox() {
     };
   }, [selectedClientId]);
 
-  // Grouped conversation threads
-  const getGroupedThreads = (): ThreadItem[] => {
+  // Grouped conversation threads (memoized, grouped by thread_id if available, fallback to sender::normalizedSubject)
+  const groupedThreads: ThreadItem[] = useMemo(() => {
     const threadMap: Record<string, any> = {};
 
     emailsList.forEach((email) => {
       const normSubj = normalizeSubject(email.subject);
-      const key = `${email.sender.toLowerCase()}::${normSubj.toLowerCase()}`;
+      const key = email.thread_id 
+        ? `thread::${email.thread_id}` 
+        : `${email.sender.toLowerCase()}::${normSubj.toLowerCase()}`;
 
       if (!threadMap[key]) {
         threadMap[key] = {
@@ -283,131 +285,135 @@ export default function Inbox() {
     });
 
     return threads.sort((a, b) => b.latest_email.id - a.latest_email.id);
-  };
+  }, [emailsList]);
 
-  const groupedThreads = getGroupedThreads();
-
-  // Filter regular threads
-  const filteredThreads = groupedThreads.filter(thread => {
-    const latestStatus = (thread.latest_email.status || '').toLowerCase();
-    const isMarketing = (
-      thread.latest_email.category === 'Marketing / Promo' ||
-      latestStatus === 'no action needed' ||
-      thread.latest_email.raw_status === 'no_action_needed' ||
-      thread.latest_email.raw_status === 'handled' ||
-      isSenderMarketing(thread.sender)
-    );
-
-    let isFailedMatch = false;
-    if (activeTab === 'Failed' && latestStatus === 'failed') {
-      const errorSummary = (thread.latest_email.summary || '').toLowerCase();
-      const rawStatus = (thread.latest_email.raw_status || '').toLowerCase();
-
-      const isTicketError = 
-        rawStatus.includes('ticket') || 
-        errorSummary.includes('ticket') || 
-        errorSummary.includes('crm') || 
-        errorSummary.includes('connector') || 
-        errorSummary.includes('webhook');
-
-      const isAuthError = 
-        errorSummary.includes('authentication') || 
-        errorSummary.includes('credential') || 
-        errorSummary.includes('auth') || 
-        errorSummary.includes('login') || 
-        errorSummary.includes('535') || 
-        errorSummary.includes('unauthorized') || 
-        errorSummary.includes('oauth') || 
-        errorSummary.includes('token');
-
-      const isLlmError = 
-        errorSummary.includes('llm') || 
-        errorSummary.includes('timeout') || 
-        errorSummary.includes('openai') || 
-        errorSummary.includes('groq') || 
-        errorSummary.includes('anthropic') || 
-        errorSummary.includes('claude') || 
-        errorSummary.includes('gemini') || 
-        errorSummary.includes('deepseek') || 
-        errorSummary.includes('grok') || 
-        errorSummary.includes('rate limit') || 
-        errorSummary.includes('429') || 
-        errorSummary.includes('context length') || 
-        errorSummary.includes('validation');
-
-      const isWorkerError = 
-        errorSummary.includes('worker') || 
-        errorSummary.includes('celery') || 
-        errorSummary.includes('redis') || 
-        errorSummary.includes('unhandled') || 
-        errorSummary.includes('exception') || 
-        errorSummary.includes('connection refused') ||
-        (!isTicketError && !isAuthError && !isLlmError);
-
-      if (failedSubTab === 'All') isFailedMatch = true;
-      else if (failedSubTab === 'Worker') isFailedMatch = isWorkerError;
-      else if (failedSubTab === 'Auth') isFailedMatch = isAuthError;
-      else if (failedSubTab === 'Ticket') isFailedMatch = isTicketError;
-      else if (failedSubTab === 'LLM') isFailedMatch = isLlmError;
-    }
-
-    const matchesTab = activeTab === 'All' || 
-      (activeTab === 'Marketing' && isMarketing) ||
-      (activeTab === 'Replied' && (latestStatus === 'replied' || latestStatus === 'ticket_generated')) ||
-      (activeTab === 'Processing' && latestStatus === 'processing') ||
-      (activeTab === 'Failed' && isFailedMatch) ||
-      (activeTab === 'Pending Review' && latestStatus === 'pending review');
-    
-    const query = searchQuery.trim().toLowerCase();
-    const queryNum = query.startsWith('#') ? query.slice(1).trim() : query;
-
-    const matchesSearch = 
-      !query ||
-      thread.sender.toLowerCase().includes(query) ||
-      thread.subject.toLowerCase().includes(query) ||
-      (thread.thread_id && thread.thread_id.toLowerCase().includes(query)) ||
-      (thread.ticket_id && thread.ticket_id.toLowerCase().includes(query)) ||
-      String(thread.id) === queryNum ||
-      `#${thread.id}` === query ||
-      thread.emails.some((email: any) => 
-        (email.preview || '').toLowerCase().includes(query) ||
-        (email.body || '').toLowerCase().includes(query) ||
-        (email.reply || '').toLowerCase().includes(query) ||
-        (email.thread_id && email.thread_id.toLowerCase().includes(query)) ||
-        (email.ticket_id && email.ticket_id.toLowerCase().includes(query)) ||
-        String(email.id) === queryNum ||
-        `#${email.id}` === query
+  // Filter regular threads (memoized)
+  const filteredThreads = useMemo(() => {
+    return groupedThreads.filter(thread => {
+      const latestStatus = (thread.latest_email.status || '').toLowerCase();
+      const isMarketing = (
+        thread.latest_email.category === 'Marketing / Promo' ||
+        latestStatus === 'no action needed' ||
+        thread.latest_email.raw_status === 'no_action_needed' ||
+        thread.latest_email.raw_status === 'handled' ||
+        isSenderMarketing(thread.sender)
       );
+
+      let isFailedMatch = false;
+      if (activeTab === 'Failed' && latestStatus === 'failed') {
+        const errorSummary = (thread.latest_email.summary || '').toLowerCase();
+        const rawStatus = (thread.latest_email.raw_status || '').toLowerCase();
+
+        const isTicketError = 
+          rawStatus.includes('ticket') || 
+          errorSummary.includes('ticket') || 
+          errorSummary.includes('crm') || 
+          errorSummary.includes('connector') || 
+          errorSummary.includes('webhook');
+
+        const isAuthError = 
+          errorSummary.includes('authentication') || 
+          errorSummary.includes('credential') || 
+          errorSummary.includes('auth') || 
+          errorSummary.includes('login') || 
+          errorSummary.includes('535') || 
+          errorSummary.includes('unauthorized') || 
+          errorSummary.includes('oauth') || 
+          errorSummary.includes('token');
+
+        const isLlmError = 
+          errorSummary.includes('llm') || 
+          errorSummary.includes('timeout') || 
+          errorSummary.includes('openai') || 
+          errorSummary.includes('groq') || 
+          errorSummary.includes('anthropic') || 
+          errorSummary.includes('claude') || 
+          errorSummary.includes('gemini') || 
+          errorSummary.includes('deepseek') || 
+          errorSummary.includes('grok') || 
+          errorSummary.includes('rate limit') || 
+          errorSummary.includes('429') || 
+          errorSummary.includes('context length') || 
+          errorSummary.includes('validation');
+
+        const isWorkerError = 
+          errorSummary.includes('worker') || 
+          errorSummary.includes('celery') || 
+          errorSummary.includes('redis') || 
+          errorSummary.includes('unhandled') || 
+          errorSummary.includes('exception') || 
+          errorSummary.includes('connection refused') ||
+          (!isTicketError && !isAuthError && !isLlmError);
+
+        if (failedSubTab === 'All') isFailedMatch = true;
+        else if (failedSubTab === 'Worker') isFailedMatch = isWorkerError;
+        else if (failedSubTab === 'Auth') isFailedMatch = isAuthError;
+        else if (failedSubTab === 'Ticket') isFailedMatch = isTicketError;
+        else if (failedSubTab === 'LLM') isFailedMatch = isLlmError;
+      }
+
+      const matchesTab = activeTab === 'All' || 
+        (activeTab === 'Marketing' && isMarketing) ||
+        (activeTab === 'Replied' && (latestStatus === 'replied' || latestStatus === 'ticket_generated')) ||
+        (activeTab === 'Processing' && latestStatus === 'processing') ||
+        (activeTab === 'Failed' && isFailedMatch) ||
+        (activeTab === 'Pending Review' && latestStatus === 'pending review');
       
-    return matchesTab && matchesSearch;
-  });
+      const query = searchQuery.trim().toLowerCase();
+      const queryNum = query.startsWith('#') ? query.slice(1).trim() : query;
 
-  // Filter paused items (from paused_email_history)
-  const filteredPausedHistory = pausedHistory.filter(item => {
+      const matchesSearch = 
+        !query ||
+        thread.sender.toLowerCase().includes(query) ||
+        thread.subject.toLowerCase().includes(query) ||
+        (thread.thread_id && thread.thread_id.toLowerCase().includes(query)) ||
+        (thread.ticket_id && thread.ticket_id.toLowerCase().includes(query)) ||
+        String(thread.id) === queryNum ||
+        `#${thread.id}` === query ||
+        thread.emails.some((email: any) => 
+          (email.preview || '').toLowerCase().includes(query) ||
+          (email.body || '').toLowerCase().includes(query) ||
+          (email.reply || '').toLowerCase().includes(query) ||
+          (email.thread_id && email.thread_id.toLowerCase().includes(query)) ||
+          (email.ticket_id && email.ticket_id.toLowerCase().includes(query)) ||
+          String(email.id) === queryNum ||
+          `#${email.id}` === query
+        );
+        
+      return matchesTab && matchesSearch;
+    });
+  }, [groupedThreads, activeTab, failedSubTab, searchQuery, marketingSenders]);
+
+  // Filter paused items (from paused_email_history, memoized)
+  const filteredPausedHistory = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const queryNum = query.startsWith('#') ? query.slice(1).trim() : query;
 
-    return !query || 
-      (item.from_email || '').toLowerCase().includes(query) ||
-      (item.subject || '').toLowerCase().includes(query) ||
-      (item.body || '').toLowerCase().includes(query) ||
-      String(item.id) === queryNum ||
-      `#${item.id}` === query;
-  });
+    return pausedHistory.filter(item => {
+      return !query || 
+        (item.from_email || '').toLowerCase().includes(query) ||
+        (item.subject || '').toLowerCase().includes(query) ||
+        (item.body || '').toLowerCase().includes(query) ||
+        String(item.id) === queryNum ||
+        `#${item.id}` === query;
+    });
+  }, [pausedHistory, searchQuery]);
 
-  // Filter blocked emails
-  const filteredBlockedEmails = blockedEmails.filter(item => {
+  // Filter blocked emails (memoized)
+  const filteredBlockedEmails = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     const queryNum = query.startsWith('#') ? query.slice(1).trim() : query;
 
-    return !query || 
-      (item.from_email || '').toLowerCase().includes(query) ||
-      (item.subject || '').toLowerCase().includes(query) ||
-      (item.body || '').toLowerCase().includes(query) ||
-      (item.matched_keyword || '').toLowerCase().includes(query) ||
-      String(item.id) === queryNum ||
-      `#${item.id}` === query;
-  });
+    return blockedEmails.filter(item => {
+      return !query || 
+        (item.from_email || '').toLowerCase().includes(query) ||
+        (item.subject || '').toLowerCase().includes(query) ||
+        (item.body || '').toLowerCase().includes(query) ||
+        (item.matched_keyword || '').toLowerCase().includes(query) ||
+        String(item.id) === queryNum ||
+        `#${item.id}` === query;
+    });
+  }, [blockedEmails, searchQuery]);
 
   // Reset selection when switching tabs so the first item in the new view is selected
   const handleTabChange = (tab: InboxTabType) => {
@@ -524,7 +530,10 @@ export default function Inbox() {
 
   const handlePauseToggle = async (email: string) => {
     const isPaused = pausedEmails.includes(email);
-    const activeCid = selectedClientId === "ALL" ? (selectedThread?.latest_email?.client_id || clients[0]?.client_id || '') : selectedClientId;
+    const targetEmail = emailsList.find(e => e.sender === email);
+    const activeCid = selectedClientId === "ALL" 
+      ? (targetEmail?.client_id || selectedThread?.latest_email?.client_id || clients[0]?.client_id || '') 
+      : selectedClientId;
     if (!activeCid) return;
     try {
       if (isPaused) {
@@ -582,6 +591,19 @@ export default function Inbox() {
       showToast(`Error sending reply: ${err.message}`);
     } finally {
       setReplyLoading(false);
+    }
+  };
+
+  const handleApprovePendingReply = async (emailLogId: number) => {
+    const targetEmail = emailsList.find(e => e.id === emailLogId);
+    const activeCid = targetEmail?.client_id || (selectedClientId === "ALL" ? (clients[0]?.client_id || '') : selectedClientId);
+    if (!activeCid) return;
+    try {
+      await api.approvePendingReply({ client_id: activeCid, log_id: emailLogId });
+      showToast('Draft approved and sent successfully!');
+      fetchEmails(true, selectedClientId);
+    } catch (err: any) {
+      showToast(err.message || 'Failed to approve draft');
     }
   };
 
@@ -649,7 +671,10 @@ export default function Inbox() {
   };
 
   const handleToggleMarketingSender = async (senderEmail: string) => {
-    const activeCid = selectedClientId === "ALL" ? (selectedThread?.latest_email?.client_id || clients[0]?.client_id || '') : selectedClientId;
+    const targetEmail = emailsList.find(e => e.sender === senderEmail);
+    const activeCid = selectedClientId === "ALL" 
+      ? (targetEmail?.client_id || selectedThread?.latest_email?.client_id || clients[0]?.client_id || '') 
+      : selectedClientId;
     if (!activeCid || !senderEmail) return;
     const isMarked = isSenderMarketing(senderEmail);
     try {
@@ -672,15 +697,15 @@ export default function Inbox() {
     setReplyText('');
   };
 
-  const blockedPendingCount = blockedEmails.filter(b => b.status === 'pending_review' || !b.status).length;
-  const pausedPendingCount = pausedHistory.filter(p => p.status === 'pending_review' || !p.status).length;
+  const blockedPendingCount = useMemo(() => blockedEmails.filter(b => b.status === 'pending_review' || !b.status).length, [blockedEmails]);
+  const pausedPendingCount = useMemo(() => pausedHistory.filter(p => p.status === 'pending_review' || !p.status).length, [pausedHistory]);
   const totalPausedBadge = pausedPendingCount > 0 ? pausedPendingCount : pausedEmails.length;
-  const marketingCount = groupedThreads.filter(t => t.latest_email.category === 'Marketing / Promo' || (t.latest_email.status || '').toLowerCase() === 'no action needed' || t.latest_email.raw_status === 'no_action_needed' || isSenderMarketing(t.sender)).length;
-  const failedCount = groupedThreads.filter(t => {
+  const marketingCount = useMemo(() => groupedThreads.filter(t => t.latest_email.category === 'Marketing / Promo' || (t.latest_email.status || '').toLowerCase() === 'no action needed' || t.latest_email.raw_status === 'no_action_needed' || isSenderMarketing(t.sender)).length, [groupedThreads, marketingSenders]);
+  const failedCount = useMemo(() => groupedThreads.filter(t => {
     const st = (t.latest_email.status || '').toLowerCase();
     return st === 'failed';
-  }).length;
-  const pendingReviewCount = groupedThreads.filter(t => (t.latest_email.status || '').toLowerCase() === 'pending review').length;
+  }).length, [groupedThreads]);
+  const pendingReviewCount = useMemo(() => groupedThreads.filter(t => (t.latest_email.status || '').toLowerCase() === 'pending review').length, [groupedThreads]);
 
   if (loading && groupedThreads.length === 0) {
     return <InboxLayoutSkeleton />;
@@ -728,6 +753,10 @@ export default function Inbox() {
           blocked: blockedPendingCount
         }}
         onResetReplyState={resetReplyState}
+        onToggleMarketingSender={handleToggleMarketingSender}
+        isSenderMarketing={isSenderMarketing}
+        onPauseToggle={handlePauseToggle}
+        onApprovePendingReply={handleApprovePendingReply}
       />
 
       {/* Right Pane: Reading / Action View */}

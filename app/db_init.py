@@ -503,7 +503,8 @@ def _run_ensure_worker_tables():
                     from_email  VARCHAR(255) NOT NULL,
                     status      VARCHAR(50)  NOT NULL DEFAULT 'processing',
                     created_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
-                    updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                    updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_celery_task_client (client_id)
                 )
                 """)
                 cursor.execute("""
@@ -519,6 +520,29 @@ def _run_ensure_worker_tables():
         logger.info("✅ celery_task_log and email_customers tables ensured at startup")
     except Exception as e:
         logger.warning(f"⚠️ Failed to ensure worker tables: {e}")
+
+
+def ensure_report_column_profiles_table():
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS report_column_profiles (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    client_id VARCHAR(50) NOT NULL,
+                    name VARCHAR(100) NOT NULL,
+                    columns JSON NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uq_client_profile_name (client_id, name),
+                    INDEX idx_report_profiles_client (client_id)
+                )
+                """)
+            db.commit()
+        logger.info("✅ report_column_profiles table ensured at startup")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to ensure report_column_profiles table: {e}")
 
 
 async def initialize_database_and_services():
@@ -547,6 +571,7 @@ async def initialize_database_and_services():
         asyncio.to_thread(_run_ensure_paused_email_history_table),
         asyncio.to_thread(ensure_action_logs_table),
         asyncio.to_thread(ensure_client_prompt_configs_table),
+        asyncio.to_thread(ensure_report_column_profiles_table),
     )
 
     # Batch 2: Admin seeding (depends on users table)

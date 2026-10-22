@@ -249,16 +249,37 @@ def execute_tool_call(
                 subject=ctx.subject,
                 from_email=ctx.from_email
             )
+            if res.get("rate_limited"):
+                ctx.log_step("Connector_Rate_Limited")
+                ctx.context_data = {"status": "rate_limited", "message": "Rate limit exceeded"}
+                return {
+                    "status": "rate_limited",
+                    "payment_reference": clean_ref,
+                    "message": "Lookup rate limit exceeded (max 5 per 10 minutes).",
+                    "hint": "The lookup rate limit was exceeded for this sender. Inform the customer politely that their request has been queued for human agent review."
+                }
+            if res.get("upstream_outage"):
+                ctx.log_step("CRM_Upstream_Outage")
+                ctx.context_data = {"status": "upstream_outage", "message": "Upstream service timeout or 5xx"}
+                return {
+                    "status": "upstream_outage",
+                    "payment_reference": clean_ref,
+                    "message": "Upstream payment gateway timeout or 5xx error.",
+                    "hint": "The payment gateway is temporarily unreachable. Politely acknowledge their inquiry, state that our support team is actively checking their record, and avoid mentioning system crashes."
+                }
             if res.get("success"):
                 payment_data = res.get("data") or {}
                 formatted_text = format_mapped_data_for_prompt(payment_data)
-                ctx.context_data = payment_data
-                ctx.log_step("Payment_Status_Found")
+                ctx.context_data = dict(payment_data)
+                ownership_verified = res.get("ownership_verified", True)
+                ctx.context_data["ownership_verified"] = ownership_verified
+                ctx.log_step("Payment_Status_Found" if ownership_verified else "BOLA_Ownership_Mismatch")
                 return {
-                    "status": "found",
+                    "status": "found" if ownership_verified else "found_unverified_ownership",
                     "payment_reference": clean_ref,
                     "details": payment_data,
-                    "summary": formatted_text
+                    "summary": formatted_text,
+                    "hint": "Record found and verified." if ownership_verified else "Record found, but sender email does not match registered customer email. Masked private details to prevent BOLA/IDOR disclosure."
                 }
             else:
                 err_msg = res.get("error")
@@ -298,17 +319,38 @@ def execute_tool_call(
                 subject=ctx.subject,
                 from_email=ctx.from_email
             )
+            if res.get("rate_limited"):
+                ctx.log_step("Connector_Rate_Limited")
+                ctx.context_data = {"status": "rate_limited", "message": "Rate limit exceeded"}
+                return {
+                    "status": "rate_limited",
+                    "ticket_id": clean_ticket_id,
+                    "message": "Lookup rate limit exceeded (max 5 per 10 minutes).",
+                    "hint": "The lookup rate limit was exceeded for this sender. Inform the customer politely that their request has been queued for human agent review."
+                }
+            if res.get("upstream_outage"):
+                ctx.log_step("CRM_Upstream_Outage")
+                ctx.context_data = {"status": "upstream_outage", "message": "Upstream service timeout or 5xx"}
+                return {
+                    "status": "upstream_outage",
+                    "ticket_id": clean_ticket_id,
+                    "message": "Upstream CRM service timeout or 5xx error.",
+                    "hint": "The external CRM system is temporarily unreachable. Politely acknowledge their inquiry, state that our support team is actively checking their record, and avoid mentioning system crashes."
+                }
             if res.get("success"):
                 ticket_data = res.get("data") or {}
                 formatted_text = format_mapped_data_for_prompt(ticket_data)
                 ctx.ticket_id = clean_ticket_id
-                ctx.context_data = ticket_data
-                ctx.log_step("CRM_Status_Found")
+                ctx.context_data = dict(ticket_data)
+                ownership_verified = res.get("ownership_verified", True)
+                ctx.context_data["ownership_verified"] = ownership_verified
+                ctx.log_step("CRM_Status_Found" if ownership_verified else "BOLA_Ownership_Mismatch")
                 return {
-                    "status": "found",
+                    "status": "found" if ownership_verified else "found_unverified_ownership",
                     "ticket_id": clean_ticket_id,
                     "details": ticket_data,
-                    "summary": formatted_text
+                    "summary": formatted_text,
+                    "hint": "Record found and verified." if ownership_verified else "Record found, but sender email does not match registered customer email. Masked private details to prevent BOLA/IDOR disclosure."
                 }
             else:
                 err_msg = res.get("error")
@@ -349,7 +391,7 @@ def execute_tool_call(
                 subject=ctx.subject,
                 from_email=ctx.from_email
             )
-            if not res.get("success"):
+            if not res.get("success") and not res.get("rate_limited") and not res.get("upstream_outage"):
                 # Secondary attempt with order status lookup
                 res = fetch_crm_order_status(
                     client_id=ctx.client_id,
@@ -360,17 +402,39 @@ def execute_tool_call(
                     from_email=ctx.from_email
                 )
 
+            if res.get("rate_limited"):
+                ctx.log_step("Connector_Rate_Limited")
+                ctx.context_data = {"status": "rate_limited", "message": "Rate limit exceeded"}
+                return {
+                    "status": "rate_limited",
+                    "ticket_id": clean_ticket_id,
+                    "message": "Lookup rate limit exceeded (max 5 per 10 minutes).",
+                    "hint": "The lookup rate limit was exceeded for this sender. Inform the customer politely that their request has been queued for human agent review."
+                }
+            if res.get("upstream_outage"):
+                ctx.log_step("CRM_Upstream_Outage")
+                ctx.context_data = {"status": "upstream_outage", "message": "Upstream service timeout or 5xx"}
+                return {
+                    "status": "upstream_outage",
+                    "ticket_id": clean_ticket_id,
+                    "message": "Upstream CRM or order service timeout or 5xx error.",
+                    "hint": "The external service is temporarily unreachable. Politely acknowledge their inquiry, state that our support team is actively checking their record, and avoid mentioning system crashes."
+                }
+
             if res.get("success"):
                 ticket_data = res.get("data") or {}
                 formatted_text = format_mapped_data_for_prompt(ticket_data)
                 ctx.ticket_id = clean_ticket_id
-                ctx.context_data = ticket_data
-                ctx.log_step("CRM_Status_Found")
+                ctx.context_data = dict(ticket_data)
+                ownership_verified = res.get("ownership_verified", True)
+                ctx.context_data["ownership_verified"] = ownership_verified
+                ctx.log_step("CRM_Status_Found" if ownership_verified else "BOLA_Ownership_Mismatch")
                 return {
-                    "status": "found",
+                    "status": "found" if ownership_verified else "found_unverified_ownership",
                     "ticket_id": clean_ticket_id,
                     "details": ticket_data,
-                    "summary": formatted_text
+                    "summary": formatted_text,
+                    "hint": "Record found and verified." if ownership_verified else "Record found, but sender email does not match registered customer email. Masked private details to prevent BOLA/IDOR disclosure."
                 }
             else:
                 err_msg = res.get("error")
@@ -462,16 +526,32 @@ def execute_tool_call(
                 }
 
         elif tool_name == "escalate_and_create_ticket":
-            # 1. Guard against false escalations on general informational / marketing / greeting inquiries
-            if ctx.intent in ("general_query", "marketing_promotional", "greeting"):
+            # 1. Guard against false escalations on marketing or greeting inquiries
+            if ctx.intent in ("marketing_promotional", "greeting"):
                 logger.info(f"🛑 [Agent Tool Call] Blocked ticket escalation for intent '{ctx.intent}' on client {ctx.client_id}")
                 return {
                     "status": "escalation_denied",
                     "reason": "intent_not_eligible_for_escalation",
-                    "message": "General product, informational, or greeting inquiries must not create support tickets. Please provide a helpful, direct answer or request clarification from the customer."
+                    "message": "Promotional or greeting inquiries must not create support tickets. Please provide a direct answer or request clarification from the customer."
                 }
 
-            # 2. Guard against duplicate ticket creation loops on threads that already have a ticket
+            # 2. For general_query, block escalation if it is a pure product inquiry without diagnostic context
+            if ctx.intent == "general_query" and ctx.troubleshooting_step == 0 and len(ctx.history) <= 1:
+                body_lower = (ctx.body or "").lower()
+                subj_lower = (ctx.subject or "").lower()
+                has_tech_failure = any(w in f"{subj_lower} {body_lower}" for w in [
+                    "not working", "not responding", "unresponsive", "broken", "failing",
+                    "outage", "down", "error", "crash", "stopped working"
+                ])
+                if not has_tech_failure:
+                    logger.info(f"🛑 [Agent Tool Call] Blocked ticket escalation for pure product inquiry '{ctx.subject}' on client {ctx.client_id}")
+                    return {
+                        "status": "escalation_denied",
+                        "reason": "intent_not_eligible_for_escalation",
+                        "message": "General product, informational, or greeting inquiries must not create support tickets. Please provide a helpful, direct answer or request clarification from the customer."
+                    }
+
+            # 3. Guard against duplicate ticket creation loops on threads that already have a ticket
             if ctx.ticket_id:
                 logger.info(f"🛑 [Agent Tool Call] Thread already has ticket #{ctx.ticket_id} for client {ctx.client_id} — preventing duplicate creation")
                 return {
@@ -479,6 +559,24 @@ def execute_tool_call(
                     "ticket_id": ctx.ticket_id,
                     "message": f"Support ticket #{ctx.ticket_id} is already open for this thread. Do not create a duplicate ticket."
                 }
+
+            # 4. First-turn Completeness & Diagnostic Gating:
+            # Customers cannot directly create a ticket without proper troubleshooting or actionable failure details.
+            if ctx.troubleshooting_step == 0 and len(ctx.history) <= 1:
+                body_lower = (ctx.body or "").lower()
+                subj_lower = (ctx.subject or "").lower()
+                is_explicit_human = any(w in f"{subj_lower} {body_lower}" for w in ["human", "agent", "representative", "person", "speak with someone", "manager"])
+                is_unresolvable_crash = any(w in f"{subj_lower} {body_lower}" for w in ["disk failure", "hardware crash", "severance", "demarc", "kernel panic", "database corrupted", "firewall block"])
+                has_substantive_detail = len(f"{ctx.subject} {ctx.body}".strip()) >= 30 and any(w in f"{subj_lower} {body_lower}" for w in [
+                    "bot", "server", "api", "database", "ivr", "trunk", "campaign", "channel",
+                    "error", "login", "call", "dialer", "webhook", "gateway", "token", "auth"
+                ])
+                if not is_explicit_human and not is_unresolvable_crash and not has_substantive_detail:
+                    logger.info(f"🛑 [Agent Tool Call] Blocked direct ticket creation: insufficient diagnostic context on turn 1")
+                    return {
+                        "status": "details_required",
+                        "message": "A support ticket cannot be created without proper diagnostic information. Please ask the customer for the specific component, channel, error messages, and reproduction details first."
+                    }
 
             issue_summary = (arguments.get("issue_summary") or "").strip() or ctx.subject
             priority = arguments.get("priority", ctx.priority or "Medium")

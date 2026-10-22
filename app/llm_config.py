@@ -25,8 +25,46 @@ _dynamic_clients_cache = OrderedDict()
 _dynamic_clients_ts = {}
 
 
+def invalidate_llm_cache(config_id: int | None = None):
+    """
+    Invalidates the LLM config cache across all worker/API processes via Redis.
+    """
+    global _llm_configs_cache
+    if config_id is not None:
+        _llm_configs_cache.pop(config_id, None)
+    else:
+        _llm_configs_cache.clear()
+
+    try:
+        from app.redis_pool import get_redis_main
+        r = get_redis_main()
+        if config_id is not None:
+            r.delete(f"llm_cfg:{config_id}")
+        else:
+            keys = r.keys("llm_cfg:*")
+            if keys:
+                r.delete(*keys)
+    except Exception as e:
+        logger.warning(f"Failed to invalidate Redis llm_cfg cache: {e}")
+
+
 def get_llm_config(config_id: int) -> dict | None:
     now = time.time()
+
+    # 1. Try Redis cache (shared across Celery workers and API processes)
+    try:
+        from app.redis_pool import get_redis_main
+        import json as _json
+        r = get_redis_main()
+        cached_json = r.get(f"llm_cfg:{config_id}")
+        if cached_json:
+            config = _json.loads(cached_json)
+            _llm_configs_cache[config_id] = (config, now)
+            return config
+    except Exception as re_err:
+        logger.debug(f"Redis cache lookup for llm_cfg:{config_id} bypassed: {re_err}")
+
+    # 2. In-process cache fallback
     cached = _llm_configs_cache.get(config_id)
     if cached and now - cached[1] < _LLM_CONFIGS_CACHE_TTL:
         return cached[0]
@@ -61,6 +99,12 @@ def get_llm_config(config_id: int) -> dict | None:
     
     if config:
         _llm_configs_cache[config_id] = (config, now)
+        try:
+            from app.redis_pool import get_redis_main
+            import json as _json
+            get_redis_main().set(f"llm_cfg:{config_id}", _json.dumps(config), ex=_LLM_CONFIGS_CACHE_TTL)
+        except Exception:
+            pass
     return config
 
 

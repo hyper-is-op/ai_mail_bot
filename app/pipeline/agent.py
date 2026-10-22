@@ -6,7 +6,7 @@ import re
 from app.pipeline.context import PipelineContext
 from app.pipeline.tools import SUPPORT_TOOLS, execute_tool_call
 from app.pipeline.drafter import append_client_disclaimers
-from app.pipeline.evaluator import evaluate_draft_and_decide
+from app.pipeline.evaluator import evaluate_draft_and_decide, DEFAULT_MAX_TROUBLESHOOTING_STEPS
 from app.llm import extract_name_from_email, get_llm_config_for_client, client
 
 logger = logging.getLogger(__name__)
@@ -109,15 +109,30 @@ def build_system_prompt(ctx: PipelineContext) -> str:
         signoff_lines.append(f"Company: {company_name}")
     signoff_text = "\n".join(signoff_lines)
 
-    from app.pipeline.evaluator import DEFAULT_MAX_TROUBLESHOOTING_STEPS
     max_steps = DEFAULT_MAX_TROUBLESHOOTING_STEPS
 
-    if ctx.troubleshooting_step >= max_steps:
+    refusal_encountered = bool(ctx.context_data.get("diagnostic_refusal_encountered"))
+    if refusal_encountered:
+        if ctx.troubleshooting_step >= max_steps:
+            step_info = f"NOTE: Diagnostic attempts are EXHAUSTED ({max_steps}/{max_steps} steps reached) and the customer has refused further diagnostic steps. You MUST call 'escalate_and_create_ticket' now to escalate this thread to a technical specialist and log a formal CRM ticket. Confirm that a support ticket has been opened and a specialist will contact them."
+        else:
+            step_info = f"NOTE: The customer has expressed reluctance or pushback regarding performing further repetitive diagnostic steps. DO NOT repeat prior steps or ask them to reboot/restart. Advance to Step {ctx.troubleshooting_step + 1} of {max_steps}: acknowledge their frustration empathetically, offer a single minimal alternative check, and explicitly inform them that if this does not resolve it, a technical support ticket will be opened upon completing this diagnostic turn."
+    elif ctx.troubleshooting_step >= max_steps:
         step_info = f"NOTE: {max_steps} troubleshooting diagnostic steps have already been attempted without success. Diagnostic attempts are EXHAUSTED. You MUST call 'escalate_and_create_ticket' to escalate this thread to a technical specialist and log a formal CRM ticket."
     elif ctx.troubleshooting_step > 0:
         step_info = f"Active troubleshooting in progress: Currently on diagnostic step {ctx.troubleshooting_step + 1} of {max_steps}. Search knowledge base and provide the next troubleshooting step to the customer. Do NOT escalate to a ticket yet because active diagnostics are still underway."
     else:
         step_info = ""
+
+    if ctx.is_compound_intent or (ctx.intents and len(ctx.intents) > 1):
+        intents_str = ", ".join(ctx.intents)
+        compound_guidance = (
+            f"\n\nNOTE: The customer inquiry contains multiple distinct intents ({intents_str}). "
+            f"You MUST address each inquiry clearly in distinct sections or bullet points within this single reply. "
+            f"Enforce appropriate commercial boundaries: provide technical troubleshooting for technical inquiries "
+            f"while explaining policy or routing commercial/billing inquiries appropriately."
+        )
+        step_info = f"{step_info}{compound_guidance}"
 
     resolution_instruction = ""
     if ctx.is_resolved:
@@ -154,6 +169,13 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
         ctx.log_step("Customer_Confirmed_Resolved")
         logger.info(f"✅ Customer confirmed resolution for client={ctx.client_id}, sender={ctx.from_email}")
 
+    # Detect customer refusal or deadlock during active troubleshooting
+    from app.pipeline.filters import check_diagnostic_refusal
+    if ctx.troubleshooting_step > 0 and check_diagnostic_refusal(ctx.body):
+        ctx.context_data["diagnostic_refusal_encountered"] = True
+        logger.info(f"🚫 [Diagnostic Refusal] Customer pushback detected on step {ctx.troubleshooting_step}/{DEFAULT_MAX_TROUBLESHOOTING_STEPS}")
+        ctx.log_step(f"Diagnostic_Refusal_Turn_{ctx.troubleshooting_step}")
+
     # 1. Resolve LLM client and configuration
     cfg = get_llm_config_for_client(ctx.client_id, "run_support_agent")
     raw_model = cfg.get("model_name") or "llama-3.3-70b-versatile"
@@ -186,7 +208,7 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
     from app.llm import strip_reasoning_and_think_tags
     from concurrent.futures import ThreadPoolExecutor
 
-    max_tool_turns = 3
+    max_tool_turns = DEFAULT_MAX_TROUBLESHOOTING_STEPS
     turn = 0
     all_executed_tool_names = []
     ticket_escalated = False
@@ -368,19 +390,36 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
             final_draft = "Thank you for contacting us. We have received your inquiry and our support team is reviewing your request."
 
     # Increment troubleshooting step if diagnostic tool called and issue not resolved / escalated
-    # General informational queries must NEVER increment diagnostic troubleshooting steps
+    # Pure informational product queries must NEVER increment diagnostic troubleshooting steps
+    is_technical_diagnostic = ctx.intent == "technical_support" or (
+        ctx.intent == "general_query" and (
+            ctx.troubleshooting_step > 0 or any(w in f"{ctx.subject} {ctx.body}".lower() for w in [
+                "not working", "not responding", "unresponsive", "broken", "failing",
+                "outage", "down", "error", "crash", "stopped working", "facing problem"
+            ])
+        )
+    )
     if (
         "search_knowledge_base" in all_executed_tool_names
         and not ticket_escalated
         and not ctx.is_resolved
-        and ctx.intent not in ("general_query", "marketing_promotional", "greeting")
+        and (is_technical_diagnostic or ctx.intent not in ("general_query", "marketing_promotional", "greeting"))
     ):
         ctx.troubleshooting_step += 1
         ctx.log_step(f"Troubleshooting_Step_{ctx.troubleshooting_step}")
 
-    # 4. Post-Processing: Disclaimers and Evaluation
+    # 4. Post-Processing: Option A Note Prepending, Disclaimers, and Evaluation
+    reanchored_topic = ctx.context_data.get("reanchored_target_topic")
+    if reanchored_topic and not final_draft.strip().startswith("Note: We have linked your response"):
+        final_draft = f"Note: We have linked your response to your ongoing inquiry regarding '{reanchored_topic}' to keep your records organized.\n\n{final_draft}"
+
     final_draft = append_client_disclaimers(ctx.client_id, final_draft)
-    is_not_found = bool(isinstance(ctx.context_data, dict) and ctx.context_data.get("status") == "not_found")
+    ctx_data = ctx.context_data if isinstance(ctx.context_data, dict) else {}
+    is_not_found = bool(ctx_data.get("status") == "not_found")
+    ownership_verified = bool(ctx_data.get("ownership_verified", True))
+    upstream_outage = bool(ctx_data.get("status") == "upstream_outage")
+    rate_limited = bool(ctx_data.get("status") == "rate_limited")
+    sentiment_velocity_breach = bool(ctx_data.get("sentiment_velocity_breach"))
     scoring_query = extract_scoring_query(ctx.subject, ctx.body)
     score, decision = evaluate_draft_and_decide(
         client_id=ctx.client_id,
@@ -390,7 +429,11 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
         is_resolved=ctx.is_resolved,
         troubleshooting_step=ctx.troubleshooting_step,
         is_not_found=is_not_found,
-        intent=ctx.intent
+        intent=ctx.intent,
+        ownership_verified=ownership_verified,
+        upstream_outage=upstream_outage,
+        rate_limited=rate_limited,
+        sentiment_velocity_breach=sentiment_velocity_breach
     )
 
     ctx.draft_reply = final_draft

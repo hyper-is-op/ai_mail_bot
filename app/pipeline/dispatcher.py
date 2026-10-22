@@ -22,6 +22,7 @@ def dispatch_or_draft_reply(
     ticket_id: str = None,
     original_body: str = "",
     in_reply_to: str = None,
+    references: str = None,
     message_id: str = None,
     sender_name: str = None,
     execution_steps: list = None,
@@ -52,7 +53,15 @@ def dispatch_or_draft_reply(
 
         # Execute idempotent email send
         def _send():
-            return send_email(client_id, from_email, out_subject, reply_body, in_reply_to=in_reply_to)
+            return send_email(
+                client_id,
+                from_email,
+                out_subject,
+                reply_body,
+                in_reply_to=in_reply_to,
+                references=references,
+                ticket_id=ticket_id,
+            )
 
         outbox_key_seed = message_id or f"{client_id}:{from_email}:{out_subject}"
         res = execute_idempotent_action(
@@ -228,16 +237,10 @@ def create_ticket_and_reply(
     )
 
     # 4. Dispatch reply or create draft
-    # Preserve customer thread subject across all email clients (including Outlook / Apple Mail)
+    # Preserve exact customer thread subject to maintain single conversation thread in Gmail, Outlook, and Apple Mail
     raw_subj = (data.get("subject") or effective_subject or "Support Request").strip()
     clean_subj = re.sub(r"^(?:re\s*:\s*|fwd\s*:\s*)+", "", raw_subj, flags=re.IGNORECASE).strip()
-    if not clean_subj:
-        clean_subj = "Support Request"
-
-    if str(outgoing_ticket_id) not in clean_subj:
-        thread_subject = f"{clean_subj} [Ticket #{outgoing_ticket_id}]"
-    else:
-        thread_subject = clean_subj
+    thread_subject = clean_subj or "Support Request"
 
     status_code, sent_ok = dispatch_or_draft_reply(
         client_id=client_id,
@@ -252,6 +255,7 @@ def create_ticket_and_reply(
         ticket_id=outgoing_ticket_id,
         original_body=data["body"],
         in_reply_to=data.get("message_id"),
+        references=data.get("references"),
         message_id=data.get("message_id"),
     )
 

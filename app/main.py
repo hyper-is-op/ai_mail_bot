@@ -1,4 +1,5 @@
 import os
+import time
 import asyncio
 import logging
 from contextlib import asynccontextmanager
@@ -43,9 +44,26 @@ class ConnectionManager:
         logger.info(f"Active connections: {len(self.active_connections)}")
 
     async def broadcast(self, message: str, target_client_id: str = None):
+        from app.auth import get_session
         dead_connections = []
+        now = time.time()
         for connection in list(self.active_connections):
             try:
+                # Re-validate session if last validation was over 60s ago
+                last_val = getattr(connection.state, "last_validated", 0)
+                conn_token = getattr(connection.state, "token", None)
+                if conn_token and (now - last_val > 60):
+                    session = get_session(conn_token)
+                    if not session:
+                        logger.info(f"Evicting expired WebSocket connection during broadcast (client_id={getattr(connection.state, 'client_id', None)})")
+                        try:
+                            await connection.close(code=4001, reason="Session expired")
+                        except Exception:
+                            pass
+                        dead_connections.append(connection)
+                        continue
+                    connection.state.last_validated = now
+
                 # Admins receive everything; clients receive only their own events
                 conn_role = getattr(connection.state, "role", None)
                 conn_cid = getattr(connection.state, "client_id", None)
@@ -248,14 +266,32 @@ async def websocket_endpoint(websocket: WebSocket, token: str = None):
         return
 
     # Store session info on the websocket for tenant-filtered broadcasts
+    websocket.state.token = token
     websocket.state.client_id = session.get("client_id")
     websocket.state.role = session.get("role")
+    websocket.state.last_validated = time.time()
     await manager.connect(websocket)
     try:
         while True:
-            data = await websocket.receive_text()
-            if data == "ping":
-                await websocket.send_text("pong")
+            try:
+                # 60-second heartbeat check: if idle for 60s, re-validate session
+                data = await asyncio.wait_for(websocket.receive_text(), timeout=60.0)
+                if data == "ping":
+                    session = get_session(token)
+                    if not session:
+                        logger.info(f"Evicting WebSocket connection for client_id={getattr(websocket.state, 'client_id', None)} on ping (session expired)")
+                        await websocket.close(code=4001, reason="Session expired")
+                        break
+                    websocket.state.last_validated = time.time()
+                    await websocket.send_text("pong")
+            except asyncio.TimeoutError:
+                # Idle timeout expired: re-validate session token against Redis
+                session = get_session(token)
+                if not session:
+                    logger.info(f"Evicting idle WebSocket connection for client_id={getattr(websocket.state, 'client_id', None)} (session expired)")
+                    await websocket.close(code=4001, reason="Session expired")
+                    break
+                websocket.state.last_validated = time.time()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception as e:

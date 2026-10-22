@@ -73,7 +73,7 @@ class TestTicketThreading(unittest.TestCase):
         in_reply_to = call_kwargs.get("in_reply_to")
 
         self.assertEqual(sent_to, "customer@telecom.com")
-        self.assertEqual(sent_subject, "Re: CZ dialer server crash in production [Ticket #275424000000599999]")
+        self.assertEqual(sent_subject, "Re: CZ dialer server crash in production")
         self.assertEqual(in_reply_to, "<msg-unique-123@telecom.com>")
 
     @patch("app.pipeline.dispatcher.send_email")
@@ -108,7 +108,7 @@ class TestTicketThreading(unittest.TestCase):
 
         call_args = mock_send.call_args[0]
         sent_subject = call_args[2]
-        self.assertEqual(sent_subject, "Re: SIP 408 timeout issue [Ticket #275424000000599998]")
+        self.assertEqual(sent_subject, "Re: SIP 408 timeout issue")
 
     @patch("app.pipeline.dispatcher.send_email")
     @patch("app.pipeline.dispatcher.generate_reply_llm")

@@ -158,7 +158,7 @@ def main():
     ensure_venv()
     parser = argparse.ArgumentParser(description="Inspect RAG retrieval performance across Qdrant and Fallback JSON.")
     parser.add_argument("query", help="Knowledge base search query string (e.g. 'cz callblast setup')")
-    parser.add_argument("-c", "--client-id", dest="client_id", default="CLI-4159FFCF", help="Client ID (default: CLI-4159FFCF)")
+    parser.add_argument("-c", "--client-id", dest="client_id", default="CLI-4B46C071", help="Client ID (default: CLI-4B46C071)")
     parser.add_argument("-k", "--limit", type=int, default=5, help="Number of chunks to return (default: 5)")
     parser.add_argument("-t", "--threshold", type=float, default=0.52, help="Minimum similarity threshold floor (default: 0.52)")
 

@@ -9,7 +9,7 @@ from worker.credential_service import get_email_credentials
 logger = logging.getLogger(__name__)
 
 
-def send_email(client_id, to_email, subject, body, in_reply_to=None):
+def send_email(client_id, to_email, subject, body, in_reply_to=None, references=None, ticket_id=None):
     """Send an email using SMTP and credentials from the credential service."""
 
     try:
@@ -34,7 +34,18 @@ def send_email(client_id, to_email, subject, body, in_reply_to=None):
         message["Subject"] = subject
         if in_reply_to:
             message["In-Reply-To"] = in_reply_to
-            message["References"] = in_reply_to
+            if references:
+                if in_reply_to not in references:
+                    message["References"] = f"{references} {in_reply_to}".strip()
+                else:
+                    message["References"] = references
+            else:
+                message["References"] = in_reply_to
+        elif references:
+            message["References"] = references
+
+        if ticket_id:
+            message["X-Ticket-ID"] = str(ticket_id)
 
         # Attach body with UTF-8 encoding
         message.attach(MIMEText(body, "plain", "utf-8"))

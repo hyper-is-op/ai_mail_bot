@@ -1,4 +1,5 @@
 import csv
+import json
 from datetime import datetime
 import io
 import logging
@@ -2363,30 +2364,58 @@ def export_ticketing_report_endpoint(
     escalation_reason: Optional[str] = None,
     search: Optional[str] = None,
     search_field: Optional[str] = "all",
+    columns: Optional[str] = None,
     user: dict = Depends(get_current_user)
 ):
     require_client_access(client_id, user)
 
     is_admin = (user.get("role") == "admin")
+    requested_cols = [c.strip() for c in (columns or "").split(",") if c.strip()]
+    filter_columns = len(requested_cols) > 0 and "all" not in requested_cols
 
     def iter_csv():
         output = io.StringIO()
         writer = csv.writer(output)
-        if is_admin:
-            writer.writerow([
-                "ID", "Thread ID", "Timestamp (UTC)", "Customer Email", "Subject",
-                "Summary of Issue", "Technical Intent", "Resolution Mode", "Status",
-                "Escalation Reason", "Total Turns", "Confidence Score", "Sentiment",
-                "Sentiment Trajectory", "Sentiment Score (-1 to 1)", "Total Tokens",
-                "Prompt Tokens", "Completion Tokens", "Latency (ms)", "Processing Time (s)", "Raw Cost ($)", "Billed Cost ($)", "Margin ($)"
-            ])
+        if not filter_columns:
+            if is_admin:
+                writer.writerow([
+                    "ID", "Thread ID", "Timestamp (UTC)", "Customer Email", "Subject",
+                    "Summary of Issue", "Technical Intent", "Resolution Mode", "Status",
+                    "Escalation Reason", "Total Turns", "Confidence Score", "Sentiment",
+                    "Sentiment Trajectory", "Sentiment Score (-1 to 1)", "Total Tokens",
+                    "Prompt Tokens", "Completion Tokens", "Latency (ms)", "Processing Time (s)", "Raw Cost ($)", "Billed Cost ($)", "Margin ($)"
+                ])
+            else:
+                writer.writerow([
+                    "ID", "Thread ID", "Timestamp (UTC)", "Customer Email", "Subject",
+                    "Summary of Issue", "Technical Intent", "Resolution Mode", "Status",
+                    "Escalation Reason", "Total Turns", "Confidence Score", "Sentiment",
+                    "Sentiment Trajectory", "Sentiment Score (-1 to 1)", "Tokens", "Processing Time (s)", "Estimated Cost ($)"
+                ])
         else:
-            writer.writerow([
-                "ID", "Thread ID", "Timestamp (UTC)", "Customer Email", "Subject",
-                "Summary of Issue", "Technical Intent", "Resolution Mode", "Status",
-                "Escalation Reason", "Total Turns", "Confidence Score", "Sentiment",
-                "Sentiment Trajectory", "Sentiment Score (-1 to 1)", "Tokens", "Processing Time (s)", "Estimated Cost ($)"
-            ])
+            custom_headers = []
+            for col in requested_cols:
+                if col == "id_thread": custom_headers.extend(["ID", "Thread ID"])
+                elif col == "timestamp": custom_headers.append("Timestamp (UTC)")
+                elif col == "customer_email": custom_headers.append("Customer Email")
+                elif col == "subject_summary": custom_headers.extend(["Subject", "Summary of Issue"])
+                elif col == "intent": custom_headers.append("Technical Intent")
+                elif col == "resolution_mode": custom_headers.append("Resolution Mode")
+                elif col == "status": custom_headers.append("Status")
+                elif col == "escalation_reason": custom_headers.append("Escalation Reason")
+                elif col == "turns": custom_headers.append("Total Turns")
+                elif col == "score": custom_headers.append("Confidence Score")
+                elif col == "sentiment_shift": custom_headers.extend(["Sentiment", "Sentiment Trajectory"])
+                elif col == "sentiment_score": custom_headers.append("Sentiment Score (-1 to 1)")
+                elif col == "tokens":
+                    if is_admin: custom_headers.extend(["Total Tokens", "Prompt Tokens", "Completion Tokens"])
+                    else: custom_headers.append("Tokens")
+                elif col == "latency": custom_headers.extend(["Latency (ms)", "Processing Time (s)"])
+                elif col == "cost":
+                    if is_admin: custom_headers.extend(["Raw Cost ($)", "Billed Cost ($)", "Margin ($)"])
+                    else: custom_headers.append("Estimated Cost ($)")
+            writer.writerow(custom_headers)
+
         yield output.getvalue()
         output.seek(0)
         output.truncate(0)
@@ -2517,53 +2546,78 @@ def export_ticketing_report_endpoint(
                         else:
                             shift = f"{sent_clean} -> In Progress"
 
-                        if is_admin:
-                            writer.writerow([
-                                r_id,
-                                th_id,
-                                dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "",
-                                from_em or "",
-                                subj or "",
-                                summary_txt or "",
-                                intent_str,
-                                res_mode,
-                                st_label,
-                                esc_reason if esc_reason != 'None' else "None",
-                                max(1, int(turns_cnt or 1)),
-                                int(score_val or 80),
-                                sent_clean,
-                                shift,
-                                sentiment_score,
-                                int(tot_tokens_val or 0),
-                                int(prompt_tokens_val or 0),
-                                int(comp_tokens_val or 0),
-                                latency_int,
-                                latency_sec,
-                                raw_flt,
-                                cost_flt,
-                                round(cost_flt - raw_flt, 5)
-                            ])
+                        if not filter_columns:
+                            if is_admin:
+                                writer.writerow([
+                                    r_id,
+                                    th_id,
+                                    dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "",
+                                    from_em or "",
+                                    subj or "",
+                                    summary_txt or "",
+                                    intent_str,
+                                    res_mode,
+                                    st_label,
+                                    esc_reason if esc_reason != 'None' else "None",
+                                    max(1, int(turns_cnt or 1)),
+                                    int(score_val or 80),
+                                    sent_clean,
+                                    shift,
+                                    sentiment_score,
+                                    int(tot_tokens_val or 0),
+                                    int(prompt_tokens_val or 0),
+                                    int(comp_tokens_val or 0),
+                                    latency_int,
+                                    latency_sec,
+                                    raw_flt,
+                                    cost_flt,
+                                    round(cost_flt - raw_flt, 5)
+                                ])
+                            else:
+                                writer.writerow([
+                                    r_id,
+                                    th_id,
+                                    dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "",
+                                    from_em or "",
+                                    subj or "",
+                                    summary_txt or "",
+                                    intent_str,
+                                    res_mode,
+                                    st_label,
+                                    esc_reason if esc_reason != 'None' else "None",
+                                    max(1, int(turns_cnt or 1)),
+                                    int(score_val or 80),
+                                    sent_clean,
+                                    shift,
+                                    sentiment_score,
+                                    int(tot_tokens_val or 0),
+                                    latency_sec,
+                                    cost_flt
+                                ])
                         else:
-                            writer.writerow([
-                                r_id,
-                                th_id,
-                                dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "",
-                                from_em or "",
-                                subj or "",
-                                summary_txt or "",
-                                intent_str,
-                                res_mode,
-                                st_label,
-                                esc_reason if esc_reason != 'None' else "None",
-                                max(1, int(turns_cnt or 1)),
-                                int(score_val or 80),
-                                sent_clean,
-                                shift,
-                                sentiment_score,
-                                int(tot_tokens_val or 0),
-                                latency_sec,
-                                cost_flt
-                            ])
+                            row_cells = []
+                            for col in requested_cols:
+                                if col == "id_thread": row_cells.extend([r_id, th_id])
+                                elif col == "timestamp": row_cells.append(dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "")
+                                elif col == "customer_email": row_cells.append(from_em or "")
+                                elif col == "subject_summary": row_cells.extend([subj or "", summary_txt or ""])
+                                elif col == "intent": row_cells.append(intent_str)
+                                elif col == "resolution_mode": row_cells.append(res_mode)
+                                elif col == "status": row_cells.append(st_label)
+                                elif col == "escalation_reason": row_cells.append(esc_reason if esc_reason != 'None' else "None")
+                                elif col == "turns": row_cells.append(max(1, int(turns_cnt or 1)))
+                                elif col == "score": row_cells.append(int(score_val or 80))
+                                elif col == "sentiment_shift": row_cells.extend([sent_clean, shift])
+                                elif col == "sentiment_score": row_cells.append(sentiment_score)
+                                elif col == "tokens":
+                                    if is_admin: row_cells.extend([int(tot_tokens_val or 0), int(prompt_tokens_val or 0), int(comp_tokens_val or 0)])
+                                    else: row_cells.append(int(tot_tokens_val or 0))
+                                elif col == "latency": row_cells.extend([latency_int, latency_sec])
+                                elif col == "cost":
+                                    if is_admin: row_cells.extend([raw_flt, cost_flt, round(cost_flt - raw_flt, 5)])
+                                    else: row_cells.append(cost_flt)
+                            writer.writerow(row_cells)
+
                         yield output.getvalue()
                         output.seek(0)
                         output.truncate(0)
@@ -2574,4 +2628,172 @@ def export_ticketing_report_endpoint(
         media_type="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
+
+
+# ---------------------------------------------------------------------------
+# Report Column Profiles Endpoints
+# ---------------------------------------------------------------------------
+
+ALLOWED_REPORT_COLUMNS = [
+    "id_thread", "timestamp", "customer_email", "subject_summary", "intent",
+    "resolution_mode", "status", "escalation_reason", "turns", "score",
+    "sentiment_shift", "sentiment_score", "tokens", "latency", "cost"
+]
+
+DEFAULT_REPORT_PROFILES = [
+    {
+        "id": "overview",
+        "name": "Overview",
+        "is_default": True,
+        "columns": [
+            "timestamp", "customer_email", "subject_summary", "intent",
+            "status", "resolution_mode", "score"
+        ]
+    },
+    {
+        "id": "quality_sentiment",
+        "name": "Quality & Sentiment",
+        "is_default": True,
+        "columns": [
+            "timestamp", "customer_email", "subject_summary", "status",
+            "turns", "score", "sentiment_shift", "sentiment_score"
+        ]
+    },
+    {
+        "id": "ops_billing",
+        "name": "Ops & Billing",
+        "is_default": True,
+        "columns": [
+            "id_thread", "timestamp", "intent", "resolution_mode",
+            "escalation_reason", "latency", "tokens", "cost"
+        ]
+    }
+]
+
+
+class CreateReportProfileRequest(BaseModel):
+    name: str
+    columns: list[str]
+
+
+@router.get("/reports/profiles/{client_id}")
+def get_report_profiles_endpoint(
+    client_id: str,
+    user: dict = Depends(get_current_user)
+):
+    require_client_access(client_id, user)
+    import copy
+    profiles = copy.deepcopy(DEFAULT_REPORT_PROFILES)
+
+    if client_id != "ALL":
+        try:
+            with get_db_ctx() as db:
+                with db.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, name, columns, created_at, updated_at
+                        FROM report_column_profiles
+                        WHERE client_id = %s
+                        ORDER BY id ASC
+                    """, (client_id,))
+                    rows = cursor.fetchall()
+                    for r in rows:
+                        p_id, p_name, p_cols_raw, cr_at, up_at = r
+                        cols = json.loads(p_cols_raw) if isinstance(p_cols_raw, str) else (p_cols_raw or [])
+                        profiles.append({
+                            "id": p_id,
+                            "name": p_name,
+                            "is_default": False,
+                            "columns": cols,
+                            "created_at": cr_at.isoformat() if cr_at else None,
+                            "updated_at": up_at.isoformat() if up_at else None
+                        })
+        except Exception as e:
+            logger.error(f"Failed to fetch custom report profiles: {e}")
+
+    return {"profiles": profiles}
+
+
+@router.post("/reports/profiles/{client_id}")
+def create_report_profile_endpoint(
+    client_id: str,
+    payload: CreateReportProfileRequest,
+    user: dict = Depends(get_current_user)
+):
+    require_client_access(client_id, user)
+    if client_id == "ALL":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot create custom profile for 'ALL' clients. Please select a specific client account."
+        )
+
+    clean_name = (payload.name or "").strip()
+    if not clean_name:
+        raise HTTPException(status_code=400, detail="Profile name cannot be empty")
+
+    if clean_name.lower() in ("overview", "quality & sentiment", "ops & billing"):
+        raise HTTPException(status_code=400, detail=f"'{clean_name}' is a reserved default profile name")
+
+    valid_cols = [c for c in payload.columns if c in ALLOWED_REPORT_COLUMNS]
+    if not valid_cols:
+        raise HTTPException(status_code=400, detail="At least one valid column must be selected")
+
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "SELECT id FROM report_column_profiles WHERE client_id = %s AND LOWER(name) = LOWER(%s) LIMIT 1",
+                    (client_id, clean_name)
+                )
+                if cursor.fetchone():
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"A profile named '{clean_name}' already exists for this account"
+                    )
+
+                cursor.execute(
+                    "INSERT INTO report_column_profiles (client_id, name, columns) VALUES (%s, %s, %s)",
+                    (client_id, clean_name, json.dumps(valid_cols))
+                )
+                db.commit()
+                new_id = cursor.lastrowid
+                return {
+                    "id": new_id,
+                    "name": clean_name,
+                    "is_default": False,
+                    "columns": valid_cols
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create report profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/reports/profiles/{client_id}/{profile_id}")
+def delete_report_profile_endpoint(
+    client_id: str,
+    profile_id: int,
+    user: dict = Depends(get_current_user)
+):
+    require_client_access(client_id, user)
+    if client_id == "ALL":
+        raise HTTPException(status_code=400, detail="Cannot delete profiles when 'ALL' clients are selected.")
+
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM report_column_profiles WHERE id = %s AND client_id = %s",
+                    (profile_id, client_id)
+                )
+                db.commit()
+                if cursor.rowcount == 0:
+                    raise HTTPException(status_code=404, detail="Profile not found or access denied")
+                return {"status": "deleted", "id": profile_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete report profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 

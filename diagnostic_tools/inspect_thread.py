@@ -548,7 +548,7 @@ def main():
     parser.add_argument("-t", "--thread-id", dest="thread_id", help="Explicit Thread ID to inspect")
     parser.add_argument("-m", "--mail-id", dest="mail_id", type=int, help="Explicit Email Log ID (e.g. 371)")
     parser.add_argument("--msg-id", dest="msg_id", help="Explicit RFC Message-ID header")
-    parser.add_argument("-c", "--client-id", dest="client_id", help="Filter by Client ID (e.g. CLI-4159FFCF)")
+    parser.add_argument("-c", "--client-id", dest="client_id", help="Filter by Client ID (e.g. CLI-4B46C071)")
     parser.add_argument("-f", "--full", action="store_true", help="Print full email body and draft text without truncation")
     parser.add_argument("--json", action="store_true", help="Output raw telemetry as structured JSON")
     parser.add_argument("-v", "--verbose", action="store_true", help="Include verbose debug details")

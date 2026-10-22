@@ -282,6 +282,58 @@ class TestAgentTools(unittest.TestCase):
             self.assertEqual(decision, "draft_mode")
             self.assertEqual(score, 45)
 
+    def test_14_technical_support_escalation_allowed_at_exhaustion(self):
+        """escalate_and_create_ticket must succeed when technical_support reaches step exhaustion"""
+        ctx = PipelineContext.from_task_data("test-tech-escalate", {
+            "client_id": "CLI-4159FFCF",
+            "from_email": "customer@example.com",
+            "subject": "Re: facing problem with bot",
+            "body": "still not working after step 3"
+        })
+        ctx.intent = "technical_support"
+        ctx.troubleshooting_step = 3
+        ctx.history = [
+            {"role": "customer", "body": "bot is down"},
+            {"role": "assistant", "body": "try restart"},
+            {"role": "customer", "body": "still not working"}
+        ]
+
+        with patch("app.pipeline.tools.create_ticket_and_reply", return_value=("Ticket opened.", "275424000000999001", "ticket_created_and_sent")):
+            res = execute_tool_call("escalate_and_create_ticket", {"issue_summary": "Bot unresponsive on all channels"}, ctx)
+            self.assertEqual(res.get("status"), "ticket_created")
+            self.assertEqual(res.get("ticket_id"), "275424000000999001")
+
+    def test_15_first_turn_vague_request_requires_details(self):
+        """Direct ticket creation on turn 1 without diagnostic details must return details_required"""
+        ctx = PipelineContext.from_task_data("test-vague-first-turn", {
+            "client_id": "CLI-4159FFCF",
+            "from_email": "customer@example.com",
+            "subject": "help",
+            "body": "facing problem"
+        })
+        ctx.intent = "technical_support"
+        ctx.troubleshooting_step = 0
+        ctx.history = []
+
+        res = execute_tool_call("escalate_and_create_ticket", {"issue_summary": "help"}, ctx)
+        self.assertEqual(res.get("status"), "details_required")
+        self.assertIn("diagnostic information", res.get("message", ""))
+
+    def test_16_exhausted_troubleshooting_overrides_general_query_evaluator(self):
+        """When troubleshooting_step > 3, evaluator must force create_ticket even if intent was general_query"""
+        from app.pipeline.evaluator import evaluate_draft_and_decide
+
+        with patch("app.pipeline.evaluator.llm_score", return_value=85):
+            score, decision = evaluate_draft_and_decide(
+                client_id="CLI-TEST",
+                reply="I have investigated everything and need to escalate this.",
+                query="still not working after 3 steps",
+                context_succeeded=True,
+                troubleshooting_step=4,
+                intent="general_query"
+            )
+            self.assertEqual(decision, "create_ticket")
+
 
 if __name__ == "__main__":
     unittest.main()

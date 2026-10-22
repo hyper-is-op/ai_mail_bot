@@ -39,13 +39,36 @@ def evaluate_draft_and_decide(
     troubleshooting_step: int = 0,
     is_not_found: bool = False,
     max_troubleshooting_steps: int = DEFAULT_MAX_TROUBLESHOOTING_STEPS,
-    intent: Optional[str] = None
+    intent: Optional[str] = None,
+    ownership_verified: bool = True,
+    upstream_outage: bool = False,
+    rate_limited: bool = False,
+    sentiment_velocity_breach: bool = False
 ) -> Tuple[int, str]:
     """
     Evaluates reply quality against customer query and determines action.
-    Returns (score: int, decision: 'auto_send' | 'create_ticket').
+    Returns (score: int, decision: 'auto_send' | 'create_ticket' | 'draft_mode').
     """
-    # 0. If issue is confirmed resolved by customer, confirm closure without escalating
+    # 0a. Upstream Outage or Rate Limit: route directly to draft_mode for manual operator review
+    if upstream_outage:
+        logger.info(f"⚠️ [Client {client_id}] Upstream connector outage detected -> holding in draft_mode")
+        return 50, "draft_mode"
+
+    if rate_limited:
+        logger.info(f"⚠️ [Client {client_id}] Connector rate limit exceeded -> holding in draft_mode")
+        return 50, "draft_mode"
+
+    # 0b. BOLA Ownership Mismatch: unverified sender email -> hold in draft_mode for safety
+    if not ownership_verified:
+        logger.info(f"🔒 [Client {client_id}] BOLA email ownership unverified -> holding in draft_mode for human review")
+        return 50, "draft_mode"
+
+    # 0c. Sentiment Velocity Breach (Hostile / Legal Threat escalation): hold in draft_mode for human review
+    if sentiment_velocity_breach:
+        logger.warning(f"🚨 [Client {client_id}] Sentiment velocity breach (hostile/legal threat) -> holding in draft_mode for human review")
+        return 50, "draft_mode"
+
+    # 0d. If issue is confirmed resolved by customer, confirm closure without escalating
     if is_resolved:
         logger.info(f"✅ Issue resolved for client {client_id} — auto-sending resolution confirmation")
         return 95, "auto_send"
@@ -56,13 +79,16 @@ def evaluate_draft_and_decide(
         if (troubleshooting_step <= 1 or is_informational) and not is_resolved:
             score = llm_score(reply, query)
             if not check_ai_self_reference(reply):
-                if score >= 50:
+                if is_informational:
+                    logger.info(f"💡 [Client {client_id}] Context retrieval empty for informational inquiry (intent={intent}) -> holding in draft_mode for operator review")
+                    return max(score, 50), "draft_mode"
+                elif score >= 50:
                     logger.info(f"ℹ️ [Client {client_id}] Context retrieval empty (intent={intent}), but draft scored {score} -> evaluating decision")
                     threshold = get_email_score_threshold(client_id)
                     if threshold is None:
                         threshold = 80
                     return score, decision_engine(score, threshold=threshold)
-                elif score >= 30 or is_informational:
+                elif score >= 30:
                     logger.info(f"ℹ️ [Client {client_id}] Context retrieval empty (intent={intent}), draft scored {score} -> routing to draft_mode rather than ticket escalation")
                     return max(score, 50), "draft_mode"
 
@@ -97,7 +123,12 @@ def evaluate_draft_and_decide(
             logger.info(f"🔍 [Client {client_id}] Reference not found in records (score: {score}) -> delivering clarification request to customer")
             return score, "auto_send"
 
-    # 5c. General / informational inquiries with retrieved knowledge: allow auto_send if score >= 60.
+    # 6. Turn (max_troubleshooting_steps + 1)+: Troubleshooting attempts exhausted without resolution -> force ticket escalation
+    if troubleshooting_step > max_troubleshooting_steps and not is_resolved:
+        logger.info(f"🎫 [Client {client_id}] Troubleshooting step limit reached ({troubleshooting_step}/{max_troubleshooting_steps}) without resolution -> escalating to ticket")
+        return score, "create_ticket"
+
+    # 7. General / informational inquiries with retrieved knowledge: allow auto_send if score >= 60.
     # If score < 60, route to draft_mode rather than escalating to a CRM support ticket.
     if intent in ("general_query", "marketing_promotional", "greeting"):
         if context_succeeded and score >= 60:
@@ -106,11 +137,6 @@ def evaluate_draft_and_decide(
         else:
             logger.info(f"💡 [Client {client_id}] General informational inquiry with score {score} -> draft_mode (ticket creation denied)")
             return score, "draft_mode"
-
-    # 6. Turn (max_troubleshooting_steps + 1)+: Troubleshooting attempts exhausted without resolution -> force ticket escalation
-    if troubleshooting_step > max_troubleshooting_steps and not is_resolved:
-        logger.info(f"🎫 [Client {client_id}] Troubleshooting step limit reached ({troubleshooting_step}/{max_troubleshooting_steps}) without resolution -> escalating to ticket")
-        return score, "create_ticket"
 
     decision = decision_engine(score, threshold=threshold)
     logger.info(f"📊 [Client {client_id}] Score: {score}, Threshold: {threshold} -> Decision: {decision}")

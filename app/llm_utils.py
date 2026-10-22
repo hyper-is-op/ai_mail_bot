@@ -1,5 +1,6 @@
 import re
 import logging
+from typing import Optional, List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,11 @@ def _format_history(history: list) -> str:
     return "\n\n".join(lines)
 
 
-def extract_ticket_and_order_ids(text: str) -> list[str]:
+def extract_ticket_and_order_ids(text: str, custom_regex: Optional[str] = None) -> list[str]:
     """
     Extracts all ticket IDs, order numbers, case numbers, and reference numbers
-    from text using comprehensive regex patterns. Returns cleaned, deduplicated IDs.
+    from text using comprehensive regex patterns and optional tenant custom regex.
+    Returns cleaned, deduplicated IDs.
     Also handles email line-wrapping/folding across newlines.
     """
     if not text:
@@ -87,6 +89,18 @@ def extract_ticket_and_order_ids(text: str) -> list[str]:
         texts_to_check.append(unwrapped_text)
 
     ids = []
+    # 0. Custom tenant regex if provided
+    if custom_regex:
+        try:
+            compiled = re.compile(custom_regex, re.IGNORECASE)
+            for t in texts_to_check:
+                for m in compiled.finditer(t):
+                    val = m.group(1) if m.groups() else m.group(0)
+                    if val and str(val).strip():
+                        ids.append(str(val).strip())
+        except Exception as e:
+            logger.warning(f"⚠️ Custom regex '{custom_regex}' evaluation failed: {e}")
+
     for t in texts_to_check:
         # 1. Standard pattern formats like T-YYMMDD-XXXXX
         for m in re.finditer(r'\b(T-\d{6}-\d+)\b', t, re.IGNORECASE):
@@ -119,3 +133,92 @@ def extract_ticket_and_order_ids(text: str) -> list[str]:
                 continue
             clean_ids.append(cleaned)
     return clean_ids
+
+
+def extract_entities_categorized(
+    text: str,
+    custom_order_regex: Optional[str] = None,
+    custom_ticket_regex: Optional[str] = None
+) -> dict[str, list[str]]:
+    """
+    Categorizes extracted entity tokens into orders vs tickets.
+    Returns: {"orders": list[str], "tickets": list[str], "all": list[str]}
+    """
+    if not text:
+        return {"orders": [], "tickets": [], "all": []}
+
+    all_ids = extract_ticket_and_order_ids(text)
+    orders = []
+    tickets = []
+
+    # Custom regex exact matches
+    if custom_order_regex:
+        try:
+            c_ord = re.compile(custom_order_regex, re.IGNORECASE)
+            for m in c_ord.finditer(text):
+                val = (m.group(1) if m.groups() else m.group(0)).strip().lstrip("#")
+                if val and val not in orders:
+                    orders.append(val)
+        except Exception as e:
+            logger.warning(f"⚠️ Custom order regex '{custom_order_regex}' failed: {e}")
+
+    if custom_ticket_regex:
+        try:
+            c_tick = re.compile(custom_ticket_regex, re.IGNORECASE)
+            for m in c_tick.finditer(text):
+                val = (m.group(1) if m.groups() else m.group(0)).strip().lstrip("#")
+                if val and val not in tickets:
+                    tickets.append(val)
+        except Exception as e:
+            logger.warning(f"⚠️ Custom ticket regex '{custom_ticket_regex}' failed: {e}")
+
+    # Categorize remaining tokens by prefix and keyword proximity
+    text_lower = text.lower()
+    for token in all_ids:
+        if token in orders or token in tickets:
+            continue
+        token_upper = token.upper()
+        # Direct prefix checks
+        if token_upper.startswith("ORD") or token_upper.startswith("ORDER"):
+            if token not in orders:
+                orders.append(token)
+            continue
+        if any(token_upper.startswith(p) for p in ("T-", "INC", "CAS", "SR", "REQ")):
+            if token not in tickets:
+                tickets.append(token)
+            continue
+
+        # Proximity keyword check in text
+        escaped_tok = re.escape(token)
+        order_pattern = rf'(?:order|purchase|tracking|shipment)\s*(?:id|no|num|number)?\s*[:#\s-]?\s*#?{escaped_tok}'
+        ticket_pattern = rf'(?:ticket|case|complaint|incident|issue|ref)\s*(?:id|no|num|number)?\s*[:#\s-]?\s*#?{escaped_tok}'
+
+        is_order = bool(re.search(order_pattern, text_lower))
+        is_ticket = bool(re.search(ticket_pattern, text_lower))
+
+        if is_order and not is_ticket:
+            if token not in orders:
+                orders.append(token)
+        elif is_ticket and not is_order:
+            if token not in tickets:
+                tickets.append(token)
+        else:
+            # Fallback: if token has length > 12 (typical 18-digit CRM ticket) -> tickets, else if "order" in text -> orders, else tickets
+            if len(token) > 12:
+                if token not in tickets:
+                    tickets.append(token)
+            elif "order" in text_lower and "ticket" not in text_lower:
+                if token not in orders:
+                    orders.append(token)
+            else:
+                if token not in tickets:
+                    tickets.append(token)
+
+    # Ensure all_ids contains all found orders and tickets
+    combined_all = list(dict.fromkeys(orders + tickets + all_ids))
+    return {
+        "orders": orders,
+        "tickets": tickets,
+        "all": combined_all
+    }
+

@@ -30,6 +30,8 @@ class PipelineContext:
 
     # Classification & Routing
     intent: Optional[str] = None
+    intents: List[str] = field(default_factory=list)
+    is_compound_intent: bool = False
     escalation_reason: Optional[str] = None
     conversation_closed: bool = False
     sentiment: str = "Neutral"
