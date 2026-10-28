@@ -15,6 +15,30 @@ run_task = process_email_task.run.__func__
 
 class TestBackAndForthScenarios(unittest.TestCase):
 
+    def setUp(self):
+        try:
+            from app.redis_pool import get_redis_main, get_redis_history
+            rm = get_redis_main()
+            for key in rm.keys("ratelimit:sender:CLI-TEST*"):
+                rm.delete(key)
+            rh = get_redis_history()
+            for key in rh.keys("chat_history:CLI-TEST*"):
+                rh.delete(key)
+        except Exception:
+            pass
+
+    def tearDown(self):
+        try:
+            from app.redis_pool import get_redis_main, get_redis_history
+            rm = get_redis_main()
+            for key in rm.keys("ratelimit:sender:CLI-TEST*"):
+                rm.delete(key)
+            rh = get_redis_history()
+            for key in rh.keys("chat_history:CLI-TEST*"):
+                rh.delete(key)
+        except Exception:
+            pass
+
     # =========================================================================
     # SCENARIO 1: Multi-Turn Diagnostic Troubleshooting Progression to Escalation
     # =========================================================================

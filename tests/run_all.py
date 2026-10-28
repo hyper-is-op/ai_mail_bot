@@ -17,6 +17,28 @@ def main():
     print("🧪 STARTING MAIL AI AUTOMATION TEST SUITE")
     print("=" * 70)
 
+    try:
+        from app.redis_pool import get_redis_main, get_redis_history
+        rm = get_redis_main()
+        test_keys_main = rm.keys("ratelimit:sender:CLI-TEST*") + rm.keys("action_outbox:CLI-TEST*")
+        if test_keys_main:
+            rm.delete(*test_keys_main)
+        rh = get_redis_history()
+        test_keys_hist = rh.keys("chat_history:CLI-TEST*")
+        if test_keys_hist:
+            rh.delete(*test_keys_hist)
+    except Exception:
+        pass
+
+    try:
+        from app.db import get_db_ctx
+        with get_db_ctx() as db:
+            with db.cursor() as cur:
+                cur.execute("DELETE FROM action_logs WHERE client_id LIKE 'CLI-TEST%'")
+            db.commit()
+    except Exception:
+        pass
+
     test_dir = os.path.dirname(os.path.abspath(__file__))
     loader = unittest.TestLoader()
     suite = loader.discover(start_dir=test_dir, pattern="test_*.py")

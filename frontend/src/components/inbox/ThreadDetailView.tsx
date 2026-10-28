@@ -265,10 +265,11 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
               bodyText.includes('<html') ||
               bodyText.includes('<table') ||
               bodyText.includes('<div') ||
-              bodyText.includes('<p')
+              /<p[\s>]/i.test(bodyText) ||
+              /<\/p>/i.test(bodyText)
             ))
           );
-          const showHtml = hasHtmlContent && (viewHtmlMode[email.id] !== undefined ? viewHtmlMode[email.id] : true);
+          const showHtml = hasHtmlContent && (viewHtmlMode[email.id] !== undefined ? viewHtmlMode[email.id] : false);
 
           return (
             <div key={email.id} className="space-y-3 text-xs">
@@ -294,7 +295,7 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
                       {hasHtmlContent && (
                         <button
                           type="button"
-                          onClick={() => setViewHtmlMode(prev => ({ ...prev, [email.id]: !(prev[email.id] !== undefined ? prev[email.id] : true) }))}
+                          onClick={() => setViewHtmlMode(prev => ({ ...prev, [email.id]: !(prev[email.id] !== undefined ? prev[email.id] : false) }))}
                           className={cn(
                             "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border transition-colors",
                             showHtml 
@@ -337,7 +338,7 @@ export const ThreadDetailView: React.FC<ThreadDetailViewProps> = ({
                   </div>
                 </div>
 
-                {/* Customer Message Body (Defaults to Original HTML iframe when available, with Clean Text toggle) */}
+                {/* Customer Message Body (Defaults to Clean Text, with Original HTML toggle when available) */}
                 {(() => {
                   if (showHtml) {
                     const rawContent = email.body_html || email.body || email.preview || '';

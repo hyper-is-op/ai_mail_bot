@@ -213,20 +213,28 @@ def execute_tool_call(
                 }
             else:
                 err_msg = res.get("error")
-                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404
+                is_invalid_format = bool(res.get("invalid_format")) or res.get("status_code") in (400, 422)
+                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404 or is_invalid_format
                 if is_not_found:
-                    ctx.log_step("CRM_Order_Not_Found")
+                    ctx.log_step("CRM_Order_Invalid_Format" if is_invalid_format else "CRM_Order_Not_Found")
                     ctx.context_data = {
                         "status": "not_found",
+                        "sub_status": "invalid_format" if is_invalid_format else "id_not_found",
                         "type": "order",
                         "reference_id": clean_order_id,
                         "message": f"Order #{clean_order_id} not found in store/ERP records."
                     }
                     return {
                         "status": "not_found",
+                        "invalid_format": is_invalid_format,
                         "order_id": clean_order_id,
                         "message": f"No active order record found for reference '{clean_order_id}'",
-                        "hint": "The order was NOT found in the system. Politely inform the customer that order number was not found, and ask them to verify or reply with the correct order ID. Do NOT call 'escalate_and_create_ticket' simply because the order was not found."
+                        "hint": (
+                            f"The order reference '{clean_order_id}' could not be recognized or located in the system. "
+                            "Politely inform the customer that the order number could not be found, suggest checking their order confirmation "
+                            "email for the exact number, and offer to assist with their inquiry. "
+                            "Do NOT claim there was an internal server breakdown, and do NOT call 'escalate_and_create_ticket' simply because the order was not found."
+                        )
                     }
                 else:
                     ctx.log_step("CRM_Order_Lookup_Error")
@@ -283,20 +291,28 @@ def execute_tool_call(
                 }
             else:
                 err_msg = res.get("error")
-                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404
+                is_invalid_format = bool(res.get("invalid_format")) or res.get("status_code") in (400, 422)
+                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404 or is_invalid_format
                 if is_not_found:
-                    ctx.log_step("Payment_Status_Not_Found")
+                    ctx.log_step("Payment_Status_Invalid_Format" if is_invalid_format else "Payment_Status_Not_Found")
                     ctx.context_data = {
                         "status": "not_found",
+                        "sub_status": "invalid_format" if is_invalid_format else "id_not_found",
                         "type": "payment",
                         "reference_id": clean_ref,
                         "message": f"Payment record for reference '{clean_ref}' not found."
                     }
                     return {
                         "status": "not_found",
+                        "invalid_format": is_invalid_format,
                         "payment_reference": clean_ref,
                         "message": f"No active payment record found for reference '{clean_ref}'",
-                        "hint": "The payment record was NOT found. Politely inform the customer that the transaction reference was not found, and ask them to verify or provide the correct transaction ID."
+                        "hint": (
+                            f"The payment reference '{clean_ref}' could not be recognized or located in the system. "
+                            "Politely inform the customer that the transaction reference was not found, suggest checking their receipt or invoice, "
+                            "and ask them to provide the correct transaction ID. "
+                            "Do NOT claim there was an internal server breakdown."
+                        )
                     }
                 else:
                     ctx.log_step("Payment_Status_Lookup_Error")
@@ -354,20 +370,28 @@ def execute_tool_call(
                 }
             else:
                 err_msg = res.get("error")
-                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404
+                is_invalid_format = bool(res.get("invalid_format")) or res.get("status_code") in (400, 422)
+                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404 or is_invalid_format
                 if is_not_found:
-                    ctx.log_step("CRM_Status_Not_Found")
+                    ctx.log_step("CRM_Status_Invalid_Format" if is_invalid_format else "CRM_Status_Not_Found")
                     ctx.context_data = {
                         "status": "not_found",
+                        "sub_status": "invalid_format" if is_invalid_format else "id_not_found",
                         "type": "ticket",
                         "reference_id": clean_ticket_id,
                         "message": f"Ticket #{clean_ticket_id} not found in CRM."
                     }
                     return {
                         "status": "not_found",
+                        "invalid_format": is_invalid_format,
                         "ticket_id": clean_ticket_id,
                         "message": f"No active record found in CRM for reference '{clean_ticket_id}'",
-                        "hint": "The ticket was NOT found in the CRM. Inform the customer politely that ticket ID was not found, and ask them to verify or reply with the correct reference number. Do NOT call 'escalate_and_create_ticket' simply because the ticket was not found."
+                        "hint": (
+                            f"The ticket reference '{clean_ticket_id}' could not be recognized or located in the system. "
+                            "Politely inform the customer that the ticket ID could not be found, suggest checking their original confirmation "
+                            "email for the exact number, and offer to assist with any issue described in their message. "
+                            "Do NOT claim there was an internal server breakdown, and do NOT call 'escalate_and_create_ticket' simply because the ticket was not found or has an unverified reference."
+                        )
                     }
                 else:
                     ctx.log_step("CRM_Status_Lookup_Error")
@@ -438,20 +462,28 @@ def execute_tool_call(
                 }
             else:
                 err_msg = res.get("error")
-                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404
+                is_invalid_format = bool(res.get("invalid_format")) or res.get("status_code") in (400, 422)
+                is_not_found = bool(res.get("not_found")) or ("No matching" in str(err_msg)) or res.get("status_code") == 404 or is_invalid_format
                 if is_not_found:
-                    ctx.log_step("CRM_Status_Not_Found")
+                    ctx.log_step("CRM_Status_Invalid_Format" if is_invalid_format else "CRM_Status_Not_Found")
                     ctx.context_data = {
                         "status": "not_found",
+                        "sub_status": "invalid_format" if is_invalid_format else "id_not_found",
                         "type": "ticket_or_order",
                         "reference_id": clean_ticket_id,
                         "message": f"Reference #{clean_ticket_id} not found in CRM or store records."
                     }
                     return {
                         "status": "not_found",
+                        "invalid_format": is_invalid_format,
                         "ticket_id": clean_ticket_id,
                         "message": f"No active record found in CRM or store for reference '{clean_ticket_id}'",
-                        "hint": "The reference was NOT found. Politely inform the customer that the ticket/order number was not found, and ask them to verify or reply with the correct reference number. Do NOT call 'escalate_and_create_ticket' simply because the reference was not found."
+                        "hint": (
+                            f"The reference '{clean_ticket_id}' could not be recognized or located in the system. "
+                            "Politely inform the customer that the ticket/order number was not found, suggest checking their original confirmation "
+                            "email for the exact reference number, and offer to assist with any issue described in their message. "
+                            "Do NOT call 'escalate_and_create_ticket' simply because the reference was not found."
+                        )
                     }
                 else:
                     ctx.log_step("CRM_Status_Lookup_Error")

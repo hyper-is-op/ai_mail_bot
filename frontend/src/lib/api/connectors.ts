@@ -10,11 +10,13 @@ export const connectorsApi = {
     headers_template?: string | null;
     request_template?: string | null;
     response_mapping?: string | null;
-    auth_type: 'bearer' | 'basic' | 'api_key_header' | 'api_key_query';
+    auth_type: 'bearer' | 'basic' | 'api_key_header' | 'api_key_query' | 'oauth2_client_credentials';
     auth_secret?: string | null;
     auth_field_name?: string | null;
     payload_encoding?: 'plain' | 'base64_query';
     base64_query_param_name?: string | null;
+    id_pattern_regex?: string | null;
+    owner_email_path?: string | null;
     status?: 'draft' | 'pending_approval';
   }) {
     const res = await fetch(`${BASE_URL}/admin/connector-configs`, {
@@ -119,6 +121,9 @@ export const connectorsApi = {
     auth_field_name?: string | null;
     payload_encoding?: 'plain' | 'base64_query';
     base64_query_param_name?: string | null;
+    id_pattern_regex?: string | null;
+    owner_email_path?: string | null;
+    status?: 'draft' | 'pending_approval';
   }) {
     const res = await fetch(`${BASE_URL}/admin/connector-configs/regenerate`, {
       method: 'POST',

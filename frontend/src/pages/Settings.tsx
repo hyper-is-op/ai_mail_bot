@@ -570,7 +570,7 @@ export default function Settings() {
 
   if (loading) {
     return (
-      <div className="min-h-[60vh] flex flex-col items-center justify-center space-y-4 select-none">
+      <div className="min-h-[60vh] flex flex-col items-center justify-center space-y-4">
         <Loader2 className="w-9 h-9 text-primary animate-spin" />
         <p className="text-xs text-muted-foreground font-medium">Fetching Windows 11 system policies...</p>
       </div>
@@ -578,7 +578,7 @@ export default function Settings() {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-5 select-none pb-12">
+    <div className="space-y-4 sm:space-y-5 pb-12">
       {/* Windows 11 Settings Header */}
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
         <div>

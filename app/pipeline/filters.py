@@ -2,7 +2,7 @@ import os
 import logging
 from typing import Optional
 from app.pipeline.context import PipelineContext
-from app.keyword_filter import get_blocked_keywords, is_blocked, insert_blocked_email
+from app.keyword_filter import get_blocked_keywords, get_blocked_keyword_exceptions, is_blocked, insert_blocked_email
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +20,14 @@ def apply_deterministic_filters(ctx: PipelineContext, cursor) -> bool:
     # 0. Bounce / Mailer-Daemon / System Message Check
     from_email_clean = (from_email or "").lower().strip()
     subj_clean = (subject or "").lower().strip()
+    headers = getattr(ctx, "headers", {}) or {}
+    auto_submitted = (headers.get("auto_submitted") or "").lower().strip()
+    list_unsubscribe = (headers.get("list_unsubscribe") or "").strip()
+    precedence = (headers.get("precedence") or "").lower().strip()
+
+    is_rfc_bulk = bool(list_unsubscribe) or precedence in ("bulk", "junk", "list")
+    is_rfc_system = bool(auto_submitted and auto_submitted != "no")
+
     is_daemon_sender = (
         from_email_clean.startswith(("mailer-daemon@", "postmaster@", "noreply@", "no-reply@"))
         or "mailer-daemon" in from_email_clean
@@ -31,24 +39,52 @@ def apply_deterministic_filters(ctx: PipelineContext, cursor) -> bool:
             "mail delivery subsystem", "failure notice", "returned mail"
         )
     )
-    if is_daemon_sender or is_bounce_subject:
-        logger.info(f"🛑 [Client {client_id}] Automated bounce / daemon message detected from {from_email} ({subject}) — dropping without automated reply")
+    if is_daemon_sender or is_bounce_subject or is_rfc_system:
+        logger.info(f"🛑 [Client {client_id}] Automated bounce / daemon message detected from {from_email} ({subject}) [RFC Auto-Submitted={auto_submitted}] — dropping without automated reply")
         ctx.summary = f"Automated system message / bounce from {from_email}. Dropped without reply."
+        ctx.is_resolved = True
         ctx.halt("system_bounce_dropped", "Automated bounce or daemon notification", "System_Bounce_Dropped")
         return True
 
     # 0b. Automated Marketing / Broadcast Blast Sender Detection
     # Catch obvious automated broadcast, promo, and digest addresses (e.g. promo@, newsletter@, digests@, updates@, bulletin@)
-    # or mailings with standard unsubscribe indicators where no user inquiry or ticket exists
+    # RFC bulk headers (List-Unsubscribe, Precedence: bulk/junk/list)
+    # or bulk broadcast subdomains (e.g. student@mail.internshala.com, news@newsletter.company.com)
     is_broadcast_prefix = from_email_clean.startswith((
         "newsletter@", "newsletters@", "promo@", "promotions@", "marketing@",
         "bulletin@", "digests@", "digest@", "updates@", "campaign@", "offers@"
     ))
-    if is_broadcast_prefix:
-        logger.info(f"📢 [Client {client_id}] Automated broadcast/newsletter sender detected ({from_email}) — dropping without automated ticket or reply")
+    is_broadcast_domain = False
+    if "@" in from_email_clean:
+        domain = from_email_clean.split("@", 1)[-1]
+        parts = domain.split(".")
+        if len(parts) >= 3:
+            sub = parts[0]
+            if sub in (
+                "newsletter", "newsletters", "promo", "promotions",
+                "campaign", "campaigns", "updates", "digest", "digests",
+                "bulk", "bounce", "marketing", "news", "notifications"
+            ):
+                is_broadcast_domain = True
+            elif sub == "mail":
+                user_part = from_email_clean.split("@")[0]
+                promo_user_prefixes = ("student", "promo", "offers", "deals", "blast", "digest", "newsletter", "campaign", "info", "events")
+                is_promo_user = any(user_part == p or user_part.startswith(f"{p}.") or user_part.startswith(f"{p}-") or user_part.startswith(f"{p}_") for p in promo_user_prefixes)
+                if is_promo_user or is_rfc_bulk:
+                    is_broadcast_domain = True
+
+    if is_rfc_bulk or is_broadcast_prefix or is_broadcast_domain:
+        logger.info(f"📢 [Client {client_id}] Automated broadcast/newsletter sender detected ({from_email}) [RFC Bulk={is_rfc_bulk}] — dropping without automated ticket or reply")
         ctx.summary = f"Automated marketing broadcast from {from_email}. Dropped without reply."
         ctx.priority = "Low"
-        ctx.halt("no_action_needed", f"Broadcast sender prefix: {from_email}", "Broadcast_Sender_Dropped")
+        ctx.is_resolved = True
+        if is_rfc_bulk:
+            reason_label = f"RFC bulk header detected: {from_email}"
+        elif is_broadcast_prefix:
+            reason_label = f"Broadcast sender prefix: {from_email}"
+        else:
+            reason_label = f"Broadcast sender domain: {from_email}"
+        ctx.halt("no_action_needed", reason_label, "Broadcast_Sender_Dropped")
         return True
 
     # 1. Master Bot Switch (Disabled by Administrator or Paused by Client)
@@ -64,7 +100,7 @@ def apply_deterministic_filters(ctx: PipelineContext, cursor) -> bool:
     # 2. Inbound Sender Rate Limiting Check (configurable via SENDER_HOURLY_RATE_LIMIT, default 30 emails/hr)
     from app.rate_limiter import check_sender_rate_limit
     sender_limit = int(os.getenv("SENDER_HOURLY_RATE_LIMIT", "30"))
-    allowed, count = check_sender_rate_limit(client_id, from_email, limit=sender_limit, window_seconds=3600)
+    allowed, count = check_sender_rate_limit(client_id, from_email, limit=sender_limit, window_seconds=3600, cursor=cursor)
     if not allowed:
         logger.warning(f"🚨 [Client {client_id}] Sender {from_email} exceeded hourly rate limit ({count}/{sender_limit}) — halting automated reply")
         ctx.summary = f"Sender {from_email} exceeded rate limit ({count}/{sender_limit} in 1hr). Held for review."
@@ -87,8 +123,9 @@ def apply_deterministic_filters(ctx: PipelineContext, cursor) -> bool:
 
     # 3. Blocked Keywords Check
     blocked_keywords = get_blocked_keywords(cursor, client_id)
+    exceptions = get_blocked_keyword_exceptions(cursor, client_id) if blocked_keywords else None
     email_text = f"{subject} {body_text}"
-    matched_kw = is_blocked(email_text, blocked_keywords) if blocked_keywords else None
+    matched_kw = is_blocked(email_text, blocked_keywords, exceptions=exceptions) if blocked_keywords else None
     if matched_kw:
         logger.info(f"🚫 [Client {client_id}] Email matched blocked keyword '{matched_kw}'")
         insert_blocked_email(

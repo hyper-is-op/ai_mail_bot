@@ -44,7 +44,7 @@ def dispatch_or_draft_reply(
         logger.warning(f"🚫 [Client {client_id}] Outbound reply delivery suppressed for unmonitored/broadcast address {from_email} to avoid bounce loops")
         if execution_steps is not None:
             execution_steps.append("Outbound_Delivery_Suppressed")
-        return "sent", False
+        return "no_action_needed", False
 
     if features.get("feature_auto_send", True):
         logger.info(f"📤 [Client {client_id}] Auto-send enabled — dispatching reply via SMTP")
@@ -136,6 +136,8 @@ def create_ticket_and_reply(
             history=history,
             sentiment=sentiment,
             priority=priority,
+            thread_id=data.get("thread_id") or "",
+            customer_name=data.get("sender_name"),
         )
 
     outbox_res = execute_idempotent_action(

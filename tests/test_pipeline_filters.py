@@ -13,6 +13,8 @@ class TestPipelineFilters(unittest.TestCase):
             r = get_redis_client()
             if r:
                 r.delete("ratelimit:sender:CLI-TEST:customer@example.com")
+                r.delete("ratelimit:sender:CLI-TEST:integrations@vip-partner.com")
+                r.delete("ratelimit:exemptions:CLI-TEST")
         except Exception:
             pass
 
@@ -84,6 +86,102 @@ class TestPipelineFilters(unittest.TestCase):
         self.assertEqual(len(unique_tids), 2)
         self.assertIn("T-260505-00117", unique_tids)
         self.assertIn("ORD-10294", unique_tids)
+    def test_07_broadcast_subdomain_dropped(self):
+        """Broadcast subdomains like mail.internshala.com must be dropped before LLM calls"""
+        ctx = PipelineContext.from_task_data("test-task-subdomain-broadcast", {
+            "client_id": "CLI-TEST",
+            "from_email": "student@mail.internshala.com",
+            "subject": "Update: Your UK study journey starts in Delhi on 24 October",
+            "body": "Register now for the education fair."
+        })
+        cursor = MagicMock()
+        halted = apply_deterministic_filters(ctx, cursor)
+        self.assertTrue(halted)
+        self.assertEqual(ctx.status, "no_action_needed")
+        self.assertTrue(ctx.is_resolved)
+        self.assertIn("Broadcast_Sender_Dropped", ctx.execution_steps)
+
+    def test_08_public_mail_domain_not_dropped(self):
+        """Legitimate senders on mail.com or mail.ru must not be falsely dropped"""
+        ctx = PipelineContext.from_task_data("test-task-public-mail", {
+            "client_id": "CLI-TEST",
+            "from_email": "customer@mail.com",
+            "subject": "Need help with my account",
+            "body": "I cannot access my dashboard."
+        })
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        halted = apply_deterministic_filters(ctx, cursor)
+        self.assertFalse(halted)
+        self.assertNotEqual(ctx.status, "no_action_needed")
+
+    def test_09_rfc_list_unsubscribe_dropped(self):
+        """Emails with List-Unsubscribe header must be dropped deterministically as marketing"""
+        ctx = PipelineContext.from_task_data("test-task-rfc-unsubscribe", {
+            "client_id": "CLI-TEST",
+            "from_email": "marketing@acme.com",
+            "subject": "Our seasonal newsletter",
+            "body": "Check out our latest products.",
+            "headers": {"list_unsubscribe": "<https://acme.com/unsub>"}
+        })
+        cursor = MagicMock()
+        halted = apply_deterministic_filters(ctx, cursor)
+        self.assertTrue(halted)
+        self.assertEqual(ctx.status, "no_action_needed")
+        self.assertTrue(ctx.is_resolved)
+        self.assertIn("Broadcast_Sender_Dropped", ctx.execution_steps)
+
+    def test_10_rfc_auto_submitted_dropped(self):
+        """Emails with Auto-Submitted header must be dropped as automated system bounce/notice"""
+        ctx = PipelineContext.from_task_data("test-task-rfc-autosubmit", {
+            "client_id": "CLI-TEST",
+            "from_email": "system-alert@service.net",
+            "subject": "Automated status notification",
+            "body": "Server status update.",
+            "headers": {"auto_submitted": "auto-generated"}
+        })
+        cursor = MagicMock()
+        halted = apply_deterministic_filters(ctx, cursor)
+        self.assertTrue(halted)
+        self.assertEqual(ctx.status, "system_bounce_dropped")
+        self.assertTrue(ctx.is_resolved)
+
+    def test_11_corporate_mail_subdomain_not_dropped(self):
+        """Legitimate enterprise customers sending from mail.<company>.com must NOT be dropped"""
+        ctx = PipelineContext.from_task_data("test-task-corp-mail", {
+            "client_id": "CLI-TEST",
+            "from_email": "alex.smith@mail.enterprise-corp.com",
+            "subject": "Need help with API integration",
+            "body": "Our endpoint is failing with error 400."
+        })
+        cursor = MagicMock()
+        cursor.fetchone.return_value = None
+        halted = apply_deterministic_filters(ctx, cursor)
+        self.assertFalse(halted)
+        self.assertNotEqual(ctx.status, "no_action_needed")
+
+    def test_12_keyword_exception_allows_email(self):
+        """Blocked keyword 'hack' must be bypassed when allowed phrase 'hackathon' is present"""
+        from app.keyword_filter import is_blocked
+        blocked_list = ["hack", "scam"]
+        exceptions = {"hack": ["hackathon", "prevent hack"]}
+
+        # 'hack' alone is blocked
+        self.assertEqual(is_blocked("I found a hack for the system", blocked_list, exceptions), "hack")
+        # 'hackathon' is allowed via exception
+        self.assertIsNone(is_blocked("We are hosting an internal hackathon next week", blocked_list, exceptions))
+
+    def test_13_rate_limit_exemption_allows_sender(self):
+        """Exempted senders or domains must bypass hourly rate limit throttling"""
+        from app.rate_limiter import check_sender_rate_limit
+        cursor = MagicMock()
+        # Mock rate_limit_exemptions to return exempt domain
+        cursor.fetchall.return_value = [("vip-partner.com",), ("alert@monitoring.org",)]
+
+        # Should be allowed even with limit=0
+        allowed, count = check_sender_rate_limit("CLI-TEST", "integrations@vip-partner.com", limit=0, cursor=cursor)
+        self.assertTrue(allowed)
+        self.assertEqual(count, 0)
 
 
 if __name__ == "__main__":

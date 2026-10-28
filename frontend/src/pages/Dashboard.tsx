@@ -447,7 +447,7 @@ export default function Dashboard() {
   }
 
   return (
-    <div className="space-y-4 sm:space-y-5 select-none pb-12">
+    <div className="space-y-4 sm:space-y-5 pb-12">
       {/* Windows 11 Dashboard Header */}
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
         <div>

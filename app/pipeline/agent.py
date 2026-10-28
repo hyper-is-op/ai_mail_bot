@@ -415,7 +415,7 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
 
     final_draft = append_client_disclaimers(ctx.client_id, final_draft)
     ctx_data = ctx.context_data if isinstance(ctx.context_data, dict) else {}
-    is_not_found = bool(ctx_data.get("status") == "not_found")
+    is_not_found = bool(ctx_data.get("status") in ("not_found", "invalid_format"))
     ownership_verified = bool(ctx_data.get("ownership_verified", True))
     upstream_outage = bool(ctx_data.get("status") == "upstream_outage")
     rate_limited = bool(ctx_data.get("status") == "rate_limited")

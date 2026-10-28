@@ -258,7 +258,6 @@ def create_email_record_db(data: dict) -> dict:
     try:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                _ensure_table(cursor)
                 ticket_id = str(uuid.uuid4())  # random, unique e.g. "3f2a1b4c-..."
                 cursor.execute("""
                     INSERT INTO ticket_record (ticket_id, client_id, mail_id, subject, body, status)

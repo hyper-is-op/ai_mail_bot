@@ -151,6 +151,8 @@ export default function PayloadConfig() {
       headers_template: config.headers_template || '{\n  "Content-Type": "application/json"\n}',
       request_template: config.request_template || '',
       response_mapping: config.response_mapping || '',
+      id_pattern_regex: config.id_pattern_regex || '',
+      owner_email_path: config.owner_email_path || '',
       status: config.status === 'draft' ? 'draft' : 'pending_approval',
     });
     setShowEditor(true);
@@ -236,6 +238,8 @@ export default function PayloadConfig() {
         auth_field_name: formData.auth_field_name || null,
         payload_encoding: formData.payload_encoding,
         base64_query_param_name: formData.payload_encoding === 'base64_query' ? formData.base64_query_param_name : null,
+        id_pattern_regex: formData.id_pattern_regex?.trim() || null,
+        owner_email_path: formData.owner_email_path?.trim() || null,
         status: targetStatus,
       };
 

@@ -16,6 +16,7 @@ import {
   Mail
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { copyToClipboard as safeCopyToClipboard } from '@/lib/clipboard';
 import { api } from '@/lib/api';
 import EmailBodyWithDisclaimer from '@/components/EmailBodyWithDisclaimer';
 import { useAppState } from '@/context/AppStateContext';
@@ -135,10 +136,12 @@ export default function Tickets() {
     return () => clearTimeout(timer);
   }, [selectedClientId, page, pageSize, searchQuery, statusFilter, priorityFilter, intentFilter]);
 
-  const copyToClipboard = (text: string, field: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedField(field);
-    setTimeout(() => setCopiedField(null), 2000);
+  const copyToClipboard = async (text: string, field: string) => {
+    const ok = await safeCopyToClipboard(text);
+    if (ok) {
+      setCopiedField(field);
+      setTimeout(() => setCopiedField(null), 2000);
+    }
   };
 
   // Known and dynamic intents for filter dropdown

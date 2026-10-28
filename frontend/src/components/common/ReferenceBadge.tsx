@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Copy, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { copyToClipboard } from '@/lib/clipboard';
 
 export type ReferenceType = 'thread' | 'message' | 'ticket' | 'generic';
 
@@ -45,11 +46,21 @@ export const ReferenceBadge: React.FC<ReferenceBadgeProps> = ({
     }
   }
 
-  const handleCopy = (e: React.MouseEvent) => {
+  const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    navigator.clipboard.writeText(strId);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
+    const ok = await copyToClipboard(strId);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    }
+  };
+
+  const handleContainerClick = (e: React.MouseEvent) => {
+    if (onClick) {
+      onClick(e);
+    } else if (copyable) {
+      handleCopy(e);
+    }
   };
 
   const typeColorClasses = {
@@ -70,27 +81,29 @@ export const ReferenceBadge: React.FC<ReferenceBadgeProps> = ({
     ghost: 'bg-transparent border-transparent hover:border-transparent'
   };
 
+  const isInteractive = Boolean(onClick || copyable);
+
   return (
     <div
-      onClick={onClick}
-      title={`${type.toUpperCase()}: ${strId} (Click icon to copy)`}
+      onClick={handleContainerClick}
+      title={copied ? "Copied full ID to clipboard!" : `${type.toUpperCase()}: ${strId} (Click to copy)`}
       className={cn(
-        "inline-flex items-center font-mono font-semibold rounded border transition-all select-none group",
+        "inline-flex items-center font-mono font-semibold rounded border transition-all group",
         sizeClasses[size],
         typeColorClasses[type],
         variantClasses[variant],
-        onClick ? 'cursor-pointer hover:brightness-105 dark:hover:brightness-110' : '',
+        isInteractive ? 'cursor-pointer hover:brightness-105 dark:hover:brightness-110' : '',
         className
       )}
     >
-      {label && <span className="font-bold opacity-90">{label}</span>}
-      <span className="tracking-tight">{displayText}</span>
+      {label && <span className="font-bold opacity-90 select-none">{label}</span>}
+      <span className="tracking-tight select-text">{displayText}</span>
 
       {copyable && (
         <button
           type="button"
           onClick={handleCopy}
-          className="opacity-50 group-hover:opacity-100 hover:text-foreground transition-opacity p-0.5 -mr-0.5 rounded focus:outline-none"
+          className="opacity-50 group-hover:opacity-100 hover:text-foreground transition-opacity p-0.5 -mr-0.5 rounded focus:outline-none cursor-pointer"
           title={copied ? "Copied to clipboard!" : `Copy full ${type} ID`}
           aria-label={`Copy ${type} ID`}
         >

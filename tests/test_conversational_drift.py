@@ -32,6 +32,28 @@ class TestConversationalDrift(unittest.TestCase):
     def setUp(self):
         self.client_id = "CLI-TEST-DRIFT"
         self.from_email = "customer@domain.com"
+        try:
+            from app.redis_pool import get_redis_main, get_redis_history
+            rm = get_redis_main()
+            for key in rm.keys(f"ratelimit:sender:{self.client_id}*"):
+                rm.delete(key)
+            rh = get_redis_history()
+            for key in rh.keys(f"chat_history:{self.client_id}*"):
+                rh.delete(key)
+        except Exception:
+            pass
+
+    def tearDown(self):
+        try:
+            from app.redis_pool import get_redis_main, get_redis_history
+            rm = get_redis_main()
+            for key in rm.keys(f"ratelimit:sender:{self.client_id}*"):
+                rm.delete(key)
+            rh = get_redis_history()
+            for key in rh.keys(f"chat_history:{self.client_id}*"):
+                rh.delete(key)
+        except Exception:
+            pass
 
     # ========================================================================
     # 1. Thread Entanglement Tests (Option A Re-Anchoring)

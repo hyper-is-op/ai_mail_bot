@@ -1048,8 +1048,6 @@ def get_llm_metrics_endpoint(
 ):
     require_client_access(client_id, user)
     try:
-        ensure_llm_logs_table()
-
         effective_range = range_type or time_window or "all"
 
         with get_db_ctx() as db:

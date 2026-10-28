@@ -258,6 +258,13 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
 
                     logger.info(f"📧 [Client {client_id}] NEW EMAIL: From={from_email} Subject={subject} (HTML={bool(html_text)}) [In-Reply-To={raw_in_reply_to}]")
 
+                    raw_headers = {
+                        "auto_submitted": (msg.get("Auto-Submitted") or "").lower().strip(),
+                        "list_unsubscribe": (msg.get("List-Unsubscribe") or "").strip(),
+                        "precedence": (msg.get("Precedence") or msg.get("X-Precedence") or "").lower().strip(),
+                        "auto_response_suppress": (msg.get("X-Auto-Response-Suppress") or "").strip(),
+                    }
+
                     # Enqueue task to Celery FIRST
                     task_result = process_email_task.delay({
                         "client_id": client_id,
@@ -268,6 +275,7 @@ def check_client_mailbox(client_id: str, email_user: str, email_pass: str) -> in
                         "message_id": raw_message_id,
                         "in_reply_to": raw_in_reply_to,
                         "references": raw_references,
+                        "headers": raw_headers,
                     })
                     logger.info(f"✅ [Client {client_id}] Task queued: {task_result.id}")
 
@@ -326,14 +334,10 @@ def manage_listeners():
     logger.info(f"🚀 Starting Bounded Email Listener Manager (max_workers={IMAP_MAX_WORKERS}, poll_interval={IMAP_POLL_INTERVAL}s)...")
     
     try:
-        from app.email_credential import ensure_accounts_table_startup
-        from app.db import get_db_ctx
-        with get_db_ctx() as db:
-            with db.cursor() as cursor:
-                ensure_accounts_table_startup(cursor)
-            db.commit()
+        from app.db_init import run_sync_database_init
+        run_sync_database_init()
     except Exception as e:
-        logger.warning(f"⚠️ Initial accounts table check warning: {e}")
+        logger.warning(f"⚠️ Initial database schema pre-flight warning: {e}")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=IMAP_MAX_WORKERS, thread_name_prefix="imap_worker") as executor:
         while not shutdown_event.is_set():

@@ -14,6 +14,7 @@ import {
   Check,
   X,
   Sparkles,
+  Shield,
 } from 'lucide-react';
 import { ConnectorConfig } from './types';
 
@@ -142,6 +143,18 @@ export const ConnectorList: React.FC<ConnectorListProps> = ({
                       {isAdmin && (
                         <span className="text-xs font-medium px-2 py-0.5 rounded bg-zinc-100 dark:bg-white/5 text-muted-foreground">
                           Client: {config.client_id}
+                        </span>
+                      )}
+                      {config.id_pattern_regex && (
+                        <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-500/20" title={`ID Validation Regex: ${config.id_pattern_regex}`}>
+                          <Shield className="w-2.5 h-2.5" />
+                          Regex Guard
+                        </span>
+                      )}
+                      {config.owner_email_path && (
+                        <span className="flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20" title={`BOLA Owner Email: ${config.owner_email_path}`}>
+                          <Shield className="w-2.5 h-2.5" />
+                          BOLA Guard
                         </span>
                       )}
                     </div>
@@ -334,6 +347,33 @@ export const ConnectorList: React.FC<ConnectorListProps> = ({
                               {config.oauth_header_prefix || 'Bearer'} {config.oauth_scope ? `(${config.oauth_scope})` : ''}
                             </span>
                           </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {(config.id_pattern_regex || config.owner_email_path) && (
+                      <div className="p-3.5 rounded-xl bg-blue-500/[0.03] border border-blue-500/20 space-y-2">
+                        <div className="flex items-center gap-2 font-sans font-semibold text-blue-600 dark:text-blue-400">
+                          <Shield className="w-4 h-4" />
+                          <span>Security & Validation Specs</span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 font-mono text-[11px] pt-1">
+                          {config.id_pattern_regex && (
+                            <div>
+                              <span className="text-muted-foreground font-sans block text-[10px]">ID Validation Regex:</span>
+                              <code className="text-foreground font-semibold px-1.5 py-0.5 rounded bg-zinc-200/50 dark:bg-white/10 break-all">
+                                {config.id_pattern_regex}
+                              </code>
+                            </div>
+                          )}
+                          {config.owner_email_path && (
+                            <div>
+                              <span className="text-muted-foreground font-sans block text-[10px]">BOLA Owner Email JSON Path:</span>
+                              <code className="text-foreground font-semibold px-1.5 py-0.5 rounded bg-zinc-200/50 dark:bg-white/10 break-all">
+                                {config.owner_email_path}
+                              </code>
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Sparkles,
   Lock,
@@ -6,9 +6,12 @@ import {
   Loader2,
   CheckCircle,
   XCircle,
+  Shield,
+  AlertTriangle,
 } from 'lucide-react';
 import { BaseModal } from '@/components/common';
 import { ConnectorFormData, OAuthTestResult, CONTEXT_VARS } from './types';
+import { CONNECTOR_PRESETS, ConnectorPreset, detectUnfilledPlaceholders } from './connectorPresets';
 
 interface ConnectorEditorModalProps {
   isOpen: boolean;
@@ -39,6 +42,19 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
   isAdmin,
   clients,
 }) => {
+  const [presetCategory, setPresetCategory] = useState<'all' | 'CRM' | 'E-Commerce'>('all');
+
+  const unfilledPlaceholders = useMemo(() => {
+    return detectUnfilledPlaceholders(formData);
+  }, [
+    formData.url,
+    formData.headers_template,
+    formData.request_template,
+    formData.auth_secret,
+    formData.oauth_client_id,
+    formData.oauth_client_secret,
+  ]);
+
   if (!isOpen) return null;
 
   const insertVariable = (varName: string, field: 'request_template' | 'headers_template') => {
@@ -47,6 +63,91 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
       [field]: prev[field] + `\n"${varName.replace(/[{}]/g, '')}": "${varName}",`,
     }));
   };
+
+  const currentDescStyle: 'hybrid' | 'transcript' | 'summary' | null = (() => {
+    if (formData.trigger_type !== 'ticket_create') return null;
+    const t = formData.request_template || '';
+    if (t.includes('{{history_summary}}') && t.includes('{{conversation_history}}')) {
+      return 'hybrid';
+    }
+    if (t.includes('{{history_summary}}') && !t.includes('{{conversation_history}}')) {
+      return 'summary';
+    }
+    if (t.includes('{{conversation_history}}')) {
+      return 'transcript';
+    }
+    return null;
+  })();
+
+  const applyDescriptionFormat = (style: 'hybrid' | 'transcript' | 'summary') => {
+    const isZoho =
+      Boolean(formData.url?.toLowerCase().includes('desk.zoho')) ||
+      Boolean(formData.headers_template?.includes('orgId')) ||
+      Boolean(formData.request_template && formData.request_template.includes('white-space: pre-wrap'));
+
+    const rawHybrid =
+      '=== EXECUTIVE SUMMARY ===\\n\\n{{history_summary}}\\n\\n===================================\\nTHREAD CONVERSATION LOG\\n===================================\\n\\n{{conversation_history}}';
+    const rawTranscript = '{{conversation_history}}';
+    const rawSummary = '{{history_summary}}';
+
+    const rawValue =
+      style === 'hybrid'
+        ? rawHybrid
+        : style === 'summary'
+        ? rawSummary
+        : rawTranscript;
+
+    const targetValue = isZoho
+      ? `<div style="white-space: pre-wrap; font-family: inherit;">${rawValue}</div>`
+      : rawValue;
+
+    try {
+      const parsed = JSON.parse(formData.request_template || '{}');
+      if (parsed.comment && typeof parsed.comment === 'object' && 'body' in parsed.comment) {
+        // Zendesk schema
+        parsed.comment.body = targetValue;
+      } else {
+        // Standard schema (Zoho Desk, Freshdesk, generic CRM)
+        parsed.description = targetValue;
+      }
+      setFormData((prev) => ({
+        ...prev,
+        request_template: JSON.stringify(parsed, null, 2),
+      }));
+    } catch {
+      // Fallback clean template if existing JSON is empty or malformed
+      const fallback = {
+        subject: '{{subject}}',
+        description: targetValue,
+        departmentId: 'YOUR_DEPARTMENT_ID',
+        priority: '{{priority}}',
+        contact: {
+          email: '{{from_email}}',
+          firstName: '{{first_name}}',
+          lastName: '{{last_name}}',
+        },
+      };
+      setFormData((prev) => ({
+        ...prev,
+        request_template: JSON.stringify(fallback, null, 2),
+      }));
+    }
+  };
+
+  const handleApplyPreset = (preset: ConnectorPreset) => {
+    setFormData((prev) => ({
+      ...prev,
+      ...preset.config,
+      client_id: prev.client_id,
+      id_pattern_regex: preset.config.id_pattern_regex || '',
+      owner_email_path: preset.config.owner_email_path || '',
+    }));
+  };
+
+  const filteredPresets = CONNECTOR_PRESETS.filter((p) => {
+    if (presetCategory === 'all') return true;
+    return p.category === presetCategory;
+  });
 
   return (
     <BaseModal
@@ -65,76 +166,96 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
     >
       <form onSubmit={(e) => onSubmit(e, 'pending_approval')} className="flex flex-col flex-1 min-h-0 overflow-hidden">
           <div className="p-6 overflow-y-auto space-y-4 text-xs flex-1 scrollbar-thin">
-            {/* Quick Presets Bar */}
-            <div className="p-3 bg-zinc-50 dark:bg-white/[0.02] border border-zinc-200 dark:border-white/5 rounded-xl space-y-2">
-              <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider">
-                ⚡ Quick Presets (Click to load template)
+            {/* Standard Presets Bar */}
+            <div className="p-3.5 bg-zinc-50 dark:bg-white/[0.02] border border-zinc-200 dark:border-white/5 rounded-2xl space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-[11px] font-semibold text-muted-foreground uppercase tracking-wider flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-primary" />
+                  Standard Connector Presets
+                </div>
+                <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setPresetCategory('all')}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors ${
+                      presetCategory === 'all'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-zinc-200/50 dark:bg-white/5 text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    All ({CONNECTOR_PRESETS.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPresetCategory('CRM')}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors ${
+                      presetCategory === 'CRM'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-zinc-200/50 dark:bg-white/5 text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    CRM & Tickets ({CONNECTOR_PRESETS.filter((p) => p.category === 'CRM').length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPresetCategory('E-Commerce')}
+                    className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-colors ${
+                      presetCategory === 'E-Commerce'
+                        ? 'bg-primary text-primary-foreground'
+                        : 'bg-zinc-200/50 dark:bg-white/5 text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    E-Commerce ({CONNECTOR_PRESETS.filter((p) => p.category === 'E-Commerce').length})
+                  </button>
+                </div>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFormData({
-                      ...formData,
-                      trigger_type: 'ticket_create',
-                      http_method: 'POST',
-                      url: 'https://desk.zoho.in/api/v1/tickets',
-                      auth_type: 'oauth2_client_credentials',
-                      oauth_grant_type: 'refresh_token',
-                      oauth_header_prefix: 'Zoho-oauthtoken',
-                      oauth_token_url: 'https://accounts.zoho.in/oauth/v2/token',
-                      oauth_scope: 'Desk.tickets.CREATE,Desk.tickets.READ',
-                      headers_template: '{\n  "orgId": "60085497089",\n  "Content-Type": "application/json"\n}',
-                      request_template: '{\n  "subject": "{{subject}}",\n  "description": "{{conversation_history}}",\n  "departmentId": "275424000000010772",\n  "contact": {\n    "email": "{{from_email}}",\n    "lastName": "{{customer_name}}"\n  }\n}',
-                      response_mapping: '{\n  "ticket_id": "id",\n  "ticket_status": "status",\n  "priority_name": "priority"\n}',
-                    });
-                  }}
-                  className="px-2.5 py-1 rounded-lg bg-orange-500/10 hover:bg-orange-500/20 text-orange-600 dark:text-orange-400 border border-orange-500/30 text-xs font-medium cursor-pointer transition-colors"
-                >
-                  Zoho Desk (Tickets)
-                </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFormData({
-                      ...formData,
-                      trigger_type: 'ticket_create',
-                      http_method: 'POST',
-                      url: 'https://YOUR_DOMAIN.freshdesk.com/api/v2/tickets',
-                      auth_type: 'basic',
-                      auth_secret: '{\n  "username": "YOUR_FRESHDESK_API_KEY",\n  "password": "X"\n}',
-                      headers_template: '{\n  "Content-Type": "application/json"\n}',
-                      request_template: '{\n  "subject": "{{subject}}",\n  "description": "{{body}}",\n  "email": "{{from_email}}",\n  "priority": 1,\n  "status": 2\n}',
-                      response_mapping: '{\n  "fields": [\n    {\n      "field": "ticket_id",\n      "path": "id",\n      "extract_regex": null\n    }\n  ]\n}',
-                    });
-                  }}
-                  className="px-2.5 py-1 rounded-lg bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 dark:text-blue-400 border border-blue-500/30 text-xs font-medium cursor-pointer transition-colors"
-                >
-                  Freshdesk (Tickets)
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    setFormData({
-                      ...formData,
-                      trigger_type: 'order_status',
-                      http_method: 'GET',
-                      url: 'https://YOUR_STORE.myshopify.com/admin/api/2024-01/orders.json',
-                      auth_type: 'api_key_header',
-                      auth_field_name: 'X-Shopify-Access-Token',
-                      headers_template: '{\n  "Content-Type": "application/json"\n}',
-                      request_template: '{\n  "name": "{{docket_no}}"\n}',
-                      response_mapping: '{\n  "fields": [\n    {\n      "field": "docket_no",\n      "path": "orders[0].name",\n      "extract_regex": null\n    },\n    {\n      "field": "ticket_status",\n      "path": "orders[0].fulfillment_status || orders[0].financial_status",\n      "extract_regex": null\n    }\n  ]\n}',
-                    });
-                  }}
-                  className="px-2.5 py-1 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-xs font-medium cursor-pointer transition-colors"
-                >
-                  Shopify (Order Lookup)
-                </button>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
+                {filteredPresets.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => handleApplyPreset(preset)}
+                    className="p-2.5 rounded-xl text-left border border-zinc-200/80 dark:border-white/10 hover:border-primary/50 bg-white/70 dark:bg-white/[0.03] hover:bg-primary/[0.04] transition-all group cursor-pointer"
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-semibold text-foreground text-xs group-hover:text-primary transition-colors">
+                        {preset.title}
+                      </span>
+                      <span className="text-[9px] font-mono px-1.5 py-0.2 rounded uppercase bg-zinc-100 dark:bg-white/10 text-muted-foreground">
+                        {preset.config.http_method}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground line-clamp-2 leading-snug">
+                      {preset.description}
+                    </p>
+                  </button>
+                ))}
               </div>
             </div>
+
+            {/* Unfilled Placeholders Warning Banner */}
+            {unfilledPlaceholders.length > 0 && (
+              <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-800 dark:text-amber-300 space-y-1.5">
+                <div className="flex items-center gap-1.5 font-semibold text-xs text-amber-700 dark:text-amber-400">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>Unconfigured Template Placeholders ({unfilledPlaceholders.length})</span>
+                </div>
+                <p className="text-[11px] leading-relaxed opacity-90">
+                  The following placeholder tokens must be configured with your actual credentials/IDs before submitting for approval:
+                </p>
+                <div className="flex flex-wrap gap-1.5 pt-0.5">
+                  {unfilledPlaceholders.map((token) => (
+                    <span
+                      key={token}
+                      className="px-2 py-0.5 rounded-md font-mono text-[10px] bg-amber-500/20 text-amber-900 dark:text-amber-200 border border-amber-500/30 font-medium"
+                    >
+                      {token}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {isAdmin && (
@@ -497,6 +618,53 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
               )}
             </div>
 
+            {/* Security & Validation (Regex & BOLA) */}
+            <div className="p-4 rounded-2xl bg-zinc-50 dark:bg-white/[0.02] border border-zinc-200 dark:border-white/10 space-y-3">
+              <div className="font-semibold flex items-center justify-between text-foreground">
+                <div className="flex items-center gap-1.5">
+                  <Shield className="w-4 h-4 text-primary" />
+                  Security & Lookup Validation
+                </div>
+                <span className="text-[11px] text-muted-foreground font-normal">
+                  Pre-flight input validation & BOLA protection
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
+                    ID Pattern Validation Regex (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.id_pattern_regex || ''}
+                    onChange={(e) => setFormData({ ...formData, id_pattern_regex: e.target.value })}
+                    placeholder="e.g. ^\d{16,19}$ or ^\d+$"
+                    className="w-full p-2 rounded-xl border border-zinc-200 dark:border-white/10 bg-transparent outline-none font-mono text-xs focus:ring-2 focus:ring-primary/20"
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Validates customer ticket/docket ID before issuing HTTP calls. Rejects malformed IDs immediately.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="text-[11px] font-semibold text-muted-foreground block mb-1">
+                    Owner Email JSON Path (BOLA Defense)
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.owner_email_path || ''}
+                    onChange={(e) => setFormData({ ...formData, owner_email_path: e.target.value })}
+                    placeholder="e.g. contact.email or orders[0].email"
+                    className="w-full p-2 rounded-xl border border-zinc-200 dark:border-white/10 bg-transparent outline-none font-mono text-xs focus:ring-2 focus:ring-primary/20"
+                  />
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    Verifies retrieved record belongs to requester before returning status data to customer.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             {/* Variable Chips */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
@@ -533,6 +701,83 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
                 className="w-full p-3 rounded-2xl border border-zinc-200 dark:border-white/10 bg-zinc-50 dark:bg-black/30 font-mono text-xs outline-none focus:ring-2 focus:ring-primary/20"
               />
             </div>
+
+            {/* Ticket Description Format Selector (ticket_create only) */}
+            {formData.trigger_type === 'ticket_create' && (
+              <div className="p-3.5 rounded-2xl bg-zinc-50 dark:bg-white/[0.02] border border-zinc-200 dark:border-white/10 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 font-semibold text-foreground">
+                    <Sparkles className="w-3.5 h-3.5 text-primary" />
+                    <span>Ticket Description Style</span>
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">
+                    Click to auto-format the description payload safely
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => applyDescriptionFormat('hybrid')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      currentDescStyle === 'hybrid'
+                        ? 'border-primary/50 bg-primary/10 text-primary shadow-xs ring-1 ring-primary/30'
+                        : 'border-zinc-200 dark:border-white/10 hover:border-zinc-300 dark:hover:border-white/20 bg-background/50'
+                    }`}
+                  >
+                    <div className="font-semibold text-[11px] flex items-center justify-between">
+                      <span>Hybrid Briefing</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/20">
+                        Recommended
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1 leading-snug">
+                      Executive summary at top + condensed multi-turn log below (+1.2s).
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => applyDescriptionFormat('transcript')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      currentDescStyle === 'transcript'
+                        ? 'border-primary/50 bg-primary/10 text-primary shadow-xs ring-1 ring-primary/30'
+                        : 'border-zinc-200 dark:border-white/10 hover:border-zinc-300 dark:hover:border-white/20 bg-background/50'
+                    }`}
+                  >
+                    <div className="font-semibold text-[11px] flex items-center justify-between">
+                      <span>Detailed Log Only</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-600 dark:text-blue-400 font-medium border border-blue-500/20">
+                        0ms Latency
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1 leading-snug">
+                      Conversation history with condensed diagnostic bot actions.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => applyDescriptionFormat('summary')}
+                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer ${
+                      currentDescStyle === 'summary'
+                        ? 'border-primary/50 bg-primary/10 text-primary shadow-xs ring-1 ring-primary/30'
+                        : 'border-zinc-200 dark:border-white/10 hover:border-zinc-300 dark:hover:border-white/20 bg-background/50'
+                    }`}
+                  >
+                    <div className="font-semibold text-[11px] flex items-center justify-between">
+                      <span>Executive Summary</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium border border-amber-500/20">
+                        High-Level
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1 leading-snug">
+                      Concise 2-sentence synthesis of customer issue and status.
+                    </p>
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Request Template */}
             <div>
@@ -587,8 +832,13 @@ export const ConnectorEditorModal: React.FC<ConnectorEditorModalProps> = ({
 
             <button
               type="submit"
-              disabled={submitting}
-              className="px-5 py-2 rounded-lg bg-primary text-primary-foreground font-semibold hover:bg-primary/90 transition-all flex items-center gap-2 shadow-sm text-xs cursor-pointer disabled:opacity-50"
+              disabled={submitting || unfilledPlaceholders.length > 0}
+              title={
+                unfilledPlaceholders.length > 0
+                  ? `Please replace unconfigured placeholders (${unfilledPlaceholders.join(', ')}) before submitting for approval.`
+                  : ''
+              }
+              className="px-5 py-2 rounded-lg bg-primary text-primary-foreground font-semibold hover:bg-primary/90 transition-all flex items-center gap-2 shadow-sm text-xs cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {submitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
               <span>{editingId ? 'Submit Version for Approval' : 'Submit for Approval'}</span>

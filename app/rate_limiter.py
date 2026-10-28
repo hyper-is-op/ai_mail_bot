@@ -70,17 +70,106 @@ class RedisRateLimiter:
             logger.error(f"❌ Redis Rate Limiter execution error: {e}. Passing request to avoid blocking.")
 
 
+def ensure_rate_limit_exemptions_table(cursor=None):
+    sql = """
+        CREATE TABLE IF NOT EXISTS rate_limit_exemptions (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            client_id VARCHAR(50) NOT NULL,
+            sender_or_domain VARCHAR(255) NOT NULL,
+            reason VARCHAR(255) DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_client_exempt (client_id, sender_or_domain),
+            INDEX idx_exempt_client (client_id)
+        )
+    """
+    if cursor is not None:
+        cursor.execute(sql)
+    else:
+        try:
+            from app.db import get_db_ctx
+            with get_db_ctx() as db:
+                with db.cursor() as cur:
+                    cur.execute(sql)
+                db.commit()
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to ensure rate_limit_exemptions table: {e}")
+
+
+def is_sender_exempt_from_rate_limit(client_id: str, from_email: str, cursor=None) -> bool:
+    """
+    Checks if this sender or their domain is exempt from rate limits for this tenant.
+    Uses a 300s Redis set cache per client_id to avoid DB load on high email volumes.
+    """
+    if not client_id or not from_email:
+        return False
+    sender_clean = from_email.lower().strip()
+    domain = sender_clean.split("@")[-1] if "@" in sender_clean else ""
+
+    # 1. Try Redis cache first
+    try:
+        from app.redis_pool import get_redis_main
+        r = get_redis_main()
+        cache_key = f"ratelimit:exemptions:{client_id}"
+        if r.exists(cache_key):
+            exempt_members = r.smembers(cache_key)
+            exempt_set = {m.decode() if isinstance(m, bytes) else str(m) for m in exempt_members}
+            return sender_clean in exempt_set or f"@{domain}" in exempt_set or domain in exempt_set
+    except Exception:
+        pass
+
+    # 2. Query MySQL
+    try:
+        def _fetch(cur):
+            cur.execute(
+                "SELECT sender_or_domain FROM rate_limit_exemptions WHERE client_id = %s",
+                (client_id,)
+            )
+            return {row[0].lower().strip() for row in cur.fetchall()}
+
+        if cursor is not None:
+            exempt_set = _fetch(cursor)
+        else:
+            from app.db import get_db_ctx
+            with get_db_ctx() as db:
+                with db.cursor() as cur:
+                    exempt_set = _fetch(cur)
+
+        # Cache in Redis (300s TTL)
+        try:
+            from app.redis_pool import get_redis_main
+            r = get_redis_main()
+            cache_key = f"ratelimit:exemptions:{client_id}"
+            if exempt_set:
+                r.sadd(cache_key, *exempt_set)
+            else:
+                r.sadd(cache_key, "__NONE__")
+            r.expire(cache_key, 300)
+        except Exception:
+            pass
+
+        return sender_clean in exempt_set or f"@{domain}" in exempt_set or domain in exempt_set
+    except Exception as e:
+        logger.warning(f"⚠️ Rate limit exemption check failed: {e}")
+        return False
+
+
 def check_sender_rate_limit(
     client_id: str,
     from_email: str,
     limit: int = 10,
-    window_seconds: int = 3600
+    window_seconds: int = 3600,
+    cursor=None
 ) -> tuple[bool, int]:
     """
     Checks if an inbound sender has exceeded their hourly email processing limit.
     Returns (is_allowed: bool, current_count: int).
+    Exempt senders or domains are never throttled.
     """
     if not from_email or not client_id:
+        return True, 0
+
+    if is_sender_exempt_from_rate_limit(client_id, from_email, cursor=cursor):
+        logger.info(f"🛡️ [Client {client_id}] Sender {from_email} is exempt from rate limits")
         return True, 0
 
     sender_clean = from_email.lower().strip()

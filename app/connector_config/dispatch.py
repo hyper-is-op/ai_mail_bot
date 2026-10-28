@@ -1,3 +1,4 @@
+import re
 import logging
 from typing import Optional, List, Dict, Any
 
@@ -98,6 +99,8 @@ def run_ticket_create(
     intent: str = "general_query",
     sentiment: str = "Neutral",
     priority: str = "Medium",
+    thread_id: str = "",
+    customer_name: Optional[str] = None,
 ) -> dict:
     """
     Drop-in replacement for app.request_handler.call_create_ticket's core
@@ -118,7 +121,8 @@ def run_ticket_create(
         client_id=client_id, from_email=from_email, subject=clean_sub,
         body=body, cleaned_body=body, ticket_id=None,
         intent=intent, sentiment=sentiment, priority=priority,
-        history=history,
+        history=history, thread_id=thread_id,
+        customer_name=customer_name,
     )
 
     result = execute_connector(config, context_base, body=body, history=history, old_summary=old_summary)
@@ -170,6 +174,21 @@ def run_payment_status_lookup(
         }
 
     ref = str(payment_id or order_id or "").strip()
+    clean_ref = ref.lstrip("#")
+    id_pattern = cfg_payment.get("id_pattern_regex")
+    if id_pattern:
+        try:
+            compiled = re.compile(id_pattern, re.IGNORECASE)
+            if not compiled.search(ref) and not compiled.search(clean_ref):
+                return {
+                    "success": False,
+                    "invalid_format": True,
+                    "not_found": True,
+                    "error": f"Payment reference '{ref}' does not match expected format pattern."
+                }
+        except Exception as re_err:
+            logger.warning(f"⚠️ Invalid id_pattern_regex '{id_pattern}' for client_id={client_id}: {re_err}")
+
     if from_email and not check_connector_rate_limit(client_id, from_email):
         return {
             "success": False,
@@ -198,6 +217,7 @@ def run_payment_status_lookup(
         return {
             "success": False,
             "not_found": bool(result.get("not_found")),
+            "invalid_format": bool(result.get("invalid_format")),
             "upstream_outage": bool(result.get("upstream_outage")),
             "status_code": result.get("status_code"),
             "error": result.get("error", "Unknown payment connector failure")
@@ -253,6 +273,21 @@ def run_ticket_status_lookup(
         }
 
     clean_ticket_id = str(ticket_id or "").strip().lstrip("#")
+    raw_ticket_id = str(ticket_id or "").strip()
+    id_pattern = cfg_ticket.get("id_pattern_regex")
+    if id_pattern:
+        try:
+            compiled = re.compile(id_pattern, re.IGNORECASE)
+            if not compiled.search(raw_ticket_id) and not compiled.search(clean_ticket_id):
+                return {
+                    "success": False,
+                    "invalid_format": True,
+                    "not_found": True,
+                    "error": f"Ticket reference '{raw_ticket_id}' does not match expected format pattern."
+                }
+        except Exception as re_err:
+            logger.warning(f"⚠️ Invalid id_pattern_regex '{id_pattern}' for client_id={client_id}: {re_err}")
+
     context_base = build_context_data_base(
         client_id=client_id, from_email=from_email, subject=subject,
         body=body, cleaned_body=body, ticket_id=clean_ticket_id,
@@ -266,6 +301,7 @@ def run_ticket_status_lookup(
         return {
             "success": False,
             "not_found": bool(result.get("not_found")),
+            "invalid_format": bool(result.get("invalid_format")),
             "upstream_outage": bool(result.get("upstream_outage")),
             "status_code": result.get("status_code"),
             "error": result.get("error", "Unknown executor failure")
@@ -307,6 +343,7 @@ def run_order_status_lookup(
     from app.connector_executor import execute_connector
 
     clean_order_id = str(order_id or ticket_id or "").strip()
+    clean_ref = clean_order_id.lstrip("#")
 
     cfg_order = get_live_config(client_id, "order_status")
     cfg_ticket = get_live_config(client_id, "ticket_status")
@@ -314,6 +351,20 @@ def run_order_status_lookup(
 
     if not selected_config:
         return {"success": False, "error": f"No live order_status connector config for client_id={client_id}"}
+
+    id_pattern = selected_config.get("id_pattern_regex")
+    if id_pattern:
+        try:
+            compiled = re.compile(id_pattern, re.IGNORECASE)
+            if not compiled.search(clean_order_id) and not compiled.search(clean_ref):
+                return {
+                    "success": False,
+                    "invalid_format": True,
+                    "not_found": True,
+                    "error": f"Order reference '{clean_order_id}' does not match expected format pattern."
+                }
+        except Exception as re_err:
+            logger.warning(f"⚠️ Invalid id_pattern_regex '{id_pattern}' for client_id={client_id}: {re_err}")
 
     if from_email and not check_connector_rate_limit(client_id, from_email):
         return {
@@ -335,6 +386,7 @@ def run_order_status_lookup(
         return {
             "success": False,
             "not_found": bool(result.get("not_found")),
+            "invalid_format": bool(result.get("invalid_format")),
             "upstream_outage": bool(result.get("upstream_outage")),
             "status_code": result.get("status_code"),
             "error": result.get("error", "Unknown executor failure")

@@ -46,6 +46,19 @@ celery.conf.update(
 
 
 @worker_init.connect
+def init_worker_database(**kwargs):
+    """
+    Guarantees all 25 MySQL tables exist and are properly migrated
+    before Celery worker begins consuming tasks from Redis.
+    """
+    try:
+        from app.db_init import run_sync_database_init
+        run_sync_database_init()
+    except Exception as e:
+        logger.error(f"❌ Worker database pre-flight failed: {e}")
+
+
+@worker_init.connect
 def wait_for_embed_service_ready(**kwargs):
     """
     Blocks Celery parent process startup until embed_service finishes loading

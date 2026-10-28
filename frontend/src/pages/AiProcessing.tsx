@@ -20,6 +20,7 @@ import {
   Frown
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { copyToClipboard as safeCopyToClipboard } from '@/lib/clipboard';
 import { api } from '@/lib/api';
 import EmailBodyWithDisclaimer from '@/components/EmailBodyWithDisclaimer';
 import { ReferenceBadge } from '@/components/common/ReferenceBadge';
@@ -132,10 +133,12 @@ export default function AiProcessing() {
     return () => clearTimeout(timer);
   }, [selectedClientId, page, pageSize, searchQuery, activeFilter]);
 
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
+  const copyToClipboard = async (text: string, id: string) => {
+    const ok = await safeCopyToClipboard(text);
+    if (ok) {
+      setCopiedId(id);
+      setTimeout(() => setCopiedId(null), 2000);
+    }
   };
 
   // Aggregated Telemetry

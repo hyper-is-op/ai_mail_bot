@@ -24,6 +24,7 @@ import {
 import { api } from '@/lib/api';
 import { useAppState } from '@/context/AppStateContext';
 import { cn } from '@/lib/utils';
+import { copyToClipboard } from '@/lib/clipboard';
 import { BaseModal } from '@/components/common';
 
 export default function KnowledgeBase() {
@@ -204,11 +205,13 @@ export default function KnowledgeBase() {
   };
 
   // Copy inspect text
-  const handleCopyContent = () => {
+  const handleCopyContent = async () => {
     if (!inspectDoc?.content) return;
-    navigator.clipboard.writeText(inspectDoc.content);
-    setCopiedText(true);
-    setTimeout(() => setCopiedText(false), 2000);
+    const ok = await copyToClipboard(inspectDoc.content);
+    if (ok) {
+      setCopiedText(true);
+      setTimeout(() => setCopiedText(false), 2000);
+    }
   };
 
   // Metrics calculation
@@ -248,7 +251,7 @@ export default function KnowledgeBase() {
   }, [selectedClientId, clients]);
 
   return (
-    <div className="space-y-5 select-none pb-12">
+    <div className="space-y-5 pb-12">
       {/* Workspace Header */}
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
         <div>

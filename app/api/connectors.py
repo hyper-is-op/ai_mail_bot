@@ -100,6 +100,8 @@ class ConnectorConfigCreateRequest(BaseModel):
     auth_field_name: Optional[str] = None
     payload_encoding: str = "plain"
     base64_query_param_name: Optional[str] = None
+    id_pattern_regex: Optional[str] = None
+    owner_email_path: Optional[str] = None
     status: str = "pending_approval"
 
 
@@ -116,6 +118,8 @@ class ConnectorConfigEditRequest(BaseModel):
     auth_field_name: Optional[str] = None
     payload_encoding: str = "plain"
     base64_query_param_name: Optional[str] = None
+    id_pattern_regex: Optional[str] = None
+    owner_email_path: Optional[str] = None
     status: str = "pending_approval"
 
 
@@ -336,6 +340,8 @@ def create_connector_config_endpoint(data: ConnectorConfigCreateRequest, user: d
         "auth_field_name": data.auth_field_name,
         "payload_encoding": data.payload_encoding,
         "base64_query_param_name": data.base64_query_param_name,
+        "id_pattern_regex": data.id_pattern_regex,
+        "owner_email_path": data.owner_email_path,
         "created_by": user.get("client_id", user.get("email", "unknown")),
     }
 
@@ -361,7 +367,7 @@ def list_connector_configs_endpoint(client_id: str, user: dict = Depends(get_cur
                     SELECT id, client_id, trigger_type, http_method, url, response_mapping,
                            auth_type, status, version, created_by, approved_by, approved_at, created_at,
                            headers_template, request_template, auth_field_name, payload_encoding, base64_query_param_name,
-                           auth_secret_encrypted
+                           auth_secret_encrypted, id_pattern_regex, owner_email_path
                     FROM connector_configs ORDER BY created_at DESC
                 """)
             else:
@@ -369,7 +375,7 @@ def list_connector_configs_endpoint(client_id: str, user: dict = Depends(get_cur
                     SELECT id, client_id, trigger_type, http_method, url, response_mapping,
                            auth_type, status, version, created_by, approved_by, approved_at, created_at,
                            headers_template, request_template, auth_field_name, payload_encoding, base64_query_param_name,
-                           auth_secret_encrypted
+                           auth_secret_encrypted, id_pattern_regex, owner_email_path
                     FROM connector_configs WHERE client_id=%s ORDER BY created_at DESC
                 """, (client_id,))
             rows = cursor.fetchall()
@@ -411,6 +417,8 @@ def list_connector_configs_endpoint(client_id: str, user: dict = Depends(get_cur
             "headers_template": r[13], "request_template": r[14],
             "auth_field_name": r[15], "payload_encoding": r[16], "base64_query_param_name": r[17],
             "requires_regex_review": has_regex,
+            "id_pattern_regex": r[19] if len(r) > 19 else None,
+            "owner_email_path": r[20] if len(r) > 20 else None,
             **oauth_meta,
         })
     return configs
@@ -647,6 +655,8 @@ def regenerate_connector_config_endpoint(data: ConnectorConfigEditRequest, user:
         "auth_field_name": data.auth_field_name,
         "payload_encoding": data.payload_encoding,
         "base64_query_param_name": data.base64_query_param_name,
+        "id_pattern_regex": data.id_pattern_regex,
+        "owner_email_path": data.owner_email_path,
         "created_by": user.get("client_id", user.get("email", "unknown")),
     }
 

@@ -87,8 +87,6 @@ def upsert_ticket_history(
     try:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                _ensure_table(cursor)
-
                 cursor.execute("""
                     INSERT INTO chat_history
                         (client_id, ticket_id, customer_email, summary, priority, status)
@@ -123,8 +121,6 @@ def get_ticket_history(ticket_id: str) -> dict | None:
     try:
         with get_db_ctx() as db:
             with db.cursor() as cursor:
-                _ensure_table(cursor)
-
                 cursor.execute("""
                     SELECT client_id, ticket_id, customer_email, summary, priority, status, created_at, updated_at
                     FROM chat_history
@@ -167,7 +163,7 @@ def get_history_from_sql(client_id: str, from_email: str, thread_id: str = "", l
                         SELECT body, reply, subject, created_at, status, summary, troubleshooting_step
                         FROM email_logs
                         WHERE client_id = %s AND thread_id = %s
-                          AND status NOT IN ('system_bounce_dropped', 'rate_limited', 'automation_halted')
+                          AND status NOT IN ('system_bounce_dropped', 'rate_limited', 'automation_halted', 'no_action_needed')
                         ORDER BY id DESC LIMIT %s
                     """, (client_id, thread_id, limit))
                 else:
@@ -175,7 +171,7 @@ def get_history_from_sql(client_id: str, from_email: str, thread_id: str = "", l
                         SELECT body, reply, subject, created_at, status, summary, troubleshooting_step
                         FROM email_logs
                         WHERE client_id = %s AND from_email = %s
-                          AND status NOT IN ('system_bounce_dropped', 'rate_limited', 'automation_halted')
+                          AND status NOT IN ('system_bounce_dropped', 'rate_limited', 'automation_halted', 'no_action_needed')
                         ORDER BY id DESC LIMIT %s
                     """, (client_id, from_email, limit))
                 rows = cursor.fetchall()

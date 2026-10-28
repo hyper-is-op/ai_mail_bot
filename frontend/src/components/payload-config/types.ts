@@ -26,6 +26,8 @@ export interface ConnectorConfig {
   approved_at?: string;
   created_at: string;
   requires_regex_review?: boolean;
+  id_pattern_regex?: string | null;
+  owner_email_path?: string | null;
 }
 
 export interface ConnectorFormData {
@@ -50,6 +52,8 @@ export interface ConnectorFormData {
   headers_template: string;
   request_template: string;
   response_mapping: string;
+  id_pattern_regex?: string;
+  owner_email_path?: string;
   status: 'draft' | 'pending_approval';
 }
 
@@ -85,13 +89,24 @@ export interface AllowlistItem {
 export const CONTEXT_VARS = [
   '{{client_id}}',
   '{{from_email}}',
+  '{{customer_name}}',
+  '{{first_name}}',
+  '{{last_name}}',
   '{{subject}}',
   '{{body}}',
   '{{cleaned_body}}',
+  '{{conversation_history}}',
   '{{ticket_id}}',
+  '{{order_id}}',
+  '{{reference_id}}',
+  '{{thread_id}}',
   '{{intent}}',
   '{{sentiment}}',
   '{{priority}}',
+  '{{priority_lower}}',
+  '{{priority_num}}',
+  '{{issue_description}}',
+  '{{history_summary}}',
 ];
 
 export const defaultFormData: ConnectorFormData = {
@@ -116,5 +131,7 @@ export const defaultFormData: ConnectorFormData = {
   headers_template: '{\n  "Content-Type": "application/json"\n}',
   request_template: '{\n  "client_id": "{{client_id}}",\n  "mail_id": "{{from_email}}",\n  "subject": "{{subject}}",\n  "body": "{{body}}",\n  "priority_name": "{{priority}}"\n}',
   response_mapping: '{\n  "fields": [\n    {\n      "field": "ticket_id",\n      "path": "Refrence_No",\n      "extract_regex": null\n    }\n  ]\n}',
+  id_pattern_regex: '',
+  owner_email_path: '',
   status: 'pending_approval',
 };

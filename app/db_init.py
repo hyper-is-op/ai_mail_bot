@@ -12,6 +12,7 @@ from app.email_credential import (
 from app.auth import ensure_users_table, ensure_admin_seeded
 from app.migrations.init_schema import ensure_action_logs_table
 from app.prompt_service import ensure_client_prompt_configs_table
+from app.rate_limiter import ensure_rate_limit_exemptions_table
 
 logger = logging.getLogger(__name__)
 
@@ -545,43 +546,61 @@ def ensure_report_column_profiles_table():
         logger.warning(f"⚠️ Failed to ensure report_column_profiles table: {e}")
 
 
+def run_sync_database_init():
+    """
+    Unified synchronous pre-flight database initialization.
+    Guarantees all 25 MySQL tables exist and are properly migrated.
+    Safe to invoke synchronously from API lifespan, Celery workers, IMAP readers, or test scripts.
+    """
+    from app.schema.tables import TABLE_DEFINITIONS
+    from app.db import get_db_ctx
+
+    logger.info("🔧 Starting synchronous database schema pre-flight...")
+    # 1. Ensure all 25 tables from centralized definitions exist
+    try:
+        with get_db_ctx() as db:
+            with db.cursor() as cursor:
+                for tbl_name, ddl in TABLE_DEFINITIONS.items():
+                    cursor.execute(ddl)
+            db.commit()
+        logger.info("✅ Verified/created all 25 tables from centralized schema definitions")
+    except Exception as e:
+        logger.error(f"❌ Failed executing centralized table DDL: {e}")
+        raise
+
+    # 2. Run column migrations, seedings, and backfills
+    ensure_url_allowlist_table()
+    ensure_connector_configs_table()
+    _run_ensure_draft_emails_table()
+    _run_ensure_accounts_table()
+    ensure_users_table()
+    ensure_paused_emails_table()
+    ensure_global_llm_tables()
+    ensure_client_llm_config_table()
+    ensure_email_disclaimers_table()
+    ensure_llm_logs_table()
+    _run_ensure_chat_history_table()
+    _run_ensure_keyword_filter_tables()
+    _run_ensure_ticket_record_table()
+    _run_ensure_marketing_senders_table()
+    _run_ensure_worker_tables()
+    _run_ensure_paused_email_history_table()
+    ensure_action_logs_table()
+    ensure_client_prompt_configs_table()
+    ensure_report_column_profiles_table()
+    ensure_rate_limit_exemptions_table()
+    ensure_admin_seeded()
+    backfill_client_ids()
+    logger.info("✅ Database schema pre-flight complete!")
+
+
 async def initialize_database_and_services():
     """
-    Runs all startup table migrations, seedings, and vector store preloading in parallel batches.
+    Runs startup table migrations, seedings, and vector store preloading.
     """
     logger.info("🚀 Starting database and service initialization...")
-
-    # Batch 1: Independent schema creations executed concurrently
-    await asyncio.gather(
-        asyncio.to_thread(ensure_url_allowlist_table),
-        asyncio.to_thread(ensure_connector_configs_table),
-        asyncio.to_thread(_run_ensure_draft_emails_table),
-        asyncio.to_thread(_run_ensure_accounts_table),
-        asyncio.to_thread(ensure_users_table),
-        asyncio.to_thread(ensure_paused_emails_table),
-        asyncio.to_thread(ensure_global_llm_tables),
-        asyncio.to_thread(ensure_client_llm_config_table),
-        asyncio.to_thread(ensure_email_disclaimers_table),
-        asyncio.to_thread(ensure_llm_logs_table),
-        asyncio.to_thread(_run_ensure_chat_history_table),
-        asyncio.to_thread(_run_ensure_keyword_filter_tables),
-        asyncio.to_thread(_run_ensure_ticket_record_table),
-        asyncio.to_thread(_run_ensure_marketing_senders_table),
-        asyncio.to_thread(_run_ensure_worker_tables),
-        asyncio.to_thread(_run_ensure_paused_email_history_table),
-        asyncio.to_thread(ensure_action_logs_table),
-        asyncio.to_thread(ensure_client_prompt_configs_table),
-        asyncio.to_thread(ensure_report_column_profiles_table),
-    )
-
-    # Batch 2: Admin seeding (depends on users table)
-    await asyncio.to_thread(ensure_admin_seeded)
-
-    # Batch 3: External service preloading & client backfilling
-    await asyncio.gather(
-        asyncio.to_thread(preload_qdrant_collection),
-        asyncio.to_thread(backfill_client_ids),
-    )
-
+    await asyncio.to_thread(run_sync_database_init)
+    await asyncio.to_thread(preload_qdrant_collection)
     logger.info("✅ Database and service initialization complete!")
+
 

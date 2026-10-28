@@ -56,17 +56,22 @@ class ExecutorAllowlistError(ExecutorError):
     pass
 
 
-def _find_placeholders(template_json: str | None) -> set:
+def _find_placeholders(template_json: str | dict | None) -> set:
     if not template_json:
         return set()
+    if isinstance(template_json, dict):
+        template_json = json.dumps(template_json)
     return set(_PLACEHOLDER_RE.findall(template_json))
+
+
+_QUOTED_PLACEHOLDER_RE = re.compile(r'"\{\{(\w+)\}\}"')
 
 
 def _render_template(template_json: str | dict | None, context: dict) -> dict | None:
     """
-    Substitutes {{key}} placeholders in template_json with JSON-escaped
-    values from context, returns the parsed dict. Fails loudly on any
-    unknown or missing/None placeholder.
+    Renders context variables into template_json string, then parses to dict.
+    Supports native integer/boolean substitution for standalone quoted placeholders.
+    Fails loudly on any unknown or missing/None placeholder.
     """
     if not template_json:
         return None
@@ -95,7 +100,15 @@ def _render_template(template_json: str | dict | None, context: dict) -> dict | 
         escaped = json.dumps(val)[1:-1]
         return escaped
 
-    rendered_str = _PLACEHOLDER_RE.sub(_replace, template_json)
+    def _quoted_replace(match):
+        key = match.group(1)
+        if key in context and isinstance(context[key], (int, bool)) and not isinstance(context[key], str):
+            val = context[key]
+            return str(val).lower() if isinstance(val, bool) else str(val)
+        return match.group(0)
+
+    preprocessed_str = _QUOTED_PLACEHOLDER_RE.sub(_quoted_replace, template_json)
+    rendered_str = _PLACEHOLDER_RE.sub(_replace, preprocessed_str)
     try:
         return json.loads(rendered_str)
     except json.JSONDecodeError as e:
@@ -436,10 +449,12 @@ def execute_connector(
         logger.error(f"❌ Executor HTTP call failed: {e}{resp_text}")
         is_timeout = isinstance(e, requests.exceptions.Timeout)
         is_5xx = bool(status_code is not None and status_code >= 500)
+        is_client_validation_error = bool(status_code in (400, 422))
         return {
             "success": False,
             "status_code": status_code,
-            "not_found": (status_code == 404),
+            "not_found": bool(status_code == 404 or is_client_validation_error),
+            "invalid_format": is_client_validation_error,
             "upstream_outage": (is_timeout or is_5xx),
             "error": f"{e}{resp_text}"
         }

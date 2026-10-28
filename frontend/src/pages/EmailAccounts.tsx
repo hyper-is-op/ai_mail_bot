@@ -122,7 +122,7 @@ export default function EmailAccounts() {
   });
 
   return (
-    <div className="space-y-4 sm:space-y-5 select-none pb-12 max-w-7xl mx-auto">
+    <div className="space-y-4 sm:space-y-5 pb-12 max-w-7xl mx-auto">
       {/* Windows 11 Header */}
       <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3">
         <div>

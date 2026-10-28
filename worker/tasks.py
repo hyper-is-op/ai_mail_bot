@@ -46,6 +46,18 @@ class ThreadResolution(tuple):
         self.is_rfc_match = is_rfc_match
 
 
+def is_prior_turn_clarification(history: list) -> bool:
+    """Returns True if the most recent support message in this thread was an automated clarification request."""
+    for entry in reversed(history or []):
+        if entry.get("role") == "support":
+            meta = entry.get("meta") or ""
+            body = entry.get("body", "").lower()
+            if "clarification_sent" in meta or "clarify which" in body or "which inquiry" in body or "which ticket you would like" in body:
+                return True
+            return False
+    return False
+
+
 def resolve_thread_id(client_id: str, from_email: str, subject: str, in_reply_to: str = "", references: str = "", cursor=None) -> ThreadResolution:
     """
     Resolves or initiates a conversation thread and returns ThreadResolution(thread_id, prior_step, is_rfc_match).
@@ -188,6 +200,8 @@ def check_and_resolve_thread_entanglement(
               AND created_at >= NOW() - INTERVAL %s HOUR
               AND is_resolved = 0
               AND thread_id IS NOT NULL
+              AND status NOT IN ('no_action_needed', 'system_bounce_dropped', 'rate_limited', 'automation_halted')
+              AND (intent IS NULL OR intent NOT IN ('marketing_promotional', 'off_topic_nonsense'))
             ORDER BY id DESC
         """, (client_id, from_email, timeout_hours))
         rows = cur.fetchall()
@@ -329,11 +343,14 @@ def get_client_features(cursor=None, client_id: str = "") -> Dict[str, Any]:
     return defaults
 
 
-def publish_email_update(client_id: str):
+def publish_email_update(client_id: str, extra_payload: Optional[Dict[str, Any]] = None):
     try:
         from app.redis_pool import get_redis_main
         r = get_redis_main()
-        r.publish("email_updates", json.dumps({"type": "NEW_EMAIL", "client_id": client_id}))
+        msg = {"type": "NEW_EMAIL", "client_id": client_id}
+        if extra_payload:
+            msg.update(extra_payload)
+        r.publish("email_updates", json.dumps(msg))
         logger.info(f"📡 Published real-time update to 'email_updates' channel for client {client_id}")
     except Exception as e:
         logger.warning(f"⚠️ Failed to publish real-time notification: {e}")
@@ -576,7 +593,16 @@ def _finalize_task_and_log(ctx: PipelineContext, task_id: str, cursor=None, db=N
         except Exception as sum_err:
             logger.warning(f"⚠️ Summary generation skipped: {sum_err}")
 
-    publish_email_update(ctx.client_id)
+    extra_payload = {}
+    if ctx.priority in ("Critical", "Urgent") and ctx.escalation_reason == "Hostile_Legal_Threat":
+        extra_payload = {
+            "escalation_alert": True,
+            "escalation_reason": "Hostile_Legal_Threat",
+            "priority": "Critical",
+            "thread_id": ctx.thread_id,
+            "from_email": ctx.from_email
+        }
+    publish_email_update(ctx.client_id, extra_payload=extra_payload if extra_payload else None)
     logger.info(f"✅ [Task {task_id}] Finalized with status='{ctx.status}', log_id={db_log_id}")
 
 
@@ -641,6 +667,11 @@ def process_email_task(self, data: Dict[str, Any]):
                 ctx.troubleshooting_step = prior_step
                 logger.info(f"🧵 [Thread Resolved] ID: {thread_id} | Prior Step: {prior_step} | RFC Match: {is_rfc_match}")
 
+                # Level 0 Fast Deterministic Gates (bounces, broadcast senders, paused emails)
+                if apply_deterministic_filters(ctx, cursor):
+                    _finalize_task_and_log(ctx, task_id=task_id, cursor=cursor, db=db)
+                    return
+
                 # Check for Thread Entanglement across active threads (Option A)
                 entanglement = check_and_resolve_thread_entanglement(
                     client_id=client_id,
@@ -659,11 +690,6 @@ def process_email_task(self, data: Dict[str, Any]):
                     ctx.context_data["reanchored_original_thread"] = old_th
                     ctx.log_step(f"Thread_Entanglement_Reanchored:{old_th}->{ctx.thread_id}")
                     logger.info(f"🔀 [Thread Entanglement] Re-anchored email from {old_th} to {ctx.thread_id} (topic: '{entanglement['target_topic']}')")
-
-                # Level 0 Fast Deterministic Gates
-                if apply_deterministic_filters(ctx, cursor):
-                    _finalize_task_and_log(ctx, task_id=task_id, cursor=cursor, db=db)
-                    return
 
         # Bind thread context for all subsequent LLM telemetry logging
         token_thread = current_thread_id.set(ctx.thread_id or "")
@@ -688,59 +714,6 @@ def process_email_task(self, data: Dict[str, Any]):
             except Exception as e:
                 logger.warning(f"⚠️ Failed to strip disclaimers: {e}")
 
-        # Deterministic Multi-Ticket / Multi-Order Check with Custom Tenant Regex Support
-        email_query = f"Subject: {ctx.subject}\n\n{ctx.body}"
-        from app.connector_config import get_live_config
-        cfg_order = get_live_config(client_id, "order_status")
-        cfg_ticket = get_live_config(client_id, "ticket_status")
-        custom_order_regex = cfg_order.get("id_pattern_regex") if cfg_order else None
-        custom_ticket_regex = cfg_ticket.get("id_pattern_regex") if cfg_ticket else None
-
-        entities = extract_entities_categorized(
-            email_query,
-            custom_order_regex=custom_order_regex,
-            custom_ticket_regex=custom_ticket_regex
-        )
-        order_ids = entities["orders"]
-        ticket_ids = entities["tickets"]
-        all_ids = entities.get("all") or list(dict.fromkeys(order_ids + ticket_ids))
-
-        # Only trigger clarification if multiple IDs are detected
-        if len(all_ids) > 1:
-            conflicting_ids = all_ids
-            logger.warning(f"⚠️ Multiple entity IDs in email: {conflicting_ids}")
-            ctx.log_step("Clarification_Request")
-            id_list = "\n".join(f"  - {tid}" for tid in conflicting_ids)
-            clarification_reply = (
-                f"Dear Customer,\n\n"
-                f"Thank you for reaching out. We noticed your email mentions multiple ticket/order IDs:\n\n"
-                f"{id_list}\n\n"
-                f"Could you please clarify which ticket you would like us to look into? "
-                f"Replying with a single ticket ID will help us assist you faster.\n\n"
-                f"Thanks & Regards,\n"
-                f"Support Team"
-            )
-            send_email(
-                ctx.client_id,
-                ctx.from_email,
-                "Re: " + ctx.subject,
-                clarification_reply,
-                in_reply_to=ctx.message_id
-            )
-            ctx.draft_reply = clarification_reply
-            ctx.status = "clarification_sent"
-            ctx.summary = f"Multiple ticket IDs referenced ({', '.join(conflicting_ids)}). Sent clarification request."
-            ctx.score = 0
-            _finalize_task_and_log(ctx, task_id=task_id)
-            return
-
-        if order_ids:
-            ctx.order_id = order_ids[0]
-        if ticket_ids:
-            ctx.ticket_id = ticket_ids[0]
-        elif order_ids:
-            ctx.ticket_id = order_ids[0]
-
         # Load Conversation History from Redis (with SQL fallback and continuation-gated prior thread carryover)
         ctx.history = get_history(client_id, ctx.from_email, last_n=10, thread_id=ctx.thread_id)
         if not ctx.history:
@@ -762,6 +735,71 @@ def process_email_task(self, data: Dict[str, Any]):
                     ctx.history = prior_history
         logger.info(f"📜 Loaded {len(ctx.history)} history messages (thread={ctx.thread_id}, step={ctx.troubleshooting_step})")
 
+        # Deterministic Multi-Ticket / Multi-Order Check with Custom Tenant Regex Support
+        email_query = f"Subject: {ctx.subject}\n\n{ctx.body}"
+        from app.connector_config import get_live_config
+        cfg_order = get_live_config(client_id, "order_status")
+        cfg_ticket = get_live_config(client_id, "ticket_status")
+        custom_order_regex = cfg_order.get("id_pattern_regex") if cfg_order else None
+        custom_ticket_regex = cfg_ticket.get("id_pattern_regex") if cfg_ticket else None
+
+        entities = extract_entities_categorized(
+            email_query,
+            custom_order_regex=custom_order_regex,
+            custom_ticket_regex=custom_ticket_regex
+        )
+        order_ids = entities["orders"]
+        ticket_ids = entities["tickets"]
+        all_ids = entities.get("all") or list(dict.fromkeys(order_ids + ticket_ids))
+
+        # Only trigger clarification if multiple IDs are detected and not already clarified on prior turn
+        if len(all_ids) > 1:
+            conflicting_ids = all_ids
+            if is_prior_turn_clarification(ctx.history):
+                ctx.ticket_id = ticket_ids[0] if ticket_ids else order_ids[0]
+                if order_ids:
+                    ctx.order_id = order_ids[0]
+                ctx.log_step(f"Clarification_Loop_Bypassed:Prioritized_{ctx.ticket_id}")
+                logger.info(f"🔄 [Multi-ID Clarification Loop Bypassed] Prior turn was clarification — prioritizing {ctx.ticket_id}")
+            else:
+                logger.warning(f"⚠️ Multiple entity IDs in email: {conflicting_ids}")
+                ctx.log_step("Clarification_Request")
+                id_list = "\n".join(f"  - {tid}" for tid in conflicting_ids)
+                clarification_reply = (
+                    f"Dear Customer,\n\n"
+                    f"Thank you for reaching out. We noticed your email mentions multiple ticket/order IDs:\n\n"
+                    f"{id_list}\n\n"
+                    f"Could you please clarify which ticket you would like us to look into? "
+                    f"Replying with a single ticket ID will help us assist you faster.\n\n"
+                    f"Thanks & Regards,\n"
+                    f"Support Team"
+                )
+                send_email(
+                    ctx.client_id,
+                    ctx.from_email,
+                    "Re: " + ctx.subject,
+                    clarification_reply,
+                    in_reply_to=ctx.message_id
+                )
+                push_message(client_id=ctx.client_id, from_email=ctx.from_email, role="customer",
+                             subject=ctx.subject, body=ctx.body, thread_id=ctx.thread_id)
+                push_message(client_id=ctx.client_id, from_email=ctx.from_email, role="support",
+                             subject="Re: " + ctx.subject, body=clarification_reply,
+                             meta=json.dumps({"action": "clarification_sent"}), thread_id=ctx.thread_id)
+                ctx.draft_reply = clarification_reply
+                ctx.status = "clarification_sent"
+                ctx.summary = f"Multiple ticket IDs referenced ({', '.join(conflicting_ids)}). Sent clarification request."
+                ctx.score = 0
+                _finalize_task_and_log(ctx, task_id=task_id)
+                return
+
+        if order_ids:
+            ctx.order_id = order_ids[0]
+        if ticket_ids:
+            ctx.ticket_id = ticket_ids[0]
+        elif order_ids:
+            ctx.ticket_id = order_ids[0]
+
         # Route Intent & Entities via classification
         try:
             from app.pipeline.router import route_intent_and_entities
@@ -776,49 +814,73 @@ def process_email_task(self, data: Dict[str, Any]):
         elif ctx.intent == "general_query" and not ctx.troubleshooting_step and not ctx.history:
             ctx.troubleshooting_step = 0
 
-        # Compound Intent Triage Gate: handle one issue at a time
+        # Compound Intent Triage Gate: handle one issue at a time (with loop protection)
         if ctx.is_compound_intent and len(ctx.intents) > 1 and ctx.features.get("feature_compound_triage", True):
-            INTENT_LABELS = {
-                "technical_support": "Technical troubleshooting / system malfunction",
-                "general_query": "Technical troubleshooting / product inquiry",
-                "ticket_status": "Status tracking for an existing ticket or order",
-                "ticket_create": "New ticket logging / specialist escalation",
-                "issue_resolved": "Issue resolution confirmation",
-                "marketing_promotional": "Promotional inquiry",
-                "billing": "Billing / subscription inquiry",
-                "refund": "Refund / payment dispute"
-            }
-            issue_items = [INTENT_LABELS.get(i, f"{i.replace('_', ' ').capitalize()} request") for i in ctx.intents[:3]]
-            id_list = "\n".join(f"  - {item}" for item in issue_items)
-            clarification_reply = (
-                f"Dear Customer,\n\n"
-                f"Thank you for reaching out. We noticed your message contains multiple distinct inquiries:\n\n"
-                f"{id_list}\n\n"
-                f"To ensure each matter is handled thoroughly and accurately, could you please let us know which inquiry you would like us to resolve first? "
-                f"Replying with your choice will help us assist you faster.\n\n"
-                f"Thanks & Regards,\n"
-                f"Support Team"
-            )
-            logger.info(f"🔀 [Compound Triage] Multi-intent inquiry detected ({ctx.intents}) — sending triage clarification to handle one issue at a time")
-            send_email(
-                ctx.client_id,
-                ctx.from_email,
-                "Re: " + ctx.subject,
-                clarification_reply,
-                in_reply_to=ctx.message_id
-            )
-            ctx.draft_reply = clarification_reply
-            ctx.status = "clarification_sent"
-            ctx.summary = f"Multiple distinct inquiries ({', '.join(ctx.intents)}). Sent triage clarification to handle one issue at a time."
-            ctx.score = 0
-            _finalize_task_and_log(ctx, task_id=task_id)
-            return
+            if is_prior_turn_clarification(ctx.history):
+                INTENT_PRIORITY = {
+                    "technical_support": 1,
+                    "ticket_create": 2,
+                    "ticket_status": 3,
+                    "billing": 4,
+                    "refund": 5,
+                    "general_query": 6,
+                    "issue_resolved": 7,
+                    "marketing_promotional": 8
+                }
+                sorted_intents = sorted(ctx.intents, key=lambda i: INTENT_PRIORITY.get(i, 99))
+                dominant_intent = sorted_intents[0]
+                ctx.intent = dominant_intent
+                ctx.is_compound_intent = False
+                ctx.log_step(f"Compound_Triage_Bypassed:Prioritized_{dominant_intent}")
+                logger.info(f"🔄 [Compound Triage Loop Bypassed] Prior turn was clarification — proceeding with dominant intent {dominant_intent}")
+            else:
+                INTENT_LABELS = {
+                    "technical_support": "Technical troubleshooting / system malfunction",
+                    "general_query": "Technical troubleshooting / product inquiry",
+                    "ticket_status": "Status tracking for an existing ticket or order",
+                    "ticket_create": "New ticket logging / specialist escalation",
+                    "issue_resolved": "Issue resolution confirmation",
+                    "marketing_promotional": "Promotional inquiry",
+                    "billing": "Billing / subscription inquiry",
+                    "refund": "Refund / payment dispute"
+                }
+                issue_items = [INTENT_LABELS.get(i, f"{i.replace('_', ' ').capitalize()} request") for i in ctx.intents[:3]]
+                id_list = "\n".join(f"  - {item}" for item in issue_items)
+                clarification_reply = (
+                    f"Dear Customer,\n\n"
+                    f"Thank you for reaching out. We noticed your message contains multiple distinct inquiries:\n\n"
+                    f"{id_list}\n\n"
+                    f"To ensure each matter is handled thoroughly and accurately, could you please let us know which inquiry you would like us to resolve first? "
+                    f"Replying with your choice will help us assist you faster.\n\n"
+                    f"Thanks & Regards,\n"
+                    f"Support Team"
+                )
+                logger.info(f"🔀 [Compound Triage] Multi-intent inquiry detected ({ctx.intents}) — sending triage clarification to handle one issue at a time")
+                send_email(
+                    ctx.client_id,
+                    ctx.from_email,
+                    "Re: " + ctx.subject,
+                    clarification_reply,
+                    in_reply_to=ctx.message_id
+                )
+                push_message(client_id=ctx.client_id, from_email=ctx.from_email, role="customer",
+                             subject=ctx.subject, body=ctx.body, thread_id=ctx.thread_id)
+                push_message(client_id=ctx.client_id, from_email=ctx.from_email, role="support",
+                             subject="Re: " + ctx.subject, body=clarification_reply,
+                             meta=json.dumps({"action": "clarification_sent"}), thread_id=ctx.thread_id)
+                ctx.draft_reply = clarification_reply
+                ctx.status = "clarification_sent"
+                ctx.summary = f"Multiple distinct inquiries ({', '.join(ctx.intents)}). Sent triage clarification to handle one issue at a time."
+                ctx.score = 0
+                _finalize_task_and_log(ctx, task_id=task_id)
+                return
 
-        # Early exit for marketing promotional blasts or off-topic emails without explicit support inquiry or ticket
-        if ctx.intent == "marketing_promotional" and not ticket_ids and not ctx.troubleshooting_step and not ctx.history:
+        # Early exit for marketing promotional blasts without explicit support inquiry or ticket
+        if ctx.intent == "marketing_promotional" and not ticket_ids and not ctx.troubleshooting_step:
             logger.info(f"🛑 [Client {client_id}] Inbound email classified as 'marketing_promotional' — dropping without automated ticket or reply")
             ctx.summary = f"Automated marketing/promotional message ({ctx.subject}). Dropped without reply."
             ctx.priority = "Low"
+            ctx.is_resolved = True
             ctx.halt("no_action_needed", "Classified as marketing_promotional", "Intent_Drop:marketing_promotional")
             _finalize_task_and_log(ctx, task_id=task_id)
             return
@@ -876,9 +938,17 @@ def process_email_task(self, data: Dict[str, Any]):
         if ctx.status in ("ticket_created_and_sent", "ticket_created_draft_pending"):
             logger.info(f"🎫 Ticket escalation finalized by agent tool ({ctx.status})")
         elif ctx.response_action == "draft_mode":
-            logger.info(f"📝 [Client {client_id}] Evaluator routed to draft_mode (RAG miss / informational) — staging in Pending Review")
-            ctx.status = "pending_manual_review"
-            ctx.log_step("Routed_To_Pending_Review:RAG_Miss")
+            is_threat = bool(ctx.context_data.get("sentiment_velocity_breach"))
+            if is_threat:
+                ctx.status = "pending_manual_review"
+                ctx.priority = "Critical"
+                ctx.escalation_reason = "Hostile_Legal_Threat"
+                ctx.log_step("Routed_To_Pending_Review:Hostile_Legal_Threat")
+                logger.warning(f"🚨 [Client {client_id}] Hostile/legal threat routed to pending_manual_review with Critical priority")
+            else:
+                logger.info(f"📝 [Client {client_id}] Evaluator routed to draft_mode (RAG miss / informational) — staging in Pending Review")
+                ctx.status = "pending_manual_review"
+                ctx.log_step("Routed_To_Pending_Review:RAG_Miss")
             push_message(client_id=client_id, from_email=ctx.from_email, role="customer",
                          subject=ctx.subject, body=ctx.body, ticket_id=ctx.ticket_id or "", thread_id=ctx.thread_id)
         elif ctx.response_action == "create_ticket" and not ctx.is_resolved:

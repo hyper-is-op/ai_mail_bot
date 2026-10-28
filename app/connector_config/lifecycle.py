@@ -92,15 +92,17 @@ def insert_connector_config_checked(client_id: str, trigger_type: str, new_statu
                         (client_id, trigger_type, http_method, url, headers_template,
                          request_template, response_mapping, auth_type,
                          auth_secret_encrypted, auth_field_name, payload_encoding,
-                         base64_query_param_name, status, created_by)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         base64_query_param_name, status, created_by,
+                         id_pattern_regex, owner_email_path)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     client_id, trigger_type, payload["http_method"], payload["url"],
                     payload.get("headers_template"), payload.get("request_template"),
                     payload.get("response_mapping"), payload["auth_type"],
                     payload.get("auth_secret_encrypted"), payload.get("auth_field_name"),
                     payload.get("payload_encoding", "plain"), payload.get("base64_query_param_name"),
-                    new_status, payload.get("created_by")
+                    new_status, payload.get("created_by"),
+                    payload.get("id_pattern_regex"), payload.get("owner_email_path")
                 ))
             except Exception as insert_err:
                 conn.rollback()

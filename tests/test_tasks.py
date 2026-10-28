@@ -376,6 +376,218 @@ class TestWorkerTasks(unittest.TestCase):
             # Push message should record customer question in conversation history
             mock_push.assert_called_once()
 
+    def test_12_marketing_promotional_dropped_despite_history(self):
+        """Marketing promotional blast must be dropped without reply even when prior history exists"""
+        mock_self = MagicMock()
+        mock_self.request.id = "task-marketing-history-drop-1"
+
+        preflight_db = MagicMock()
+        preflight_cursor = MagicMock()
+        preflight_cursor.__enter__.return_value = preflight_cursor
+        preflight_db.cursor.return_value = preflight_cursor
+        preflight_cursor.fetchone.return_value = None
+
+        final_db = MagicMock()
+        final_cursor = MagicMock()
+        final_cursor.__enter__.return_value = final_cursor
+        final_db.cursor.return_value = final_cursor
+        final_cursor.lastrowid = 1005
+
+        preflight_ctx = MagicMock()
+        preflight_ctx.__enter__.return_value = preflight_db
+        final_ctx = MagicMock()
+        final_ctx.__enter__.return_value = final_db
+
+        def mock_router(ctx, text):
+            ctx.intent = "marketing_promotional"
+
+        prior_history = [{"role": "customer", "body": "Previous promotional email"}]
+
+        with patch("worker.tasks.get_db_ctx", side_effect=[preflight_ctx, final_ctx]), \
+             patch("worker.tasks.get_history", return_value=prior_history), \
+             patch("app.pipeline.router.route_intent_and_entities", side_effect=mock_router), \
+             patch("worker.tasks.send_email") as mock_send, \
+             patch("worker.tasks.run_support_agent") as mock_agent, \
+             patch("worker.tasks.publish_email_update"):
+            run_task(mock_self, {
+                "client_id": "CLI-TEST",
+                "from_email": "student@internshala.com",
+                "subject": "Update: Study in UK 24 October",
+                "body": "Register now for the fair"
+            })
+
+            mock_send.assert_not_called()
+            mock_agent.assert_not_called()
+
+    def test_13_multi_id_clarification_loop_bypassed(self):
+        """When prior message was a clarification, multi-ID query must bypass clarification and prioritize primary ID"""
+        mock_self = MagicMock()
+        mock_self.request.id = "task-multi-id-bypass-1"
+
+        preflight_db = MagicMock()
+        preflight_cursor = MagicMock()
+        preflight_cursor.__enter__.return_value = preflight_cursor
+        preflight_db.cursor.return_value = preflight_cursor
+        preflight_cursor.fetchone.return_value = None
+
+        final_db = MagicMock()
+        final_cursor = MagicMock()
+        final_cursor.__enter__.return_value = final_cursor
+        final_db.cursor.return_value = final_cursor
+        final_cursor.lastrowid = 1006
+
+        preflight_ctx = MagicMock()
+        preflight_ctx.__enter__.return_value = preflight_db
+        final_ctx = MagicMock()
+        final_ctx.__enter__.return_value = final_db
+
+        prior_clarification_history = [
+            {"role": "customer", "body": "Check ticket T-260505-00117 and order ORD-10294"},
+            {"role": "support", "body": "We noticed multiple ticket/order IDs... which would you like us to look into?", "meta": '{"action": "clarification_sent"}'}
+        ]
+
+        def mock_agent_loop(ctx, cursor=None):
+            ctx.status = "sent"
+            ctx.draft_reply = "Looking into your ticket."
+            return ctx
+
+        with patch("worker.tasks.get_db_ctx", side_effect=[preflight_ctx, final_ctx]), \
+             patch("worker.tasks.get_history", return_value=prior_clarification_history), \
+             patch("worker.tasks.run_support_agent", side_effect=mock_agent_loop) as mock_agent, \
+             patch("worker.tasks.send_email") as mock_send, \
+             patch("worker.tasks.publish_email_update"):
+            run_task(mock_self, {
+                "client_id": "CLI-TEST",
+                "from_email": "customer@example.com",
+                "subject": "Re: Support",
+                "body": "I said check both T-260505-00117 and order ORD-10294!"
+            })
+
+            # Must NOT send clarification email again!
+            # mock_send should not be called with the clarification template
+            clarification_sent_calls = [
+                call for call in mock_send.call_args_list
+                if "clarify which" in str(call).lower() or "multiple ticket" in str(call).lower()
+            ]
+            self.assertEqual(len(clarification_sent_calls), 0)
+            # Must proceed to support agent
+            mock_agent.assert_called_once()
+            passed_ctx = mock_agent.call_args[0][0]
+            self.assertEqual(passed_ctx.ticket_id, "T-260505-00117")
+            self.assertTrue(any("Clarification_Loop_Bypassed" in s for s in passed_ctx.execution_steps))
+
+    def test_14_compound_intent_clarification_loop_bypassed(self):
+        """When prior message was clarification, compound intent inquiry must prioritize dominant intent"""
+        mock_self = MagicMock()
+        mock_self.request.id = "task-compound-bypass-1"
+
+        preflight_db = MagicMock()
+        preflight_cursor = MagicMock()
+        preflight_cursor.__enter__.return_value = preflight_cursor
+        preflight_db.cursor.return_value = preflight_cursor
+        preflight_cursor.fetchone.return_value = None
+
+        final_db = MagicMock()
+        final_cursor = MagicMock()
+        final_cursor.__enter__.return_value = final_cursor
+        final_db.cursor.return_value = final_cursor
+        final_cursor.lastrowid = 1007
+
+        preflight_ctx = MagicMock()
+        preflight_ctx.__enter__.return_value = preflight_db
+        final_ctx = MagicMock()
+        final_ctx.__enter__.return_value = final_db
+
+        prior_clarification_history = [
+            {"role": "customer", "body": "Login broken and refund request"},
+            {"role": "support", "body": "We noticed multiple distinct inquiries... which to resolve first?", "meta": '{"action": "clarification_sent"}'}
+        ]
+
+        def mock_router(ctx, text):
+            ctx.intent = "general_query"
+            ctx.intents = ["general_query", "technical_support", "refund"]
+            ctx.is_compound_intent = True
+
+        def mock_agent_loop(ctx, cursor=None):
+            ctx.status = "sent"
+            ctx.draft_reply = "Troubleshooting your technical issue."
+            return ctx
+
+        with patch("worker.tasks.get_db_ctx", side_effect=[preflight_ctx, final_ctx]), \
+             patch("worker.tasks.get_history", return_value=prior_clarification_history), \
+             patch("app.pipeline.router.route_intent_and_entities", side_effect=mock_router), \
+             patch("worker.tasks.run_support_agent", side_effect=mock_agent_loop) as mock_agent, \
+             patch("worker.tasks.send_email") as mock_send, \
+             patch("worker.tasks.publish_email_update"):
+            run_task(mock_self, {
+                "client_id": "CLI-TEST",
+                "from_email": "customer@example.com",
+                "subject": "Re: Support",
+                "body": "Fix both login broken and refund my subscription!"
+            })
+
+            # Must NOT send triage clarification email
+            triage_calls = [
+                call for call in mock_send.call_args_list
+                if "which inquiry" in str(call).lower() or "multiple distinct inquiries" in str(call).lower()
+            ]
+            self.assertEqual(len(triage_calls), 0)
+            mock_agent.assert_called_once()
+            passed_ctx = mock_agent.call_args[0][0]
+            # Dominant intent must be technical_support over refund/general_query
+            self.assertEqual(passed_ctx.intent, "technical_support")
+            self.assertFalse(passed_ctx.is_compound_intent)
+            self.assertTrue(any("Compound_Triage_Bypassed:Prioritized_technical_support" in s for s in passed_ctx.execution_steps))
+
+    def test_15_hostile_threat_pending_review_attribution(self):
+        """Hostile legal threat held in draft_mode must be attributed accurately and emit escalation_alert"""
+        mock_self = MagicMock()
+        mock_self.request.id = "task-threat-draft-1"
+
+        preflight_db = MagicMock()
+        preflight_cursor = MagicMock()
+        preflight_cursor.__enter__.return_value = preflight_cursor
+        preflight_db.cursor.return_value = preflight_cursor
+        preflight_cursor.fetchone.return_value = None
+
+        final_db = MagicMock()
+        final_cursor = MagicMock()
+        final_cursor.__enter__.return_value = final_cursor
+        final_db.cursor.return_value = final_cursor
+        final_cursor.lastrowid = 1008
+
+        preflight_ctx = MagicMock()
+        preflight_ctx.__enter__.return_value = preflight_db
+        final_ctx = MagicMock()
+        final_ctx.__enter__.return_value = final_db
+
+        def mock_agent_loop(ctx, cursor=None):
+            ctx.context_data["sentiment_velocity_breach"] = True
+            ctx.response_action = "draft_mode"
+            return ctx
+
+        with patch("worker.tasks.get_db_ctx", side_effect=[preflight_ctx, final_ctx]), \
+             patch("worker.tasks.get_history", return_value=[]), \
+             patch("worker.tasks.run_support_agent", side_effect=mock_agent_loop), \
+             patch("worker.tasks.publish_email_update") as mock_pub, \
+             patch("app.draft_service.create_draft") as mock_create_draft, \
+             patch("worker.tasks.push_message"):
+            run_task(mock_self, {
+                "client_id": "CLI-TEST",
+                "from_email": "angry@example.com",
+                "subject": "I will file a lawsuit and police report",
+                "body": "Your service failed, I am hiring an attorney to sue you in consumer court."
+            })
+
+            mock_create_draft.assert_called_once()
+            # publish_email_update is called on persistence and in finally
+            self.assertGreaterEqual(mock_pub.call_count, 1)
+            first_call_kwargs = mock_pub.call_args_list[0][1]
+            extra = first_call_kwargs.get("extra_payload") or {}
+            self.assertTrue(extra.get("escalation_alert"))
+            self.assertEqual(extra.get("escalation_reason"), "Hostile_Legal_Threat")
+            self.assertEqual(extra.get("priority"), "Critical")
+
 
 if __name__ == "__main__":
     unittest.main()
