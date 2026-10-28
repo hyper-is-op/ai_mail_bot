@@ -61,7 +61,9 @@
 - step-178-centralize-db-lifecycle-and-schema: Centralized all 25 MySQL table definitions into app/schema/tables.py, added synchronous pre-flight runner run_sync_database_init() in app/db_init.py wired across api, worker, and listener entrypoints, removed inline hot-path DDL (_ensure_table) across chat_history, email_credential, rate_limiter, keyword_filter, and analytics, fixed test runner idempotency isolation, and verified 220/220 passing backend tests and clean frontend build.
 - step-179-sync-and-deploy-production-targets: Synced backend to /Czentrix/apps/Smart_Mail_Agent_BE (commit 5d0558f), synced frontend source to /home/hyper_is_op/Smart_Mail_Agent_FE and compiled production bundle (index-Dpj4gDva.js, index-DKlAIkV5.css), deployed bundle into web server root /var/www/html/Smart_Mail_Agent preserving config.js (commit c7efc9b), and verified live HTTP 200 responses.
 - step-180-commit-and-push-to-github: Resolved Redis chat history test isolation defect, validated 220/220 passing backend tests and clean frontend production build, and committed and pushed all updates spanning steps 160 to 180 to GitHub origin/main.
-
+- step-181-fix-login-401-redirect-loop: Fixed 401 session eviction loop in handleAuthFailure (core.ts) by exempting login/auth requests and incorporating window.__APP_CONFIG__.BASENAME in redirect path checks, compiled production bundle (-wDbfHp36), deployed to /var/www/html/Smart_Mail_Agent (commit 8f85ff0), and verified live HTTP 200 responses.
+- step-182-reconcile-centralized-table-schemas: Reconciled canonical table definitions in app/schema/tables.py across global_default_llm, globally_available_llm_configs, paused_emails, llm_logs, and draft_emails, implemented automated self-healing column migrations in app/db_init.py, and verified 220/220 passing backend tests and clean frontend build.
+- step-183-sync-backend-to-production-target: Synchronized reconciled backend schema definitions and migrations (app/schema/tables.py, app/db_init.py) via rsync to /Czentrix/apps/Smart_Mail_Agent_BE and committed as 20922bd.
 
 
 

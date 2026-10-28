@@ -145,12 +145,19 @@ def ensure_paused_emails_table():
                 cursor.execute("""
                 CREATE TABLE IF NOT EXISTS paused_emails (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    client_id VARCHAR(50),
-                    paused_email VARCHAR(255),
+                    client_id VARCHAR(50) NOT NULL,
+                    paused_email VARCHAR(255) NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(client_id, paused_email)
-                )
+                    UNIQUE KEY uq_client_paused_email (client_id, paused_email)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
+                cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'paused_emails'")
+                existing_cols = {row[0] for row in cursor.fetchall()}
+                if "paused_email" not in existing_cols:
+                    if "from_email" in existing_cols:
+                        cursor.execute("ALTER TABLE paused_emails CHANGE COLUMN from_email paused_email VARCHAR(255) NOT NULL")
+                    else:
+                        cursor.execute("ALTER TABLE paused_emails ADD COLUMN paused_email VARCHAR(255) NOT NULL DEFAULT ''")
                 db.commit()
                 logger.info("✅ Ensured paused_emails table exists")
     except Exception as e:
@@ -174,16 +181,24 @@ def ensure_global_llm_tables():
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     refreshed TIMESTAMP NULL,
                     is_override_active TINYINT(1) NOT NULL DEFAULT 0
-                )
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
 
-                cursor.execute("""
-                    SELECT COUNT(*) FROM information_schema.columns 
-                    WHERE table_schema = DATABASE() AND table_name = 'global_default_llm' AND column_name = 'is_override_active'
-                """)
-                if cursor.fetchone()[0] == 0:
-                    cursor.execute("ALTER TABLE global_default_llm ADD COLUMN is_override_active TINYINT(1) NOT NULL DEFAULT 0")
-                    logger.info("✅ Added is_override_active column to global_default_llm")
+                cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'global_default_llm'")
+                g_cols = {row[0] for row in cursor.fetchall()}
+                for col_name, col_def in [
+                    ("provider", "VARCHAR(50) NOT NULL DEFAULT 'groq'"),
+                    ("api_key", "TEXT NOT NULL"),
+                    ("base_url", "VARCHAR(255) NULL"),
+                    ("model_name", "VARCHAR(255) NOT NULL DEFAULT ''"),
+                    ("api_version", "VARCHAR(50) NULL"),
+                    ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                    ("refreshed", "TIMESTAMP NULL"),
+                    ("is_override_active", "TINYINT(1) NOT NULL DEFAULT 0"),
+                ]:
+                    if col_name not in g_cols:
+                        cursor.execute(f"ALTER TABLE global_default_llm ADD COLUMN {col_name} {col_def}")
+                        logger.info(f"✅ Added {col_name} column to global_default_llm")
 
                 cursor.execute("""
                 CREATE TABLE IF NOT EXISTS globally_available_llm_configs (
@@ -197,8 +212,25 @@ def ensure_global_llm_tables():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     refreshed TIMESTAMP NULL
-                )
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
+
+                cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'globally_available_llm_configs'")
+                ga_cols = {row[0] for row in cursor.fetchall()}
+                for col_name, col_def in [
+                    ("name", "VARCHAR(100) NOT NULL DEFAULT ''"),
+                    ("provider", "VARCHAR(50) NOT NULL DEFAULT 'groq'"),
+                    ("api_key", "TEXT NOT NULL"),
+                    ("base_url", "VARCHAR(255) NULL"),
+                    ("model_name", "VARCHAR(255) NOT NULL DEFAULT ''"),
+                    ("api_version", "VARCHAR(50) NULL"),
+                    ("created_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+                    ("updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+                    ("refreshed", "TIMESTAMP NULL"),
+                ]:
+                    if col_name not in ga_cols:
+                        cursor.execute(f"ALTER TABLE globally_available_llm_configs ADD COLUMN {col_name} {col_def}")
+                        logger.info(f"✅ Added {col_name} column to globally_available_llm_configs")
 
                 cursor.execute("""
                     SELECT COUNT(*) 
@@ -391,37 +423,62 @@ def ensure_llm_logs_table():
             with db.cursor() as cursor:
                 cursor.execute("""
                 CREATE TABLE IF NOT EXISTS llm_logs (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY,
                     client_id VARCHAR(50) NOT NULL,
-                    provider VARCHAR(50) NOT NULL DEFAULT 'groq',
-                    model_name VARCHAR(100) NOT NULL,
-                    prompt_tokens INT NOT NULL,
-                    completion_tokens INT NOT NULL,
-                    cost DECIMAL(10, 6) NOT NULL,
-                    billed_cost DECIMAL(10, 6) DEFAULT NULL,
-                    latency_ms INT NOT NULL,
+                    email_log_id INT DEFAULT NULL,
+                    thread_id VARCHAR(100) DEFAULT NULL,
                     caller_function VARCHAR(100) NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
+                    model_name VARCHAR(100) NOT NULL,
+                    provider VARCHAR(50) NOT NULL DEFAULT 'groq',
+                    prompt_tokens INT NOT NULL DEFAULT 0,
+                    completion_tokens INT NOT NULL DEFAULT 0,
+                    cost DECIMAL(10, 6) NOT NULL DEFAULT 0.000000,
+                    billed_cost DECIMAL(10, 6) DEFAULT NULL,
+                    latency_ms INT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_llm_client_created (client_id, created_at),
+                    INDEX idx_llm_function (caller_function),
+                    INDEX idx_llm_email_log (email_log_id),
+                    INDEX idx_llm_thread (client_id, thread_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
-                try:
-                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN provider VARCHAR(50) NOT NULL DEFAULT 'groq'")
-                except Exception:
-                    pass
-                try:
+
+                cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'llm_logs'")
+                llm_cols = {row[0] for row in cursor.fetchall()}
+                if "caller_function" not in llm_cols:
+                    if "function_name" in llm_cols:
+                        cursor.execute("ALTER TABLE llm_logs CHANGE COLUMN function_name caller_function VARCHAR(100) NOT NULL")
+                    else:
+                        cursor.execute("ALTER TABLE llm_logs ADD COLUMN caller_function VARCHAR(100) NOT NULL DEFAULT ''")
+                if "model_name" not in llm_cols:
+                    if "model" in llm_cols:
+                        cursor.execute("ALTER TABLE llm_logs CHANGE COLUMN model model_name VARCHAR(100) NOT NULL")
+                    else:
+                        cursor.execute("ALTER TABLE llm_logs ADD COLUMN model_name VARCHAR(100) NOT NULL DEFAULT ''")
+                if "cost" not in llm_cols:
+                    if "estimated_cost" in llm_cols:
+                        cursor.execute("ALTER TABLE llm_logs CHANGE COLUMN estimated_cost cost DECIMAL(10, 6) NOT NULL DEFAULT 0.000000")
+                    else:
+                        cursor.execute("ALTER TABLE llm_logs ADD COLUMN cost DECIMAL(10, 6) NOT NULL DEFAULT 0.000000")
+                if "billed_cost" not in llm_cols:
                     cursor.execute("ALTER TABLE llm_logs ADD COLUMN billed_cost DECIMAL(10, 6) DEFAULT NULL")
-                except Exception:
-                    pass
-                try:
+                if "provider" not in llm_cols:
+                    cursor.execute("ALTER TABLE llm_logs ADD COLUMN provider VARCHAR(50) NOT NULL DEFAULT 'groq'")
+                if "email_log_id" not in llm_cols:
                     cursor.execute("ALTER TABLE llm_logs ADD COLUMN email_log_id INT DEFAULT NULL")
-                except Exception:
-                    pass
-                try:
+                if "thread_id" not in llm_cols:
                     cursor.execute("ALTER TABLE llm_logs ADD COLUMN thread_id VARCHAR(100) DEFAULT NULL")
-                except Exception:
-                    pass
+
                 try:
                     cursor.execute("ALTER TABLE llm_logs ADD INDEX idx_llm_client_created (client_id, created_at)")
+                except Exception:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE llm_logs ADD INDEX idx_llm_function (caller_function)")
+                except Exception:
+                    pass
+                try:
+                    cursor.execute("ALTER TABLE llm_logs ADD INDEX idx_llm_email_log (email_log_id)")
                 except Exception:
                     pass
                 try:

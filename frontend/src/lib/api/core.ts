@@ -19,10 +19,29 @@ export function authHeaders(): Record<string, string> {
 
 export async function handleAuthFailure(res: Response) {
   if (res.status === 401) {
+    // If the 401 was returned by the login or auth verification endpoint itself, do not evict/redirect:
+    // the user is submitting credentials and the error message needs to remain visible in the form.
+    try {
+      const url = new URL(res.url, typeof window !== 'undefined' ? window.location.origin : 'http://localhost');
+      const reqPath = url.pathname.replace(/\/+$/, '');
+      if (reqPath.endsWith('/login') || reqPath.endsWith('/register') || reqPath.includes('/forgot-password')) {
+        return;
+      }
+    } catch {
+      if (res.url?.includes('/login') || res.url?.includes('/register') || res.url?.includes('/forgot-password')) {
+        return;
+      }
+    }
+
     localStorage.removeItem('user');
     // Only redirect if not already on the login page to prevent wiping form state/error messages
-    if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-      window.location.href = '/login';
+    if (typeof window !== 'undefined') {
+      const basename = ((window as any).__APP_CONFIG__?.BASENAME || '').replace(/\/+$/, '');
+      const loginPath = `${basename}/login` || '/login';
+      const currentPath = window.location.pathname.replace(/\/+$/, '');
+      if (currentPath !== loginPath && !currentPath.endsWith('/login')) {
+        window.location.href = loginPath;
+      }
     }
   }
 }

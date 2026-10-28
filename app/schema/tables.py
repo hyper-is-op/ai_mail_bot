@@ -91,20 +91,31 @@ TABLE_DEFINITIONS: dict[str, str] = {
     # =========================================================================
     "global_default_llm": """
         CREATE TABLE IF NOT EXISTS global_default_llm (
-            id                INT AUTO_INCREMENT PRIMARY KEY,
-            default_llm_model VARCHAR(100) NOT NULL,
-            updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            id                 INT PRIMARY KEY DEFAULT 1,
+            provider           VARCHAR(50) NOT NULL DEFAULT 'groq',
+            api_key            TEXT NOT NULL,
+            base_url           VARCHAR(255) NULL,
+            model_name         VARCHAR(255) NOT NULL DEFAULT '',
+            api_version        VARCHAR(50) NULL,
+            created_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            refreshed          TIMESTAMP NULL,
+            is_override_active TINYINT(1) NOT NULL DEFAULT 0
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
 
     "globally_available_llm_configs": """
         CREATE TABLE IF NOT EXISTS globally_available_llm_configs (
-            id             INT AUTO_INCREMENT PRIMARY KEY,
-            model_name     VARCHAR(100) NOT NULL,
-            provider       VARCHAR(100) NOT NULL,
-            pricing_json   JSON NOT NULL,
-            created_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE KEY unique_model_provider (model_name, provider)
+            id          INT AUTO_INCREMENT PRIMARY KEY,
+            name        VARCHAR(100) NOT NULL,
+            provider    VARCHAR(50) NOT NULL,
+            api_key     TEXT NOT NULL,
+            base_url    VARCHAR(255) NULL,
+            model_name  VARCHAR(255) NOT NULL DEFAULT '',
+            api_version VARCHAR(50) NULL,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            refreshed   TIMESTAMP NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
 
@@ -262,15 +273,11 @@ TABLE_DEFINITIONS: dict[str, str] = {
 
     "paused_emails": """
         CREATE TABLE IF NOT EXISTS paused_emails (
-            id         INT AUTO_INCREMENT PRIMARY KEY,
-            client_id  VARCHAR(50) NOT NULL,
-            from_email VARCHAR(255) NOT NULL,
-            subject    TEXT,
-            body       TEXT,
-            reason     VARCHAR(255) NOT NULL,
-            status     VARCHAR(50) DEFAULT 'Paused',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_client_paused (client_id, status)
+            id           INT AUTO_INCREMENT PRIMARY KEY,
+            client_id    VARCHAR(50) NOT NULL,
+            paused_email VARCHAR(255) NOT NULL,
+            created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_client_paused_email (client_id, paused_email)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
 
@@ -307,6 +314,7 @@ TABLE_DEFINITIONS: dict[str, str] = {
             ticket_id        VARCHAR(100) DEFAULT NULL,
             in_reply_to      VARCHAR(255) DEFAULT NULL,
             message_id       VARCHAR(255) DEFAULT NULL,
+            thread_id        VARCHAR(255) DEFAULT NULL,
             status           ENUM('pending', 'approved', 'sent', 'rejected', 'discarded', 'sending') DEFAULT 'pending',
             rejection_reason VARCHAR(255) DEFAULT NULL,
             reviewed_by      VARCHAR(100) DEFAULT NULL,
@@ -317,7 +325,8 @@ TABLE_DEFINITIONS: dict[str, str] = {
             INDEX idx_from_email (from_email),
             INDEX idx_created_at (created_at),
             INDEX idx_intent (intent),
-            INDEX idx_confidence (confidence_score)
+            INDEX idx_confidence (confidence_score),
+            INDEX idx_thread_id (thread_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
 
@@ -359,20 +368,21 @@ TABLE_DEFINITIONS: dict[str, str] = {
         CREATE TABLE IF NOT EXISTS llm_logs (
             id                BIGINT AUTO_INCREMENT PRIMARY KEY,
             client_id         VARCHAR(50) NOT NULL,
-            email_log_id      BIGINT NULL,
-            function_name     VARCHAR(100) NOT NULL,
-            model             VARCHAR(100) NOT NULL,
-            provider          VARCHAR(50) NOT NULL,
+            email_log_id      INT DEFAULT NULL,
+            thread_id         VARCHAR(100) DEFAULT NULL,
+            caller_function   VARCHAR(100) NOT NULL,
+            model_name        VARCHAR(100) NOT NULL,
+            provider          VARCHAR(50) NOT NULL DEFAULT 'groq',
             prompt_tokens     INT NOT NULL DEFAULT 0,
             completion_tokens INT NOT NULL DEFAULT 0,
-            total_tokens      INT NOT NULL DEFAULT 0,
-            estimated_cost    DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+            cost              DECIMAL(10,6) NOT NULL DEFAULT 0.000000,
+            billed_cost       DECIMAL(10,6) DEFAULT NULL,
             latency_ms        INT NOT NULL DEFAULT 0,
-            status            VARCHAR(20) NOT NULL DEFAULT 'success',
             created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_client_created (client_id, created_at),
-            INDEX idx_function (function_name),
-            INDEX idx_email_log (email_log_id)
+            INDEX idx_llm_client_created (client_id, created_at),
+            INDEX idx_llm_function (caller_function),
+            INDEX idx_llm_email_log (email_log_id),
+            INDEX idx_llm_thread (client_id, thread_id)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """,
 
