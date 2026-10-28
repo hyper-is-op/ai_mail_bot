@@ -64,6 +64,7 @@
 - step-181-fix-login-401-redirect-loop: Fixed 401 session eviction loop in handleAuthFailure (core.ts) by exempting login/auth requests and incorporating window.__APP_CONFIG__.BASENAME in redirect path checks, compiled production bundle (-wDbfHp36), deployed to /var/www/html/Smart_Mail_Agent (commit 8f85ff0), and verified live HTTP 200 responses.
 - step-182-reconcile-centralized-table-schemas: Reconciled canonical table definitions in app/schema/tables.py across global_default_llm, globally_available_llm_configs, paused_emails, llm_logs, and draft_emails, implemented automated self-healing column migrations in app/db_init.py, and verified 220/220 passing backend tests and clean frontend build.
 - step-183-sync-backend-to-production-target: Synchronized reconciled backend schema definitions and migrations (app/schema/tables.py, app/db_init.py) via rsync to /Czentrix/apps/Smart_Mail_Agent_BE and committed as 20922bd.
+- step-184-push-updated-code-to-github: Committed and pushed workspace updates across schema definitions, defensive migrations, login redirect handling, and project records to GitHub origin/main.
 
 
 
