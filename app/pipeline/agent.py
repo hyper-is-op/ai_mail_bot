@@ -389,6 +389,9 @@ def run_support_agent(ctx: PipelineContext, cursor: Optional[Any] = None) -> Pip
             logger.error(f"❌ [Agent Loop] Synthesis failed: {e2}")
             final_draft = "Thank you for contacting us. We have received your inquiry and our support team is reviewing your request."
 
+    from app.llm_utils import strip_markdown_decorations
+    final_draft = strip_markdown_decorations(final_draft)
+
     # Increment troubleshooting step if diagnostic tool called and issue not resolved / escalated
     # Pure informational product queries must NEVER increment diagnostic troubleshooting steps
     is_technical_diagnostic = ctx.intent == "technical_support" or (

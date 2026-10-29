@@ -38,6 +38,50 @@ def strip_reasoning_and_think_tags(text: str) -> str:
     return cleaned.strip()
 
 
+def strip_markdown_decorations(text: str) -> str:
+    """
+    Removes raw markdown formatting syntax for plain-text email delivery:
+    - Converts Markdown table rows (| col1 | col2 |) into clean plain-text bullet points (- col1: col2).
+    - Removes markdown table delimiter lines (|---|---|).
+    - Removes markdown bold/italic asterisks (**word** -> word, *word* -> word).
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    lines = text.split("\n")
+    cleaned_lines = []
+    for line in lines:
+        trimmed = line.strip()
+        # Table divider line like |---|---| or |:---|:---|
+        if re.match(r'^\|?(\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?$', trimmed):
+            continue
+        # Table row line like | **Field** | Value |
+        if trimmed.startswith("|") and trimmed.endswith("|") and trimmed.count("|") >= 2:
+            cells = [c.strip() for c in trimmed.strip("|").split("|")]
+            if len(cells) == 2:
+                label, val = cells[0], cells[1]
+                # If it's a generic header row like "Detail | Info", skip it
+                if label.lower() in ("detail", "field", "property", "item") and val.lower() in ("info", "detail", "value", "status"):
+                    continue
+                label = re.sub(r'\*+', '', label).strip()
+                val = re.sub(r'\*+', '', val).strip()
+                cleaned_lines.append(f"- {label}: {val}")
+                continue
+            elif len(cells) > 2:
+                clean_cells = [re.sub(r'\*+', '', c).strip() for c in cells]
+                cleaned_lines.append("- " + " - ".join(clean_cells))
+                continue
+
+        # Normal line: strip bold and italic asterisks
+        line_clean = re.sub(r'\*\*([^*]+)\*\*', r'\1', line)
+        line_clean = re.sub(r'(?<!\*)\*([^*]+)\*(?!\*)', r'\1', line_clean)
+        # Also clean any loose asterisks that were used as bullet points into standard hyphens
+        line_clean = re.sub(r'^\s*\*\s+', '- ', line_clean)
+        cleaned_lines.append(line_clean)
+
+    return "\n".join(cleaned_lines)
+
+
 def extract_name_from_email(email: str) -> str:
     try:
         username = email.split('@')[0]

@@ -67,6 +67,7 @@
 - step-184-push-updated-code-to-github: Committed and pushed workspace updates across schema definitions, defensive migrations, login redirect handling, and project records to GitHub origin/main.
 - step-185-reprocess-email-log-786: Reprocessed failed inbound email log #786 via Celery pipeline using fresh Zoho Desk OAuth credentials, verified live ticket status lookup for #275424000000661001, auto-sent Hinglish status reply (score 87) via SMTP, updated log #786 to sent, and marked superseded pending draft #9 as discarded.
 - step-186-concise-ticket-status-layout: Standardized ticket status inquiry responses to a concise 4-point layout (docket number, ticket status, clean 1-sentence issue overview without internal bracket tags, and actionable next steps), mapped subject across Zoho/Freshdesk/Zendesk presets, filtered unassigned agent noise in prompt context, passed 220/220 backend tests, compiled and deployed frontend bundle, restarted worker/API containers, and verified live score 90 auto_send on ticket #275424000000661001.
+- step-187-plain-text-ticket-status: Eliminated raw Markdown syntax (| table pipes and * asterisks) from ticket status responses by enforcing plain-text formatting in agent_system_prompt, implementing strip_markdown_decorations() in app/llm_utils.py and app/pipeline/agent.py, verifying clean hyphenated plain-text delivery (score 88 auto_send), and passing all 220 backend regression tests.
 
 
 
