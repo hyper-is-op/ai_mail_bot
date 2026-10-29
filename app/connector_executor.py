@@ -466,24 +466,27 @@ def execute_connector(
 
 
 REQUIRED_DISPLAY_LABELS = {
-    "docket_no": "Ticket ID",
+    "docket_no": "Docket No",
     "ticket_status": "Status",
-    "ticket_id": "Ticket ID",
+    "ticket_id": "System Ticket ID",
+    "subject": "Issue Subject",
 }
 
 
 def format_mapped_data_for_prompt(mapped_data: dict) -> str:
     """
     Generic formatter for CRM response data going into an LLM prompt.
-    Required fields (docket_no/ticket_status/ticket_id) get friendly
+    Required fields (docket_no/ticket_status/ticket_id/subject) get friendly
     labels if present; every other key present in mapped_data gets
-    included generically as 'Key Name: value'. Missing optional fields
+    included generically as 'Key Name: value'. Missing or unassigned optional fields
     are simply omitted — no 'N/A' padding, since an LLM writing a reply
     doesn't need to see placeholders for data a given CRM never provided.
     """
     lines = []
     for key, value in mapped_data.items():
         if value is None or value == "":
+            continue
+        if key in ("assignee", "assigned_agent") and (str(value).strip().lower() in ("none", "null", "unassigned", "")):
             continue
         label = REQUIRED_DISPLAY_LABELS.get(key, key.replace("_", " ").title())
         lines.append(f"{label}: {value}")

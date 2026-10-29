@@ -84,6 +84,10 @@ def generate_ticket_status_reply(
         signoff_lines.append(f"Company: {company_name}")
     signoff_text = "\n".join(signoff_lines)
 
+    raw_subject = str(ticket_info.get("subject") or "").strip()
+    clean_subject = re.sub(r"\[.*?\]\s*", "", raw_subject).strip() if raw_subject else ""
+    subject_block = f"- Issue Summary: {clean_subject}\n" if clean_subject else ""
+
     # 1. Closed or Resolved Ticket
     if is_closed:
         logger.info(f"ℹ️ Ticket #{display_ticket_id} is {raw_status} — drafting multilingual closure notification via LLM")
@@ -99,10 +103,11 @@ CRITICAL MULTILINGUAL INSTRUCTION:
 TICKET DETAILS:
 - Ticket Reference: #{display_ticket_id}
 - Current Status: '{raw_status}' (Closed / Resolved)
+{subject_block}
 
 REQUIREMENTS:
 1. Greet {customer_name} politely.
-2. Inform them clearly that support ticket #{display_ticket_id} is currently marked as resolved/closed ('{raw_status}').
+2. Inform them clearly that support ticket #{display_ticket_id}{f" regarding '{clean_subject}'" if clean_subject else ""} is currently marked as resolved/closed ('{raw_status}').
 3. Let them know that if their issue is still occurring or if they have any follow-up questions, they can simply reply directly to this email with the details and our team will be happy to help.
 4. Conclude naturally in the customer's language with:
 {signoff_text}
@@ -153,11 +158,11 @@ CRITICAL MULTILINGUAL INSTRUCTION:
 TICKET DETAILS:
 - Ticket Reference: #{display_ticket_id}
 - Current Status: '{raw_status}'
-{tracking_block}
+{subject_block}{tracking_block}
 
 REQUIREMENTS:
 1. Greet {customer_name} politely.
-2. Inform them that ticket #{display_ticket_id} is currently in '{raw_status}' status and is actively under review by our support team.
+2. Inform them that ticket #{display_ticket_id}{f" regarding '{clean_subject}'" if clean_subject else ""} is currently in '{raw_status}' status and is actively under review by our support team.
 3. If tracking or additional status details are provided above, include them clearly without inventing any extra dates, links, or promises.
 4. Let them know we will follow up as soon as there is a new update, and they can reply directly to this email if they need to add any further information.
 5. Conclude naturally in the customer's language with:
