@@ -43,7 +43,8 @@ Support Team"""
     print(f"Score: {ctx.score} | Decision: {ctx.response_action}")
     assert "|" not in ctx.draft_reply, "Draft contains pipe '|' characters!"
     assert "**" not in ctx.draft_reply, "Draft contains bold '**' markers!"
-    print("✅ Verification passed: Zero pipes, zero markdown bold markers!")
+    assert "next steps" not in ctx.draft_reply.lower(), "Draft contains 'Next Steps'!"
+    print("✅ Verification passed: Zero pipes, zero markdown bold markers, no Next Steps bullet!")
 
 if __name__ == "__main__":
     main()
